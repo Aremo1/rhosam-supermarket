@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext";
+import { generateReceiptPDF } from "./generateReceiptPDF";
 import "./App.css";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -351,6 +352,7 @@ function POSPage() {
           {receipt.change_amount > 0 && <div className="receipt-line"><span>Change</span><span>₦{Number(receipt.change_amount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
           <p className="receipt-thanks">Thank you for shopping!</p>
           <div className="receipt-actions no-print">
+            <button onClick={() => generateReceiptPDF(receipt)}>📄 Download PDF</button>
             <button onClick={() => window.print()}>🖨️ Print</button>
             <button onClick={() => setReceipt(null)}>🛒 New Sale</button>
           </div>
