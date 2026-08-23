@@ -8,9 +8,9 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer"],
-  CASHIER: ["dashboard","pos","cashdrawer","sales"],
+  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","change-password","mfa"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","change-password","mfa"],
+  CASHIER: ["dashboard","pos","cashdrawer","sales","change-password"],
 };
 const LABELS = {
   dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", inventory: "Inventory",
@@ -18,12 +18,14 @@ const LABELS = {
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
   cashdrawer: "Cash Drawer", branches: "Branches", display: "Customer Display", supplierportal: "Supplier Portal",
+  "change-password": "Change Password", mfa: "MFA / Security",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", display: "🖥️", supplierportal: "🏭",
+  "change-password": "🔐", mfa: "🛡️",
 };
 
 function Layout({ children }) {
@@ -132,7 +134,11 @@ function LoginPage() {
 
   async function handleSubmit(e) {
     e.preventDefault(); setError(""); setBusy(true);
-    try { await login(email, password); navigate("/dashboard"); }
+    try {
+      const result = await login(email, password);
+      if (result.passwordExpired) { navigate("/change-password"); }
+      else { navigate("/dashboard"); }
+    }
     catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
@@ -145,6 +151,7 @@ function LoginPage() {
         {error && <div className="auth-error">{error}</div>}
         <label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></label>
         <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" /></label>
+        <p style={{ textAlign: 'right', marginTop: -8, marginBottom: 12 }}><a href="/forgot-password" style={{ fontSize: '0.85rem' }}>Forgot password?</a></p>
         <button type="submit" className="auth-button" disabled={busy}>{busy ? "Signing in…" : "Sign In"}</button>
       </form>
     </div>
@@ -347,6 +354,14 @@ function POSPage() {
 
   function updateQty(productId, qty) {
     if (qty < 1) { setCart(prev => prev.filter(c => c.productId !== productId)); return; }
+    // Check against available stock
+    const product = products.find(p => p.id === productId);
+    if (product && qty > product.stock) {
+      setError(`Maximum stock for ${product.name} is ${product.stock}`);
+      setTimeout(() => setError(""), 2000);
+      setCart(prev => prev.map(c => c.productId === productId ? { ...c, quantity: product.stock } : c));
+      return;
+    }
     setCart(prev => prev.map(c => c.productId === productId ? { ...c, quantity: qty } : c));
   }
 
@@ -876,6 +891,26 @@ function SalesPage() {
                 {detail.discount > 0 && <p>Discount: -₦{Number(detail.discount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
                 {detail.tax > 0 && <p>Tax: ₦{Number(detail.tax).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
                 <p><strong>Total: ₦{Number(detail.total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></p>
+              </div>
+              <div className="no-print" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button className="btn primary" onClick={() => {
+                  const receipt = {
+                    receiptNumber: detail.receipt_number,
+                    createdAt: detail.created_at,
+                    cashierName: detail.cashier_name,
+                    customerName: detail.customer_name,
+                    paymentMethod: detail.payment_method,
+                    items: (detail.items || []).map(i => ({ name: i.product_name, quantity: i.quantity, lineTotal: i.line_total })),
+                    subtotal: detail.subtotal,
+                    discount: detail.discount,
+                    tax: detail.tax,
+                    total: detail.total,
+                    amountPaid: detail.amount_paid,
+                    change_amount: detail.change_amount,
+                  };
+                  generateReceiptPDF(receipt);
+                }}>📄 Download PDF</button>
+                <button className="btn secondary" onClick={() => window.print()}>🖨️ Print</button>
               </div>
             </div>
           </div>
@@ -1817,7 +1852,7 @@ function ReportsPage() {
 // USER MANAGEMENT (Phase 8)
 // ═══════════════════════════════════════════════════════════════════
 function UsersPage() {
-  const { fetchUsers, createUser, updateUser, deleteUser, user } = useAuth();
+  const { fetchUsers, createUser, updateUser, deleteUser, downloadBackup, user } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -1855,7 +1890,10 @@ function UsersPage() {
 
   return (
     <div className="page-panel">
-      <div className="panel-header"><button className="btn primary" onClick={() => setShowForm(true)}>+ Add User</button></div>
+      <div className="panel-header" style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+        <button className="btn primary" onClick={() => setShowForm(true)}>+ Add User</button>
+        <button className="btn secondary" onClick={() => { if (confirm('Download a full JSON backup of the database?')) downloadBackup().catch(err => alert(err.message)); }}>💾 Database Backup</button>
+      </div>
 
       {showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
@@ -2174,12 +2212,269 @@ function BranchesPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// CHANGE PASSWORD
+// ═══════════════════════════════════════════════════════════════════
+function ChangePasswordPage() {
+  const { changePassword, user } = useAuth();
+  const navigate = useNavigate();
+  const [current, setCurrent] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setError(""); setMsg("");
+    if (newPwd !== confirm) { setError("Passwords do not match."); return; }
+    if (newPwd.length < 12) { setError("Password must be at least 12 characters."); return; }
+    setBusy(true);
+    try {
+      await changePassword(current, newPwd);
+      setMsg("Password changed successfully!");
+      setCurrent(""); setNewPwd(""); setConfirm("");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="page-panel" style={{ maxWidth: 480 }}>
+      <div className="panel"><h2>🔐 Change Password</h2>
+        <p className="muted" style={{ marginBottom: 16 }}>Update your account password. Must be at least 12 characters.</p>
+        {error && <div className="error-msg" style={{ marginBottom: 12 }}>{error}</div>}
+        {msg && <div className="muted" style={{ marginBottom: 12, color: "var(--success)" }}>{msg}</div>}
+        <form onSubmit={handleSubmit} className="form-grid">
+          <label>Current Password<input type="password" value={current} onChange={e => setCurrent(e.target.value)} required autoComplete="current-password" /></label>
+          <label>New Password<input type="password" value={newPwd} onChange={e => setNewPwd(e.target.value)} required minLength={12} autoComplete="new-password" /></label>
+          <label>Confirm New Password<input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={12} autoComplete="new-password" /></label>
+          <div className="form-actions">
+            <button type="button" className="btn secondary" onClick={() => navigate(-1)}>Cancel</button>
+            <button type="submit" className="btn primary" disabled={busy}>{busy ? "Changing…" : "Change Password"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FORGOT PASSWORD
+// ═══════════════════════════════════════════════════════════════════
+function ForgotPasswordPage() {
+  const { forgotPassword } = useAuth();
+  const [email, setEmail] = useState("");
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setError(""); setMsg(""); setBusy(true);
+    try {
+      const result = await forgotPassword(email);
+      setMsg(result.message);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="auth-page">
+      <form className="auth-card" onSubmit={handleSubmit}>
+        <h1>🔐 Forgot Password</h1>
+        <p className="auth-subtitle">Enter your email to receive a reset link</p>
+        {error && <div className="auth-error">{error}</div>}
+        {msg && <div className="muted" style={{ color: "var(--success)", marginBottom: 12 }}>{msg}</div>}
+        <label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></label>
+        <button type="submit" className="auth-button" disabled={busy}>{busy ? "Sending…" : "Send Reset Link"}</button>
+        <p style={{ textAlign: "center", marginTop: 16 }}><a href="/login">← Back to Login</a></p>
+      </form>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RESET PASSWORD (from email link)
+// ═══════════════════════════════════════════════════════════════════
+function ResetPasswordPage() {
+  const { resetPassword } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams] = useState(() => new URLSearchParams(window.location.search));
+  const token = searchParams.get("token") || "";
+  const [newPwd, setNewPwd] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!token) return (
+    <div className="auth-page">
+      <div className="auth-card">
+        <h1>🔐 Reset Password</h1>
+        <div className="error-msg">Invalid or missing reset token. Please request a new link.</div>
+        <p style={{ textAlign: "center", marginTop: 16 }}><a href="/forgot-password">Request new link</a></p>
+      </div>
+    </div>
+  );
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setError(""); setMsg("");
+    if (newPwd !== confirm) { setError("Passwords do not match."); return; }
+    if (newPwd.length < 12) { setError("Password must be at least 12 characters."); return; }
+    setBusy(true);
+    try {
+      await resetPassword(token, newPwd);
+      setMsg("Password reset successfully! Redirecting to login…");
+      setTimeout(() => navigate("/login"), 2000);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="auth-page">
+      <form className="auth-card" onSubmit={handleSubmit}>
+        <h1>🔐 Reset Password</h1>
+        <p className="auth-subtitle">Enter your new password below</p>
+        {error && <div className="auth-error">{error}</div>}
+        {msg && <div className="muted" style={{ color: "var(--success)", marginBottom: 12 }}>{msg}</div>}
+        <label>New Password<input type="password" value={newPwd} onChange={e => setNewPwd(e.target.value)} required minLength={12} autoComplete="new-password" /></label>
+        <label>Confirm Password<input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={12} autoComplete="new-password" /></label>
+        <button type="submit" className="auth-button" disabled={busy}>{busy ? "Resetting…" : "Reset Password"}</button>
+      </form>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MFA SETUP
+// ═══════════════════════════════════════════════════════════════════
+function MfaSetupPage() {
+  const { setupMfa, verifyMfa, disableMfa, getMfaStatus, user } = useAuth();
+  const [mfaEnabled, setMfaEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [setupData, setSetupData] = useState(null);
+  const [code, setCode] = useState("");
+  const [disablePassword, setDisablePassword] = useState("");
+  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState("status");
+
+  useEffect(() => {
+    getMfaStatus().then(d => { setMfaEnabled(d.mfaEnabled); setLoading(false); }).catch(() => setLoading(false));
+  }, [getMfaStatus]);
+
+  async function handleSetup() {
+    setBusy(true); setError("");
+    try {
+      const data = await setupMfa();
+      setSetupData(data);
+      setTab("verify");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleVerify(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await verifyMfa(code);
+      setMfaEnabled(true); setSetupData(null); setCode("");
+      setMsg("MFA activated successfully!"); setTab("status");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDisable(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await disableMfa(disablePassword);
+      setMfaEnabled(false); setDisablePassword("");
+      setMsg("MFA disabled."); setTab("status");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  if (loading) return <p className="loading">Loading…</p>;
+
+  return (
+    <div className="page-panel" style={{ maxWidth: 560 }}>
+      <div className="tabs">
+        <button className={tab === "status" ? "active" : ""} onClick={() => { setTab("status"); setError(""); setMsg(""); }}>Status</button>
+        {!mfaEnabled && <button className={tab === "verify" ? "active" : ""} onClick={() => setTab("verify")}>Setup</button>}
+        {mfaEnabled && <button className={tab === "disable" ? "active" : ""} onClick={() => setTab("disable")}>Disable</button>}
+      </div>
+
+      {error && <div className="error-msg" style={{ margin: '12px 0' }}>{error}</div>}
+      {msg && <div className="muted" style={{ margin: '12px 0', color: 'var(--success)' }}>{msg}</div>}
+
+      {tab === "status" && (
+        <div className="panel">
+          <h2>Multi-Factor Authentication</h2>
+          <div className="summary-grid" style={{ marginTop: 12 }}>
+            <div className="summary-card">
+              <span>Status</span>
+              <strong style={{ color: mfaEnabled ? 'var(--success)' : 'var(--muted)' }}>
+                {mfaEnabled ? '🟢 Enabled' : '⚪ Disabled'}
+              </strong>
+            </div>
+          </div>
+          <p className="muted" style={{ marginTop: 12 }}>
+            MFA adds an extra layer of security. When enabled, you'll need to enter a 6-digit code from your authenticator app each time you sign in.
+          </p>
+          {!mfaEnabled && <button className="btn primary" style={{ marginTop: 16 }} onClick={handleSetup} disabled={busy}>Enable MFA</button>}
+        </div>
+      )}
+
+      {tab === "verify" && setupData && (
+        <div className="panel">
+          <h2>Setup Authenticator</h2>
+          <p className="muted">1. Add this secret to your authenticator app (Google Authenticator, Authy, etc.):</p>
+          <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', margin: '8px 0' }}>
+            {setupData.secret}
+          </div>
+          <p className="muted">2. Or use this URL for QR code generation:</p>
+          <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontSize: '0.8rem', wordBreak: 'break-all', margin: '8px 0' }}>
+            {setupData.otpauthUrl}
+          </div>
+          <p className="muted">3. Enter the 6-digit code from your app:</p>
+          <form onSubmit={handleVerify} style={{ marginTop: 12 }}>
+            <label>Verification Code
+              <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="000000" maxLength={8} required autoFocus style={{ fontFamily: 'monospace', fontSize: '1.2rem', letterSpacing: '0.3em', textAlign: 'center', width: 200 }} />
+            </label>
+            <button type="submit" className="btn primary" disabled={busy} style={{ marginTop: 12 }}>{busy ? "Verifying…" : "Verify & Activate"}</button>
+          </form>
+          {setupData.backupCodes?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <p className="muted"><strong>Backup Codes (save these!):</strong></p>
+              <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                {setupData.backupCodes.map((c, i) => <div key={i}>{c}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "disable" && (
+        <div className="panel">
+          <h2>Disable MFA</h2>
+          <p className="muted">Enter your password to confirm disabling multi-factor authentication.</p>
+          <form onSubmit={handleDisable} style={{ marginTop: 12 }}>
+            <label>Password<input type="password" value={disablePassword} onChange={e => setDisablePassword(e.target.value)} required autoComplete="current-password" /></label>
+            <button type="submit" className="btn danger" disabled={busy} style={{ marginTop: 12 }}>{busy ? "Disabling…" : "Disable MFA"}</button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/*" element={<AuthGate><Layout>
         <Routes>
           <Route path="/dashboard" element={<DashboardPage />} />
@@ -2202,6 +2497,8 @@ export default function App() {
           <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/change-password" element={<ChangePasswordPage />} />
+          <Route path="/mfa" element={<MfaSetupPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout></AuthGate>} />

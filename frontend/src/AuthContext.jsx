@@ -56,7 +56,7 @@ export function AuthProvider({ children }) {
     localStorage.setItem("rhosam_token", d.token);
     localStorage.setItem("rhosam_user", JSON.stringify(d.user));
     setUser(d.user);
-    return d.user;
+    return { ...d.user, passwordExpired: d.passwordExpired };
   }
 
   const value = useMemo(() => ({
@@ -78,6 +78,12 @@ export function AuthProvider({ children }) {
     updateUser: (id, data) => request(`/users/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     deleteUser: (id) => request(`/users/${id}`, { method: "DELETE" }),
     changePassword: (current, newPwd) => request("/auth/change-password", { method: "POST", body: JSON.stringify({ currentPassword: current, newPassword: newPwd }) }),
+    forgotPassword: (email) => request("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+    resetPassword: (token, newPassword) => request("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, newPassword }) }),
+    setupMfa: () => request("/auth/mfa/setup", { method: "POST" }),
+    verifyMfa: (code) => request("/auth/mfa/verify", { method: "POST", body: JSON.stringify({ code }) }),
+    disableMfa: (password) => request("/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) }),
+    getMfaStatus: () => request("/auth/mfa/status"),
     fetchDashboard: () => request("/dashboard/stats"),
     fetchTopProducts: () => request("/dashboard/top-products"),
     fetchCategorySales: () => request("/dashboard/category-sales"),
@@ -128,12 +134,27 @@ export function AuthProvider({ children }) {
     emailReceipt: (saleId, email) => request(`/sales/${saleId}/email-receipt`, { method: "POST", body: JSON.stringify({ email }) }),
     // Offline Sync
     syncOfflineSales: (sales) => request("/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
+    // Payment Verification
+    verifyPayment: (data) => request("/payments/verify", { method: "POST", body: JSON.stringify(data) }),
+    getPaymentVerifications: (saleId) => request(`/payments/verify/${saleId}`),
+    // Admin Backup
+    downloadBackup: async () => {
+      const token = localStorage.getItem("rhosam_token");
+      const r = await fetch(`${API}/admin/backup`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.message || "Backup failed"); }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `rhosam-backup-${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
     uploadProductImage: async (productId, file) => {
       const formData = new FormData();
       formData.append("image", file);
       const r = await fetch(`${API}/products/${productId}/image`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("rhosam_token")}` },
         body: formData,
       });
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.message || "Upload failed"); }

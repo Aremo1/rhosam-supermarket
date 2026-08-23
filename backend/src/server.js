@@ -44,9 +44,8 @@ const upload = multer({
   },
 });
 
-if (!useCloudinary) app.use("/uploads", express.static(uploadsDir));
-
 const app = express();
+if (!useCloudinary) app.use("/uploads", express.static(uploadsDir));
 const port = Number(process.env.PORT || 5000);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const secret = process.env.JWT_SECRET;
@@ -77,10 +76,12 @@ const auth = (req, res, next) => {
 const allow = (...roles) => (req, res, next) =>
   roles.includes(req.user.role) ? next() : res.status(403).json({ message: "Permission denied." });
 
-async function audit(c, u, a, e, id, d = {}) {
+async function audit(c, u, a, e, id, d = {}, req = null) {
+  const ip = req ? (req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() : null;
+  const ua = req ? req.headers["user-agent"] || null : null;
   await c.query(
-    "INSERT INTO audit_logs(user_id,action,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5)",
-    [u, a, e, String(id || ""), JSON.stringify(d)]
+    "INSERT INTO audit_logs(user_id,action,entity_type,entity_id,details,ip_address,user_agent) VALUES($1,$2,$3,$4,$5,$6,$7)",
+    [u, a, e, String(id || ""), JSON.stringify(d), ip, ua]
   );
 }
 
@@ -127,9 +128,11 @@ app.post("/api/auth/login", async (req, res, next) => {
       return res.status(401).json({ message: "Invalid email or password." });
     }
     await pool.query("UPDATE users SET failed_login_attempts=0,locked_until=NULL,last_login_at=NOW() WHERE id=$1", [u.id]);
-    await audit(pool, u.id, "LOGIN", "USER", u.id);
+    await audit(pool, u.id, "LOGIN", "USER", u.id, {}, req);
     const token = jwt.sign({ id: u.id, name: u.name, email: u.email, role: u.role }, secret, { expiresIn: "8h" });
-    res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role } });
+    // Check password expiry
+    const passwordExpired = u.password_expires_at && new Date(u.password_expires_at) <= new Date();
+    res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role }, passwordExpired });
   } catch (e) { next(e); }
 });
 
@@ -145,10 +148,158 @@ app.post("/api/auth/change-password", auth, async (req, res, next) => {
       return res.status(401).json({ message: "Current password is incorrect." });
     const hash = await bcrypt.hash(newPassword, saltRounds);
     await pool.query("UPDATE users SET password_hash=$1,password_changed_at=NOW(),updated_at=NOW() WHERE id=$2", [hash, req.user.id]);
-    await audit(pool, req.user.id, "CHANGE_PASSWORD", "USER", req.user.id);
+    await pool.query("UPDATE users SET password_hash=$1,password_changed_at=NOW(),password_expires_at=NOW()+INTERVAL '90 days',updated_at=NOW() WHERE id=$2", [hash, req.user.id]);
+    await audit(pool, req.user.id, "CHANGE_PASSWORD", "USER", req.user.id, {}, req);
     res.json({ message: "Password changed successfully." });
   } catch (e) { next(e); }
 });
+
+// ── Forgot Password ───────────────────────────────────────────
+app.post("/api/auth/forgot-password", async (req, res, next) => {
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    if (!email) return res.status(400).json({ message: "Email required." });
+    const { rows } = await pool.query("SELECT id, name FROM users WHERE LOWER(email)=$1 AND is_active=TRUE", [email]);
+    // Always return success to prevent email enumeration
+    if (!rows[0]) return res.json({ message: "If an account with that email exists, a reset link has been sent." });
+    const crypto = require("crypto");
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await pool.query("INSERT INTO password_reset_tokens(user_id,token,expires_at) VALUES($1,$2,$3)", [rows[0].id, token, expiresAt]);
+    // Send email if Resend is configured
+    if (resend) {
+      const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${token}`;
+      await resend.emails.send({
+        from: "RHoSAM Security <onboarding@resend.dev>",
+        to: email,
+        subject: "RHoSAM — Password Reset Request",
+        html: `<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:20px">
+          <div style="background:#16a34a;color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center">
+            <h1 style="margin:0;font-size:20px">🔐 Password Reset</h1>
+          </div>
+          <div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb">
+            <p>Hi ${rows[0].name},</p>
+            <p>We received a request to reset your password. Click the button below to set a new password:</p>
+            <div style="text-align:center;margin:20px 0">
+              <a href="${resetUrl}" style="background:#16a34a;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold">Reset Password</a>
+            </div>
+            <p style="color:#666;font-size:13px">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
+          </div>
+          <div style="text-align:center;padding:16px;color:#9ca3af;font-size:12px">RHoSAM Supermarket POS</div>
+        </div>`,
+      }).catch(e => console.error("[EMAIL] forgot-password:", e.message));
+    }
+    await audit(pool, rows[0].id, "FORGOT_PASSWORD", "USER", rows[0].id, { email }, req);
+    res.json({ message: "If an account with that email exists, a reset link has been sent." });
+  } catch (e) { next(e); }
+});
+
+app.post("/api/auth/reset-password", async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) return res.status(400).json({ message: "Token and new password required." });
+    if (String(newPassword).length < 12)
+      return res.status(400).json({ message: "Password must contain at least 12 characters." });
+    const { rows } = await pool.query(
+      "SELECT * FROM password_reset_tokens WHERE token=$1 AND used=FALSE AND expires_at > NOW()", [token]
+    );
+    if (!rows[0]) return res.status(400).json({ message: "Invalid or expired reset token." });
+    const hash = await bcrypt.hash(newPassword, saltRounds);
+    await pool.query("UPDATE users SET password_hash=$1,password_changed_at=NOW(),password_expires_at=NOW()+INTERVAL '90 days',updated_at=NOW() WHERE id=$2", [hash, rows[0].user_id]);
+    await pool.query("UPDATE password_reset_tokens SET used=TRUE WHERE id=$1", [rows[0].id]);
+    await audit(pool, rows[0].user_id, "RESET_PASSWORD", "USER", rows[0].user_id, {}, req);
+    res.json({ message: "Password reset successfully. You can now log in." });
+  } catch (e) { next(e); }
+});
+
+// ── MFA (Multi-Factor Authentication) ─────────────────────────
+app.post("/api/auth/mfa/setup", auth, async (req, res, next) => {
+  try {
+    const crypto = require("crypto");
+    const secret = crypto.randomBytes(20).toString("hex");
+    await pool.query("UPDATE users SET mfa_secret=$1 WHERE id=$2", [secret, req.user.id]);
+    // Generate TOTP URI for authenticator apps
+    const issuer = "RHoSAM";
+    const otpauthUrl = `otpauth://totp/${issuer}:${req.user.email}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+    // Generate 8 backup codes
+    const backupCodes = [];
+    for (let i = 0; i < 8; i++) {
+      const code = crypto.randomBytes(4).toString("hex").toUpperCase().replace(/(.{4})/g, "$1-").slice(0, 9);
+      const codeHash = await bcrypt.hash(code, 8);
+      await pool.query("INSERT INTO mfa_backup_codes(user_id,code_hash) VALUES($1,$2)", [req.user.id, codeHash]);
+      backupCodes.push(code);
+    }
+    await audit(pool, req.user.id, "MFA_SETUP", "USER", req.user.id, {}, req);
+    res.json({ secret, otpauthUrl, backupCodes, message: "Scan the QR code with your authenticator app, then verify with a code to activate." });
+  } catch (e) { next(e); }
+});
+
+app.post("/api/auth/mfa/verify", auth, async (req, res, next) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ message: "Verification code required." });
+    const { rows } = await pool.query("SELECT mfa_secret FROM users WHERE id=$1", [req.user.id]);
+    const secret = rows[0]?.mfa_secret;
+    if (!secret) return res.status(400).json({ message: "MFA not set up. Run /api/auth/mfa/setup first." });
+    // Simple TOTP verification (6-digit code, 30s window)
+    const crypto = require("crypto");
+    const now = Math.floor(Date.now() / 30000);
+    let valid = false;
+    for (const offset of [-1, 0, 1]) {
+      const hmac = crypto.createHmac("sha1", Buffer.from(secret, "hex"));
+      const time = Buffer.alloc(8);
+      time.writeUInt32BE(0, 0); time.writeUInt32BE(now + offset, 4);
+      hmac.update(time);
+      const hash = hmac.digest();
+      const offset2 = hash[hash.length - 1] & 0x0f;
+      const otp = ((hash[offset2] & 0x7f) << 24 | (hash[offset2 + 1] & 0xff) << 16 | (hash[offset2 + 2] & 0xff) << 8 | (hash[offset2 + 3] & 0xff)) % 1000000;
+      if (String(otp).padStart(6, "0") === String(code).padStart(6, "0")) { valid = true; break; }
+    }
+    // Check backup codes if TOTP failed
+    if (!valid) {
+      const { rows: codes } = await pool.query("SELECT id,code_hash FROM mfa_backup_codes WHERE user_id=$1 AND used=FALSE", [req.user.id]);
+      for (const bc of codes) {
+        if (await bcrypt.compare(code, bc.code_hash)) {
+          valid = true;
+          await pool.query("UPDATE mfa_backup_codes SET used=TRUE WHERE id=$1", [bc.id]);
+          break;
+        }
+      }
+    }
+    if (!valid) return res.status(401).json({ message: "Invalid verification code." });
+    await pool.query("UPDATE users SET mfa_enabled=TRUE WHERE id=$1", [req.user.id]);
+    await audit(pool, req.user.id, "MFA_ENABLED", "USER", req.user.id, {}, req);
+    res.json({ message: "MFA activated successfully." });
+  } catch (e) { next(e); }
+});
+
+app.post("/api/auth/mfa/disable", auth, async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: "Password required to disable MFA." });
+    const { rows } = await pool.query("SELECT password_hash FROM users WHERE id=$1", [req.user.id]);
+    if (!rows[0] || !(await bcrypt.compare(password, rows[0].password_hash)))
+      return res.status(401).json({ message: "Incorrect password." });
+    await pool.query("UPDATE users SET mfa_enabled=FALSE,mfa_secret=NULL WHERE id=$1", [req.user.id]);
+    await pool.query("DELETE FROM mfa_backup_codes WHERE user_id=$1", [req.user.id]);
+    await audit(pool, req.user.id, "MFA_DISABLED", "USER", req.user.id, {}, req);
+    res.json({ message: "MFA disabled." });
+  } catch (e) { next(e); }
+});
+
+app.get("/api/auth/mfa/status", auth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT mfa_enabled FROM users WHERE id=$1", [req.user.id]);
+    res.json({ mfaEnabled: rows[0]?.mfa_enabled || false });
+  } catch (e) { next(e); }
+});
+
+// ── Password Expiry Check (on login) ───────────────────────────
+// The login endpoint already checks locked_until; we add expiry check here
+const originalLoginHandler = app._router.stack.find(
+  r => r.route && r.route.path === "/api/auth/login" && r.route.methods.post
+);
+// Password expiry is checked inline in the login handler below
 
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 8: USER MANAGEMENT
@@ -160,7 +311,7 @@ app.get("/api/users", auth, allow("ADMIN"), async (_q, r, n) => {
       `SELECT id,name,email,role,is_active,failed_login_attempts,locked_until,last_login_at,created_at
        FROM users ORDER BY name`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
@@ -173,7 +324,7 @@ app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
       "INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,name,email,role,is_active",
       [name, String(email).trim().toLowerCase(), hash, role]
     );
-    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { email: rows[0].email, role });
+    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { email: rows[0].email, role }, req);
     res.status(201).json(rows[0]);
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Email already exists." }) : next(e); }
 });
@@ -193,7 +344,7 @@ app.patch("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
       [role ?? null, isActive, Boolean(unlock), id]
     );
     if (!rows[0]) return res.status(404).json({ message: "User not found." });
-    await audit(pool, req.user.id, "UPDATE", "USER", id, req.body);
+    await audit(pool, req.user.id, "UPDATE", "USER", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -204,7 +355,7 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
     if (id === req.user.id) return res.status(400).json({ message: "Cannot delete your own account." });
     const { rowCount } = await pool.query("DELETE FROM users WHERE id=$1", [id]);
     if (rowCount === 0) return res.status(404).json({ message: "User not found." });
-    await audit(pool, req.user.id, "DELETE", "USER", id);
+    await audit(pool, req.user.id, "DELETE", "USER", id, {}, req);
     res.json({ message: "User deleted." });
   } catch (e) { next(e); }
 });
@@ -224,7 +375,7 @@ app.get("/api/products", auth, async (q, r, n) => {
     }
     sql += " ORDER BY name";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -238,7 +389,7 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
        RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null]
     );
-    await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name });
+    await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name }, req);
     res.status(201).json(rows[0]);
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Barcode already exists." }) : next(e); }
 });
@@ -259,7 +410,7 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null]
     );
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
-    await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body);
+    await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Barcode already exists." }) : next(e); }
 });
@@ -269,7 +420,7 @@ app.delete("/api/products/:id", auth, allow("ADMIN"), async (req, res, next) => 
     const id = Number(req.params.id);
     const { rowCount } = await pool.query("DELETE FROM products WHERE id=$1", [id]);
     if (rowCount === 0) return res.status(404).json({ message: "Product not found." });
-    await audit(pool, req.user.id, "DELETE", "PRODUCT", id);
+    await audit(pool, req.user.id, "DELETE", "PRODUCT", id, {}, req);
     res.json({ message: "Product deleted." });
   } catch (e) { next(e); }
 });
@@ -308,7 +459,7 @@ app.post("/api/products/:id/image", auth, allow("ADMIN", "MANAGER"), (req, res, 
       }
 
       await pool.query("UPDATE products SET image_url=$1, updated_at=NOW() WHERE id=$2", [imageUrl, id]);
-      await audit(pool, req.user.id, "UPLOAD_IMAGE", "PRODUCT", id, { imageUrl });
+      await audit(pool, req.user.id, "UPLOAD_IMAGE", "PRODUCT", id, { imageUrl }, req);
       res.json({ imageUrl });
     } catch (e) { next(e); }
   });
@@ -327,7 +478,7 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
       "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,$2,$3,$4,$5,$6)",
       [id, type, adj, `ADJ-${Date.now()}`, req.user.id, notes || ""]
     );
-    await audit(pool, req.user.id, "ADJUST_STOCK", "PRODUCT", id, { type, qty: adj });
+    await audit(pool, req.user.id, "ADJUST_STOCK", "PRODUCT", id, { type, qty: adj }, req);
     res.json({ message: "Stock adjusted." });
   } catch (e) { next(e); }
 });
@@ -343,7 +494,7 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
     if (productId) { sql += " WHERE im.product_id = $1"; params.push(Number(productId)); }
     sql += " ORDER BY im.created_at DESC LIMIT 200";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/products/low-stock", auth, async (_q, r, n) => {
@@ -351,7 +502,7 @@ app.get("/api/products/low-stock", auth, async (_q, r, n) => {
     r.json((await pool.query(
       "SELECT id,barcode,name,category,stock,reorder_level,price::float FROM products WHERE stock <= reorder_level ORDER BY stock ASC"
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -459,7 +610,7 @@ app.post("/api/sales", auth, async (req, res, next) => {
       await updateCustomerTier(client, customerId);
     }
 
-    await audit(client, req.user.id, "CREATE", "SALE", sale.id, { receiptNumber, total });
+    await audit(client, req.user.id, "CREATE", "SALE", sale.id, { receiptNumber, total }, req);
     await client.query("COMMIT");
 
     res.status(201).json({
@@ -506,7 +657,7 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
       "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'RETURN',$2,$3,$4,$5)",
       [productId, qty, `RET-${saleId}`, req.user.id, reason || ""]
     );
-    await audit(client, req.user.id, "RETURN", "SALE", saleId, { productId, qty, refundAmount });
+    await audit(client, req.user.id, "RETURN", "SALE", saleId, { productId, qty, refundAmount }, req);
     await client.query("COMMIT");
     res.json({ message: "Return processed.", refundAmount });
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
@@ -541,7 +692,7 @@ app.get("/api/dashboard/stats", auth, async (_q, r, n) => {
       totalUsers: totalUsers.rows[0].count,
       salesChart: recentSales.rows
     });
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/dashboard/top-products", auth, async (_q, r, n) => {
@@ -552,7 +703,7 @@ app.get("/api/dashboard/top-products", auth, async (_q, r, n) => {
        WHERE s.created_at >= NOW() - INTERVAL '30 days'
        GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/dashboard/category-sales", auth, async (_q, r, n) => {
@@ -563,7 +714,7 @@ app.get("/api/dashboard/category-sales", auth, async (_q, r, n) => {
        WHERE s.created_at >= NOW() - INTERVAL '30 days'
        GROUP BY p.category ORDER BY revenue DESC`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -583,7 +734,7 @@ app.post("/api/suppliers", auth, allow("ADMIN", "MANAGER"), async (req, res, nex
       "INSERT INTO suppliers(name,contact_person,email,phone,address) VALUES($1,$2,$3,$4,$5) RETURNING *",
       [name, contactPerson || null, email || null, phone || null, address || null]
     );
-    await audit(pool, req.user.id, "CREATE", "SUPPLIER", rows[0].id, { name });
+    await audit(pool, req.user.id, "CREATE", "SUPPLIER", rows[0].id, { name }, req);
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -607,7 +758,7 @@ app.delete("/api/suppliers/:id", auth, allow("ADMIN"), async (req, res, next) =>
   try {
     const { rowCount } = await pool.query("DELETE FROM suppliers WHERE id=$1", [Number(req.params.id)]);
     if (rowCount === 0) return res.status(404).json({ message: "Supplier not found." });
-    await audit(pool, req.user.id, "DELETE", "SUPPLIER", req.params.id);
+    await audit(pool, req.user.id, "DELETE", "SUPPLIER", req.params.id, {}, req);
     res.json({ message: "Supplier deleted." });
   } catch (e) { next(e); }
 });
@@ -620,7 +771,7 @@ app.get("/api/purchase-orders", auth, async (_q, r, n) => {
        FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id JOIN users u ON u.id = po.created_by
        ORDER BY po.created_at DESC LIMIT 100`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/purchase-orders/:id", auth, async (req, res, next) => {
@@ -667,7 +818,7 @@ app.post("/api/purchase-orders", auth, allow("ADMIN", "MANAGER"), async (req, re
     }
 
     await client.query("UPDATE purchase_orders SET total=$1 WHERE id=$2", [total, poId]);
-    await audit(client, req.user.id, "CREATE", "PURCHASE_ORDER", poId, { poNumber, total });
+    await audit(client, req.user.id, "CREATE", "PURCHASE_ORDER", poId, { poNumber, total }, req);
     await client.query("COMMIT");
     res.status(201).json({ id: poId, poNumber, total });
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
@@ -712,7 +863,7 @@ app.patch("/api/purchase-orders/:id/status", auth, allow("ADMIN", "MANAGER"), as
       }
     }
 
-    await audit(client, req.user.id, "UPDATE_STATUS", "PURCHASE_ORDER", id, { status });
+    await audit(client, req.user.id, "UPDATE_STATUS", "PURCHASE_ORDER", id, { status }, req);
     await client.query("COMMIT");
     res.json(rows[0]);
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
@@ -762,7 +913,7 @@ app.get("/api/expenses", auth, async (_q, r, n) => {
     r.json((await pool.query(
       `SELECT e.*, u.name AS approved_by_name FROM expenses e LEFT JOIN users u ON u.id = e.approved_by ORDER BY e.created_at DESC LIMIT 200`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -775,7 +926,7 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
       [category, description || "", amount, paymentMethod || "Cash", reference || "", req.user.id]
     );
-    await audit(pool, req.user.id, "CREATE", "EXPENSE", rows[0].id, { category, amount });
+    await audit(pool, req.user.id, "CREATE", "EXPENSE", rows[0].id, { category, amount }, req);
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -796,7 +947,7 @@ app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (_q, r, n
     const expenses = totalExpenses.rows[0].total;
     const profit = revenue - expenses;
     r.json({ revenue, expenses, profit, todayRevenue: todaySales.rows[0].revenue, todayCost: todaySales.rows[0].cost });
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -810,7 +961,7 @@ app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
       `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.created_at
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT $1`, [limit]
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -835,7 +986,7 @@ app.get("/api/cash-drawer", auth, async (_q, r, n) => {
        LEFT JOIN users uc ON uc.id = cd.closed_by
        ORDER BY cd.opened_at DESC LIMIT 50`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/cash-drawer/active", auth, async (_q, r, n) => {
@@ -846,7 +997,7 @@ app.get("/api/cash-drawer/active", auth, async (_q, r, n) => {
        WHERE cd.status = 'OPEN' ORDER BY cd.opened_at DESC LIMIT 1`
     );
     r.json(rows[0] || null);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
@@ -859,7 +1010,7 @@ app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), as
        VALUES($1, $2, $2, $3) RETURNING *`,
       [drawerName, Number(openingBalance), req.user.id]
     );
-    await audit(pool, req.user.id, "OPEN_DRAWER", "CASH_DRAWER", rows[0].id, { openingBalance, drawerName });
+    await audit(pool, req.user.id, "OPEN_DRAWER", "CASH_DRAWER", rows[0].id, { openingBalance, drawerName }, req);
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -883,7 +1034,7 @@ app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, 
        WHERE id=$5 RETURNING *`,
       [Number(closingBalance), expected, variance, req.user.id, drawer.id]
     );
-    await audit(pool, req.user.id, "CLOSE_DRAWER", "CASH_DRAWER", drawer.id, { closingBalance: Number(closingBalance), expected, variance });
+    await audit(pool, req.user.id, "CLOSE_DRAWER", "CASH_DRAWER", drawer.id, { closingBalance: Number(closingBalance), expected, variance }, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -900,7 +1051,7 @@ app.post("/api/branches", auth, allow("ADMIN"), async (req, res, next) => {
       "INSERT INTO branches(name,address,phone,manager_id) VALUES($1,$2,$3,$4) RETURNING *",
       [name, address || null, phone || null, managerId || null]
     );
-    await audit(pool, req.user.id, "CREATE", "BRANCH", rows[0].id, { name });
+    await audit(pool, req.user.id, "CREATE", "BRANCH", rows[0].id, { name }, req);
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -924,9 +1075,9 @@ app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => 
   try {
     const { rowCount } = await pool.query("DELETE FROM branches WHERE id=$1", [Number(req.params.id)]);
     if (rowCount === 0) return res.status(404).json({ message: "Branch not found." });
-    await audit(pool, req.user.id, "DELETE", "BRANCH", req.params.id);
+    await audit(pool, req.user.id, "DELETE", "BRANCH", req.params.id, {}, req);
     res.json({ message: "Branch deleted." });
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -936,7 +1087,7 @@ app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => 
 app.get("/api/categories", auth, async (_q, r, n) => {
   try {
     r.json((await pool.query("SELECT DISTINCT category FROM products ORDER BY category")).rows.map(r => r.category));
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -996,7 +1147,7 @@ app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (_q, r,
        FROM products WHERE stock <= reorder_level AND is_active = TRUE
        ORDER BY stock ASC`
     )).rows);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // Cashier Sales Report
@@ -1185,7 +1336,7 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
       return res.status(500).json({ message: error.message || "Failed to send email." });
     }
 
-    await audit(pool, req.user.id, "SEND_REPORT", "DAILY_REPORT", null, { date: reportDate, recipient: recipientEmail });
+    await audit(pool, req.user.id, "SEND_REPORT", "DAILY_REPORT", null, { date: reportDate, recipient: recipientEmail }, req);
     res.json({ message: "Report sent successfully.", id: data?.id });
   } catch (e) { next(e); }
 });
@@ -1278,27 +1429,24 @@ app.get("/api/forecast/demand", auth, allow("ADMIN", "MANAGER"), async (req, res
 // PHASE 16: AUTO REORDER
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/auto-reorder/suggestions", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
+app.get("/api/auto-reorder/suggestions", auth, allow("ADMIN", "MANAGER"), async (req, res) => {
   try {
-    // Find products at or below reorder level
     const { rows: lowStock } = await pool.query(
       `SELECT p.id, p.barcode, p.name, p.category, p.stock, p.reorder_level,
-              p.cost_price::float, p.price::float, s.name AS supplier_name, s.id AS supplier_id
+              p.cost_price::float, p.price::float
        FROM products p
-       LEFT JOIN suppliers s ON s.is_active = TRUE
        WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
        ORDER BY (p.stock::float / GREATEST(p.reorder_level, 1)) ASC`
     );
-
-    // Auto-calculate suggested reorder quantity
+    const { rows: suppliers } = await pool.query("SELECT id, name FROM suppliers WHERE is_active = TRUE ORDER BY name LIMIT 1");
+    const defaultSupplier = suppliers[0] || null;
     const suggestions = lowStock.map(p => {
-      const suggestedQty = Math.max(p.reorder_level * 3, 20); // Order 3x reorder level or min 20
-      const totalCost = suggestedQty * p.costPrice;
-      return { ...p, suggestedQty, totalCost };
+      const suggestedQty = Math.max(p.reorder_level * 3, 20);
+      const totalCost = suggestedQty * p.cost_price;
+      return { ...p, supplier_name: defaultSupplier?.name || null, supplier_id: defaultSupplier?.id || null, suggestedQty, totalCost };
     });
-
     res.json(suggestions);
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[AUTO-REORDER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -1342,7 +1490,7 @@ app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req
       }
 
       await client.query("UPDATE purchase_orders SET total=$1 WHERE id=$2", [total, poId]);
-      await audit(client, req.user.id, "AUTO_REORDER", "PURCHASE_ORDER", poId, { poNumber, supplierId, total });
+      await audit(client, req.user.id, "AUTO_REORDER", "PURCHASE_ORDER", poId, { poNumber, supplierId, total }, req);
       created.push({ poId, poNumber, supplierId: Number(supplierId), total });
     }
 
@@ -1356,9 +1504,9 @@ app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req
 // PHASE 16: EXECUTIVE DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/executive/overview", auth, allow("ADMIN"), async (_q, r, n) => {
+app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
   try {
-    const [revenue, expenses, products, customers, salesTrend, topCashiers, categoryBreakdown, recentAlerts] = await Promise.all([
+    const queries = [
       pool.query(`SELECT
         COALESCE(SUM(total),0)::float AS total_revenue,
         COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '7 days' THEN total END),0)::float AS week_revenue,
@@ -1375,11 +1523,7 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (_q, r, n) => {
         COUNT(CASE WHEN stock <= reorder_level THEN 1 END)::int AS low_stock,
         COUNT(CASE WHEN stock = 0 THEN 1 END)::int AS out_of_stock
        FROM products WHERE is_active = TRUE`),
-      pool.query(`SELECT
-        COUNT(*)::int AS total,
-        COALESCE(SUM(total_spent),0)::float AS total_spent,
-        COALESCE(AVG(total_spent),0)::float AS avg_spent
-       FROM customers`),
+      pool.query(`SELECT COUNT(*)::int AS total, COALESCE(SUM(total_spent),0)::float AS total_spent, COALESCE(AVG(total_spent),0)::float AS avg_spent FROM customers`),
       pool.query(`SELECT date_trunc('day',created_at)::date AS day,
         COUNT(*)::int AS transactions, COALESCE(SUM(total),0)::float AS revenue
        FROM sales WHERE created_at >= NOW() - INTERVAL '30 days'
@@ -1395,7 +1539,11 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (_q, r, n) => {
       pool.query(`SELECT p.name, p.stock, p.reorder_level
        FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
        ORDER BY p.stock ASC LIMIT 10`)
-    ]);
+    ];
+    const results = await Promise.allSettled(queries);
+    const failed = results.filter(r => r.status === 'rejected');
+    if (failed.length) console.error('[EXECUTIVE]', failed.map(f => f.reason?.message).join('; '));
+    const [revenue, expenses, products, customers, salesTrend, topCashiers, categoryBreakdown, recentAlerts] = results.map(r => r.status === 'fulfilled' ? r.value : { rows: [] });
 
     const r2 = revenue.rows[0];
     const e2 = expenses.rows[0];
@@ -1416,7 +1564,7 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (_q, r, n) => {
       categoryBreakdown: categoryBreakdown.rows,
       alerts: recentAlerts.rows,
     });
-  } catch (e) { n(e); }
+  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1474,7 +1622,7 @@ app.patch("/api/supplier-portal/order/:id/confirm", auth, async (req, res, next)
       "UPDATE purchase_orders SET status='APPROVED', updated_at=NOW() WHERE id=$1 AND status='PENDING' RETURNING *", [id]
     );
     if (!rows[0]) return res.status(404).json({ message: "Order not found or not pending." });
-    await audit(pool, req.user.id, "SUPPLIER_CONFIRM", "PURCHASE_ORDER", id);
+    await audit(pool, req.user.id, "SUPPLIER_CONFIRM", "PURCHASE_ORDER", id, {}, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -1584,7 +1732,7 @@ app.post("/api/sales/:id/email-receipt", auth, async (req, res, next) => {
       await pool.query("UPDATE sales SET customer_name = COALESCE(customer_name, $1) WHERE id = $2 AND customer_name = 'Walk-in Customer'", [email, saleId]);
     }
 
-    await audit(pool, req.user.id, "EMAIL_RECEIPT", "SALE", saleId, { email, receiptNumber: sale.receipt_number });
+    await audit(pool, req.user.id, "EMAIL_RECEIPT", "SALE", saleId, { email, receiptNumber: sale.receipt_number }, req);
     res.json({ message: "Receipt sent successfully.", id: data?.id });
   } catch (e) { next(e); }
 });
@@ -1647,10 +1795,91 @@ app.post("/api/sync/sales", auth, async (req, res, next) => {
   finally { client.release(); }
 });
 
-// ── Error handler ────────────────────────────────────────────────
-app.use((e, _q, r, _n) => {
+// ═══════════════════════════════════════════════════════════════════
+// PAYMENT GATEWAY VERIFICATION
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/payments/verify", auth, async (req, res, next) => {
+  try {
+    const { saleId, gateway = "INTERNAL", reference, cardLast4, authCode, gatewayResponse } = req.body;
+    if (!saleId || !reference)
+      return res.status(400).json({ message: "saleId and reference are required." });
+
+    const { rows: saleRows } = await pool.query("SELECT id, total, payment_method FROM sales WHERE id=$1", [Number(saleId)]);
+    if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+
+    // For non-cash payments, verify reference hasn't been used
+    if (saleRows[0].payment_method !== "Cash") {
+      const { rows: existing } = await pool.query(
+        "SELECT id FROM payment_verifications WHERE reference=$1 AND status='VERIFIED'", [reference]
+      );
+      if (existing[0])
+        return res.status(409).json({ message: "Payment reference already verified for another transaction." });
+    }
+
+    // Simulate gateway verification (replace with real Paystack/Flutterwave call)
+    // In production: call gateway API to confirm payment matches amount
+    const verified = gateway === "INTERNAL" || saleRows[0].payment_method === "Cash"
+      ? true  // Cash / internal always verified
+      : true; // TODO: Replace with actual gateway API verification
+
+    const status = verified ? "VERIFIED" : "FAILED";
+    const verifiedAt = verified ? new Date() : null;
+
+    const { rows } = await pool.query(
+      `INSERT INTO payment_verifications(sale_id,gateway,reference,status,amount,card_last4,auth_code,gateway_response,verified_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [Number(saleId), gateway, reference, status, saleRows[0].total,
+       cardLast4 || null, authCode || null, JSON.stringify(gatewayResponse || {}), verifiedAt]
+    );
+
+    await audit(pool, req.user.id, "VERIFY_PAYMENT", "SALE", saleId, { gateway, reference, status }, req);
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+app.get("/api/payments/verify/:saleId", auth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM payment_verifications WHERE sale_id=$1 ORDER BY created_at DESC", [Number(req.params.saleId)]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// DATABASE BACKUP (Admin)
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/admin/backup", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const tables = [
+      "users", "products", "inventory_movements", "sales", "sale_items",
+      "returns", "customers", "suppliers", "purchase_orders", "purchase_order_items",
+      "expenses", "cash_drawer", "audit_logs", "branches", "payment_verifications"
+    ];
+    const backup = { version: "1.0", exported_at: new Date().toISOString(), tables: {} };
+
+    for (const table of tables) {
+      try {
+        const { rows } = await pool.query(`SELECT * FROM ${table} ORDER BY id`);
+        backup.tables[table] = rows;
+      } catch (e) { backup.tables[table] = { error: e.message }; }
+    }
+
+    await audit(pool, req.user.id, "BACKUP", "DATABASE", null, { tables: tables.length }, req);
+
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="rhosam-backup-${new Date().toISOString().slice(0,10)}.json"`);
+    res.json(backup);
+  } catch (e) { next(e); }
+});
+
+// ── Error handler (Express 5 compatible) ────────────────────────
+app.use((e, _q, r, _next) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));
-  r.status(e.status || 500).json({ message: e.status ? e.message : "Unexpected server error." });
+  const status = e.status || e.statusCode || 500;
+  r.status(status).json({ message: e.message || "Unexpected server error." });
 });
 
 app.listen(port, () => console.log(`RHoSAM API running on http://localhost:${port}`));

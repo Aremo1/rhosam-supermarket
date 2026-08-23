@@ -15,9 +15,35 @@ CREATE TABLE IF NOT EXISTS users (
   locked_until TIMESTAMPTZ,
   password_changed_at TIMESTAMPTZ,
   last_login_at TIMESTAMPTZ,
+  password_expires_at TIMESTAMPTZ,
+  mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  mfa_secret VARCHAR(255),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ── Password Reset Tokens ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token);
+
+-- ── MFA Backup Codes ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mfa_backup_codes (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash VARCHAR(255) NOT NULL,
+  used BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mfa_backup_codes_user ON mfa_backup_codes(user_id);
 
 -- ── Phase 3: Products & Inventory ────────────────────────────────
 CREATE TABLE IF NOT EXISTS products (
@@ -190,6 +216,21 @@ CREATE TABLE IF NOT EXISTS branches (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── Payment Gateway Verification ────────────────────────────────
+CREATE TABLE IF NOT EXISTS payment_verifications (
+  id SERIAL PRIMARY KEY,
+  sale_id BIGINT NOT NULL REFERENCES sales(id),
+  gateway VARCHAR(30) NOT NULL DEFAULT 'INTERNAL',  -- PAYSTACK, FLUTTERWAVE, INTERNAL
+  reference VARCHAR(100) NOT NULL,                   -- Gateway transaction reference
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',     -- PENDING, VERIFIED, FAILED
+  amount NUMERIC(14,2) NOT NULL,
+  card_last4 VARCHAR(4),
+  auth_code VARCHAR(50),
+  gateway_response JSONB DEFAULT '{}',               -- Raw gateway response
+  verified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── Indexes ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
@@ -203,3 +244,5 @@ CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(suppl
 CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cash_drawer_status ON cash_drawer(status);
 CREATE INDEX IF NOT EXISTS idx_branches_name ON branches(name);
+CREATE INDEX IF NOT EXISTS idx_payment_verifications_sale ON payment_verifications(sale_id);
+CREATE INDEX IF NOT EXISTS idx_payment_verifications_ref ON payment_verifications(reference);
