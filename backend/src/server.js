@@ -460,13 +460,6 @@ app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Password Expiry Check (on login) ───────────────────────────
-// The login endpoint already checks locked_until; we add expiry check here
-const originalLoginHandler = app._router.stack.find(
-  r => r.route && r.route.path === "/api/auth/login" && r.route.methods.post
-);
-// Password expiry is checked inline in the login handler below
-
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 8: USER MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════
