@@ -1449,6 +1449,116 @@ app.patch("/api/supplier-portal/order/:id/confirm", auth, async (req, res, next)
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// PHASE 16: EMAIL RECEIPT
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/sales/:id/email-receipt", auth, async (req, res, next) => {
+  try {
+    if (!resend) return res.status(503).json({ message: "Email not configured. Add RESEND_API_KEY to .env" });
+
+    const saleId = Number(req.params.id);
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Customer email required." });
+
+    const { rows: saleRows } = await pool.query(
+      `SELECT s.*, u.name AS cashier_name FROM sales s JOIN users u ON u.id = s.cashier_id WHERE s.id=$1`, [saleId]
+    );
+    if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+
+    const { rows: items } = await pool.query("SELECT * FROM sale_items WHERE sale_id=$1", [saleId]);
+    const sale = saleRows[0];
+
+    const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+    const dateStr = new Date(sale.created_at).toLocaleString("en-NG", { dateStyle: "medium", timeStyle: "short" });
+
+    // Build items HTML
+    const itemsHTML = items.map((item, i) =>
+      `<tr style="border-bottom:1px solid #e5e7eb">
+        <td style="padding:10px 8px">${item.product_name}</td>
+        <td style="padding:10px 8px;text-align:center">${item.quantity}</td>
+        <td style="padding:10px 8px;text-align:right">${fmt(item.unit_price)}</td>
+        <td style="padding:10px 8px;text-align:right;font-weight:600">${fmt(item.line_total)}</td>
+      </tr>`
+    ).join("");
+
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:20px">
+      <div style="background:#16a34a;color:white;padding:24px;border-radius:12px 12px 0 0;text-align:center">
+        <h1 style="margin:0;font-size:22px">🛍 RHoSAM Supermarket</h1>
+        <p style="margin:6px 0 0;opacity:0.9;font-size:14px">Your Receipt</p>
+      </div>
+
+      <div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb;border-radius:0 0 12px 12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:12px;font-size:14px;color:#374151">
+          <div>
+            <p style="margin:2px 0"><strong>Receipt:</strong> ${sale.receipt_number}</p>
+            <p style="margin:2px 0"><strong>Date:</strong> ${dateStr}</p>
+            <p style="margin:2px 0"><strong>Cashier:</strong> ${sale.cashier_name}</p>
+          </div>
+          <div style="text-align:right">
+            <p style="margin:2px 0"><strong>Payment:</strong> ${sale.payment_method}</p>
+            <p style="margin:2px 0"><strong>Customer:</strong> ${sale.customer_name || 'Walk-in'}</p>
+          </div>
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0">
+          <thead><tr style="background:#e5e7eb">
+            <th style="padding:10px 8px;text-align:left">Item</th>
+            <th style="padding:10px 8px;text-align:center">Qty</th>
+            <th style="padding:10px 8px;text-align:right">Price</th>
+            <th style="padding:10px 8px;text-align:right">Total</th>
+          </tr></thead>
+          <tbody>${itemsHTML}</tbody>
+        </table>
+
+        <div style="border-top:2px solid #374151;padding-top:12px;margin-top:12px">
+          <table style="width:100%;font-size:14px">
+            <tr><td style="padding:4px 0;color:#6b7280">Subtotal</td><td style="padding:4px 0;text-align:right">${fmt(sale.subtotal)}</td></tr>
+            ${Number(sale.discount) > 0 ? `<tr><td style="padding:4px 0;color:#b45309">Discount</td><td style="padding:4px 0;text-align:right;color:#b45309">-${fmt(sale.discount)}</td></tr>` : ''}
+            ${Number(sale.tax) > 0 ? `<tr><td style="padding:4px 0;color:#6b7280">Tax</td><td style="padding:4px 0;text-align:right">${fmt(sale.tax)}</td></tr>` : ''}
+            <tr style="border-top:2px solid #374151">
+              <td style="padding:10px 0;font-size:18px;font-weight:bold">TOTAL</td>
+              <td style="padding:10px 0;text-align:right;font-size:18px;font-weight:bold;color:#16a34a">${fmt(sale.total)}</td>
+            </tr>
+          </table>
+        </div>
+
+        ${Number(sale.amount_paid) > 0 ? `<div style="margin-top:8px;font-size:14px;color:#6b7280">
+          <p style="margin:2px 0">Paid: ${fmt(sale.amount_paid)}</p>
+          ${Number(sale.change_amount) > 0 ? `<p style="margin:2px 0"><strong>Change: ${fmt(sale.change_amount)}</strong></p>` : ''}
+        </div>` : ''}
+      </div>
+
+      <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">
+        <p style="margin:0 0 4px;color:#16a34a;font-weight:600;font-size:15px">Thank you for shopping with us!</p>
+        <p style="margin:0">We appreciate your business. Visit us again soon!</p>
+        <p style="margin:12px 0 0;font-size:11px">RHoSAM Supermarket POS • ${dateStr}</p>
+      </div>
+    </div>`;
+
+    const { data, error } = await resend.emails.send({
+      from: "RHoSAM Receipts <onboarding@resend.dev>",
+      to: email,
+      subject: `RHoSAM Receipt — ${sale.receipt_number} — ${fmt(sale.total)}`,
+      html,
+    });
+
+    if (error) {
+      console.error("[EMAIL RECEIPT ERROR]", error);
+      return res.status(500).json({ message: error.message || "Failed to send email." });
+    }
+
+    // Save customer email on the sale
+    if (email && !sale.customer_email) {
+      await pool.query("UPDATE sales SET customer_name = COALESCE(customer_name, $1) WHERE id = $2 AND customer_name = 'Walk-in Customer'", [email, saleId]);
+    }
+
+    await audit(pool, req.user.id, "EMAIL_RECEIPT", "SALE", saleId, { email, receiptNumber: sale.receipt_number });
+    res.json({ message: "Receipt sent successfully.", id: data?.id });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // PHASE 16: OFFLINE SYNC
 // ═══════════════════════════════════════════════════════════════════
 

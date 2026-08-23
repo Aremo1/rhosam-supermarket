@@ -232,7 +232,7 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt } = useAuth();
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
@@ -241,6 +241,9 @@ function POSPage() {
   const [payment, setPayment] = useState("Cash");
   const [discount, setDiscount] = useState(0);
   const [tax, setTax] = useState(0);
+  const [receiptEmail, setReceiptEmail] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailMsg, setEmailMsg] = useState("");
   const [amountPaid, setAmountPaid] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState("");
@@ -358,6 +361,17 @@ function POSPage() {
     finally { setBusy(false); }
   }
 
+  async function handleEmailReceipt(e) {
+    e.preventDefault();
+    if (!receiptEmail || !receipt?.id) return;
+    setEmailSending(true); setEmailMsg("");
+    try {
+      await emailReceipt(receipt.id, receiptEmail);
+      setEmailMsg("Receipt sent!");
+    } catch (err) { setEmailMsg(`Error: ${err.message}`); }
+    finally { setEmailSending(false); }
+  }
+
   if (receipt) {
     return (
       <div className="receipt-view">
@@ -382,10 +396,20 @@ function POSPage() {
           {receipt.amountPaid > 0 && <div className="receipt-line"><span>Paid</span><span>₦{Number(receipt.amountPaid).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
           {receipt.change_amount > 0 && <div className="receipt-line"><span>Change</span><span>₦{Number(receipt.change_amount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
           <p className="receipt-thanks">Thank you for shopping!</p>
+          <div className="receipt-email-form no-print">
+            <form onSubmit={handleEmailReceipt} style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <input type="email" value={receiptEmail} onChange={e => setReceiptEmail(e.target.value)}
+                placeholder="Customer email for receipt" style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }} required />
+              <button type="submit" className="btn primary" disabled={emailSending || !receiptEmail} style={{ padding: '8px 16px', fontSize: '0.85rem' }}>
+                {emailSending ? 'Sending...' : '📧 Email'}
+              </button>
+            </form>
+            {emailMsg && <p className={emailMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 6, fontSize: '0.8rem' }}>{emailMsg}</p>}
+          </div>
           <div className="receipt-actions no-print">
             <button onClick={() => generateReceiptPDF(receipt)}>📄 Download PDF</button>
             <button onClick={() => window.print()}>🖨️ Print</button>
-            <button onClick={() => setReceipt(null)}>🛒 New Sale</button>
+            <button onClick={() => { setReceipt(null); setReceiptEmail(""); setEmailMsg(""); }}>🛒 New Sale</button>
           </div>
         </div>
       </div>

@@ -124,6 +124,8 @@ export function AuthProvider({ children }) {
     fetchSupplierPortalOrders: (supplierId) => request(`/supplier-portal/orders/${supplierId}`),
     getSupplierPortalOrder: (id) => request(`/supplier-portal/order/${id}`),
     confirmSupplierOrder: (id) => request(`/supplier-portal/order/${id}/confirm`, { method: "PATCH" }),
+    // Email Receipt
+    emailReceipt: (saleId, email) => request(`/sales/${saleId}/email-receipt`, { method: "POST", body: JSON.stringify({ email }) }),
     // Offline Sync
     syncOfflineSales: (sales) => request("/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
     uploadProductImage: async (productId, file) => {
