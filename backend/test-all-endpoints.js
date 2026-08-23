@@ -46,12 +46,12 @@ await test("GET /api/health → 200", async () => {
   return status === 200 && data.status === "ok" ? true : `got ${status}`;
 });
 await test("POST /api/auth/login → 200 (valid credentials)", async () => {
-  const { status, data } = await req("POST", "/auth/login", { email: "admin@rhosam.com", password: "Admin@123456" });
+  const { status, data } = await req("POST", "/auth/login", { email: "rhosam.rhosam@gmail.com", password: "YourStrongPassword" });
   if (status === 200 && data.token) { TOKEN = data.token; return true; }
   return `got ${status}: ${JSON.stringify(data)}`;
 });
 await test("POST /api/auth/login → 401 (wrong password)", async () => {
-  const { status } = await req("POST", "/auth/login", { email: "admin@rhosam.com", password: "wrong" });
+  const { status } = await req("POST", "/auth/login", { email: "rhosam.rhosam@gmail.com", password: "wrong" });
   return status === 401 ? true : `got ${status}`;
 });
 await test("GET /api/auth/me → 200 (with token)", async () => {
@@ -61,14 +61,17 @@ await test("GET /api/auth/me → 200 (with token)", async () => {
 await test("GET /api/auth/me → 401 (no token)", async () => {
   const { status } = await req("GET", "/auth/me");
   return status === 401 ? true : `got ${status}`;
-});
-await test("POST /api/auth/change-password → 200", async () => {
-  const { status, data } = await req("POST", "/auth/change-password", { currentPassword: "Admin@123456", newPassword: "Admin@12345678" }, TOKEN);
+});  await test("POST /api/auth/change-password → 200", async () => {
+  const { status, data } = await req("POST", "/auth/change-password", { currentPassword: "YourStrongPassword", newPassword: "YourStrongPassword1" }, TOKEN);
   if (status === 200) {
-    await req("POST", "/auth/change-password", { currentPassword: "Admin@12345678", newPassword: "Admin@123456" }, TOKEN);
+    await req("POST", "/auth/change-password", { currentPassword: "YourStrongPassword1", newPassword: "YourStrongPassword" }, TOKEN);
     return true;
   }
   return `got ${status}: ${data.message}`;
+});
+await test("POST /api/auth/change-password → 401 (wrong current password)", async () => {
+  const { status } = await req("POST", "/auth/change-password", { currentPassword: "wrongpassword", newPassword: "NewPass@12345678" }, TOKEN);
+  return status === 401 ? true : `got ${status}`;
 });
 
 // ── PHASE 8: USER MANAGEMENT ───────────────────────────────────
@@ -301,6 +304,11 @@ await test("GET /api/cash-drawer/active → 200 (or null)", async () => {
   return status === 200 ? true : `got ${status}`;
 });
 await test("POST /api/cash-drawer/open → 201", async () => {
+  // Close any previously open drawer first (from prior test runs)
+  const active = await req("GET", "/cash-drawer/active", null, TOKEN);
+  if (active.data?.id) {
+    await req("POST", "/cash-drawer/close", { closingBalance: active.data.opening_balance }, TOKEN);
+  }
   const { status, data } = await req("POST", "/cash-drawer/open", { openingBalance: 10000, drawerName: "Test Drawer" }, TOKEN);
   if (status === 201 && data.id) { CREATED.drawerId = data.id; return true; }
   return `got ${status}: ${JSON.stringify(data)}`;
