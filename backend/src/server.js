@@ -909,6 +909,89 @@ app.get("/api/categories", auth, async (_q, r, n) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// PHASE 15: COMPREHENSIVE REPORTS
+// ═══════════════════════════════════════════════════════════════════
+
+// Monthly Sales Report
+app.get("/api/reports/monthly", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const result = await pool.query(
+      `SELECT EXTRACT(MONTH FROM created_at)::int AS month,
+              COUNT(*)::int AS transactions,
+              COALESCE(SUM(total),0)::float AS revenue,
+              COALESCE(SUM(discount),0)::float AS discounts,
+              COALESCE(SUM(tax),0)::float AS taxes
+       FROM sales WHERE EXTRACT(YEAR FROM created_at) = $1
+       GROUP BY 1 ORDER BY 1`, [year]
+    );
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const data = result.rows.map(r => ({ month: months[r.month - 1], ...r }));
+    res.json({ year, data });
+  } catch (e) { next(e); }
+});
+
+// Product Sales Report
+app.get("/api/reports/product-sales", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    let where = [];
+    let params = [];
+    let idx = 1;
+    if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
+    if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
+    const w = where.length ? "WHERE " + where.join(" AND ") : "";
+    const result = await pool.query(
+      `SELECT si.product_name AS name, p.category, SUM(si.quantity)::int AS qty,
+              SUM(si.line_total)::float AS revenue, p.stock AS current_stock
+       FROM sale_items si
+       JOIN products p ON p.id = si.product_id
+       JOIN sales s ON s.id = si.sale_id ${w}
+       GROUP BY si.product_name, p.category, p.stock
+       ORDER BY revenue DESC`, params
+    );
+    res.json(result.rows);
+  } catch (e) { next(e); }
+});
+
+// Low Stock Report
+app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
+  try {
+    r.json((await pool.query(
+      `SELECT id, barcode, name, category, stock, reorder_level, price::float, cost_price::float,
+              CASE WHEN stock = 0 THEN 'OUT OF STOCK'
+                   WHEN stock <= reorder_level THEN 'LOW'
+                   ELSE 'OK' END AS status
+       FROM products WHERE stock <= reorder_level AND is_active = TRUE
+       ORDER BY stock ASC`
+    )).rows);
+  } catch (e) { n(e); }
+});
+
+// Cashier Sales Report
+app.get("/api/reports/cashier-sales", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    let where = [];
+    let params = [];
+    let idx = 1;
+    if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
+    if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
+    const w = where.length ? "WHERE " + where.join(" AND ") : "";
+    const result = await pool.query(
+      `SELECT u.name AS cashier_name, u.email,
+              COUNT(s.id)::int AS transactions,
+              COALESCE(SUM(s.total),0)::float AS revenue,
+              COALESCE(AVG(s.total),0)::float AS avg_sale
+       FROM sales s JOIN users u ON u.id = s.cashier_id ${w}
+       GROUP BY u.id, u.name, u.email
+       ORDER BY revenue DESC`, params
+    );
+    res.json(result.rows);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // PHASE 15: DAILY REPORTS & EMAIL
 // ═══════════════════════════════════════════════════════════════════
 

@@ -107,6 +107,10 @@ export function AuthProvider({ children }) {
     closeDrawer: (data) => request("/cash-drawer/close", { method: "POST", body: JSON.stringify(data) }),
     fetchDailyReport: (date) => request(`/reports/daily${date ? `?date=${date}` : ""}`),
     emailDailyReport: (data) => request("/reports/daily/email", { method: "POST", body: JSON.stringify(data) }),
+    fetchMonthlyReport: (year) => request(`/reports/monthly?year=${year || new Date().getFullYear()}`),
+    fetchProductSales: (params) => request(`/reports/product-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
+    fetchLowStockReport: () => request("/reports/low-stock"),
+    fetchCashierSales: (params) => request(`/reports/cashier-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
     uploadProductImage: async (productId, file) => {
       const formData = new FormData();
       formData.append("image", file);

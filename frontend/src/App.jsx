@@ -15,7 +15,7 @@ const MENUS = {
 const LABELS = {
   dashboard: "Dashboard", pos: "Point of Sale", products: "Products", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
-  expenses: "Expenses", finance: "Finance", dailyreport: "Daily Report", users: "User Management", audit: "Audit Logs",
+  expenses: "Expenses", finance: "Finance",  dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
   cashdrawer: "Cash Drawer", branches: "Branches",
 };
 const ICONS = {
@@ -1187,27 +1187,44 @@ function FinancePage() {
 // ═══════════════════════════════════════════════════════════════════
 // DAILY REPORTS & EMAIL (Phase 15)
 // ═══════════════════════════════════════════════════════════════════
-function DailyReportPage() {
-  const { fetchDailyReport, emailDailyReport } = useAuth();
-  const [report, setReport] = useState(null);
+function ReportsPage() {
+  const { fetchDailyReport, emailDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales } = useAuth();
+  const [tab, setTab] = useState("daily");
   const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+  // Filters
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  // Email
   const [emailTo, setEmailTo] = useState("");
   const [sending, setSending] = useState(false);
   const [sendMsg, setSendMsg] = useState("");
 
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
   const load = useCallback(async () => {
     setLoading(true); setSendMsg("");
-    try { setReport(await fetchDailyReport(date)); }
-    catch { setReport(null); }
+    try {
+      let result;
+      switch (tab) {
+        case "daily": result = await fetchDailyReport(date); break;
+        case "monthly": result = await fetchMonthlyReport(year); break;
+        case "products": result = await fetchProductSales(dateFrom && dateTo ? { from: dateFrom, to: dateTo } : null); break;
+        case "lowstock": result = await fetchLowStockReport(); break;
+        case "cashiers": result = await fetchCashierSales(dateFrom && dateTo ? { from: dateFrom, to: dateTo } : null); break;
+      }
+      setData(result);
+    } catch { setData(null); }
     finally { setLoading(false); }
-  }, [fetchDailyReport, date]);
+  }, [tab, date, year, dateFrom, dateTo, fetchDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales]);
 
   useEffect(() => { load(); }, [load]);
 
   async function handleSendEmail(e) {
     e.preventDefault();
-    if (!emailTo) return;
+    if (!emailTo || tab !== "daily") return;
     setSending(true); setSendMsg("");
     try {
       await emailDailyReport({ date, recipientEmail: emailTo });
@@ -1216,68 +1233,162 @@ function DailyReportPage() {
     finally { setSending(false); }
   }
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
-
-  if (loading) return <p className="loading">Loading report...</p>;
-  if (!report) return <div className="error-msg">Failed to load report.</div>;
-
-  const { summary: s, itemsSold, topProducts } = report;
-
   return (
     <div className="page-panel">
+      {/* Tabs */}
+      <div className="tabs">
+        <button className={tab === "daily" ? "active" : ""} onClick={() => setTab("daily")}>Daily Sales</button>
+        <button className={tab === "monthly" ? "active" : ""} onClick={() => setTab("monthly")}>Monthly Sales</button>
+        <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>Product Sales</button>
+        <button className={tab === "lowstock" ? "active" : ""} onClick={() => setTab("lowstock")}>Low Stock</button>
+        <button className={tab === "cashiers" ? "active" : ""} onClick={() => setTab("cashiers")}>Cashier Sales</button>
+      </div>
+
+      {/* Filters */}
       <div className="panel-header">
         <div className="filters">
-          <label>Date
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} />
-          </label>
+          {(tab === "daily") && (
+            <label>Date <input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+          )}
+          {(tab === "monthly") && (
+            <label>Year <input type="number" min="2020" max="2099" value={year} onChange={e => setYear(Number(e.target.value))} style={{ width: 100 }} /></label>
+          )}
+          {(tab === "products" || tab === "cashiers") && (
+            <>
+              <label>From <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></label>
+              <label>To <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></label>
+            </>
+          )}
           <button className="btn primary" onClick={load}>Refresh</button>
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="summary-grid">
-        <div className="summary-card accent"><span>Transactions</span><strong>{s.totalTransactions}</strong></div>
-        <div className="summary-card"><span>Revenue</span><strong>{fmt(s.totalRevenue)}</strong></div>
-        <div className="summary-card"><span>Expenses</span><strong className="loss">{fmt(s.totalExpenses)}</strong></div>
-        <div className="summary-card"><span>Net Profit</span><strong className={s.netProfit >= 0 ? "profit" : "loss"}>{fmt(s.netProfit)}</strong></div>
-        <div className="summary-card"><span>Discounts</span><strong>{fmt(s.totalDiscount)}</strong></div>
-        <div className="summary-card"><span>Tax</span><strong>{fmt(s.totalTax)}</strong></div>
-      </div>
-
-      <div className="grid-2">
-        {/* Items Sold */}
-        <div className="panel">
-          <h2>Items Sold ({itemsSold.length})</h2>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Product</th><th>Qty</th><th>Revenue</th></tr></thead>
-              <tbody>{itemsSold.map((item, i) => (
-                <tr key={i}><td>{item.product_name}</td><td>{item.qty}</td><td>{fmt(item.revenue)}</td></tr>
-              ))}</tbody>
-            </table>
-            {!itemsSold.length && <p className="muted">No items sold on this date.</p>}
-          </div>
-        </div>
-
-        {/* Email Report */}
-        <div className="panel">
-          <h2>Email Daily Report</h2>
-          <p className="muted" style={{ marginBottom: 12 }}>Send a formatted summary of this day's sales to any email address.</p>
-          <form onSubmit={handleSendEmail} className="form-grid">
-            <label>Recipient Email
-              <input type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="manager@example.com" required />
-            </label>
-            <button type="submit" className="btn primary" disabled={sending || !emailTo}>
-              {sending ? "Sending..." : "Send Report"}
-            </button>
-          </form>
-          {sendMsg && (
-            <p className={sendMsg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginTop: 8 }}>
-              {sendMsg}
-            </p>
+      {loading ? <p className="loading">Loading report...</p> : !data ? <div className="error-msg">Failed to load report.</div> : (
+        <>
+          {/* ═══ DAILY SALES ═══ */}
+          {tab === "daily" && data.summary && (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card accent"><span>Transactions</span><strong>{data.summary.totalTransactions}</strong></div>
+                <div className="summary-card"><span>Revenue</span><strong>{fmt(data.summary.totalRevenue)}</strong></div>
+                <div className="summary-card"><span>Expenses</span><strong className="loss">{fmt(data.summary.totalExpenses)}</strong></div>
+                <div className="summary-card"><span>Net Profit</span><strong className={data.summary.netProfit >= 0 ? "profit" : "loss"}>{fmt(data.summary.netProfit)}</strong></div>
+                <div className="summary-card"><span>Discounts</span><strong>{fmt(data.summary.totalDiscount)}</strong></div>
+                <div className="summary-card"><span>Tax</span><strong>{fmt(data.summary.totalTax)}</strong></div>
+              </div>
+              <div className="grid-2">
+                <div className="panel">
+                  <h2>Items Sold ({data.itemsSold?.length || 0})</h2>
+                  <div className="table-wrap">
+                    <table><thead><tr><th>Product</th><th>Qty</th><th>Revenue</th></tr></thead>
+                      <tbody>{(data.itemsSold || []).map((item, i) => (
+                        <tr key={i}><td>{item.product_name}</td><td>{item.qty}</td><td>{fmt(item.revenue)}</td></tr>
+                      ))}</tbody>
+                    </table>
+                    {!data.itemsSold?.length && <p className="muted">No items sold.</p>}
+                  </div>
+                </div>
+                <div className="panel">
+                  <h2>Email Daily Report</h2>
+                  <p className="muted" style={{ marginBottom: 12 }}>Send a formatted summary to any email address.</p>
+                  <form onSubmit={handleSendEmail} className="form-grid">
+                    <label>Recipient Email<input type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="manager@example.com" required /></label>
+                    <button type="submit" className="btn primary" disabled={sending || !emailTo}>{sending ? "Sending..." : "Send Report"}</button>
+                  </form>
+                  {sendMsg && <p className={sendMsg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginTop: 8 }}>{sendMsg}</p>}
+                </div>
+              </div>
+            </>
           )}
-        </div>
-      </div>
+
+          {/* ═══ MONTHLY SALES ═══ */}
+          {tab === "monthly" && data.data && (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card accent"><span>Total Revenue</span><strong>{fmt(data.data.reduce((s, m) => s + m.revenue, 0))}</strong></div>
+                <div className="summary-card"><span>Total Transactions</span><strong>{data.data.reduce((s, m) => s + m.transactions, 0)}</strong></div>
+                <div className="summary-card"><span>Avg Monthly</span><strong>{fmt(data.data.reduce((s, m) => s + m.revenue, 0) / (data.data.length || 1))}</strong></div>
+              </div>
+              <div className="panel"><h2>Monthly Breakdown — {data.year}</h2>
+                <div className="table-wrap">
+                  <table><thead><tr><th>Month</th><th>Transactions</th><th>Revenue</th><th>Discounts</th><th>Tax</th></tr></thead>
+                    <tbody>{data.data.map((m, i) => (
+                      <tr key={i}><td><strong>{m.month}</strong></td><td>{m.transactions}</td><td>{fmt(m.revenue)}</td><td>{fmt(m.discounts)}</td><td>{fmt(m.taxes)}</td></tr>
+                    ))}</tbody>
+                  </table>
+                  {!data.data.length && <p className="muted">No data for this year.</p>}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ═══ PRODUCT SALES ═══ */}
+          {tab === "products" && Array.isArray(data) && (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card accent"><span>Products Sold</span><strong>{data.length}</strong></div>
+                <div className="summary-card"><span>Total Revenue</span><strong>{fmt(data.reduce((s, p) => s + p.revenue, 0))}</strong></div>
+                <div className="summary-card"><span>Total Qty</span><strong>{data.reduce((s, p) => s + p.qty, 0)}</strong></div>
+              </div>
+              <div className="panel"><h2>Product Sales Breakdown</h2>
+                <div className="table-wrap">
+                  <table><thead><tr><th>Product</th><th>Category</th><th>Qty Sold</th><th>Revenue</th><th>Stock Left</th></tr></thead>
+                    <tbody>{data.map((p, i) => (
+                      <tr key={i}><td>{p.name}</td><td>{p.category}</td><td>{p.qty}</td><td>{fmt(p.revenue)}</td>
+                        <td className={p.current_stock <= 0 ? "low-stock" : ""}>{p.current_stock}</td></tr>
+                    ))}</tbody>
+                  </table>
+                  {!data.length && <p className="muted">No product sales data.</p>}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ═══ LOW STOCK ═══ */}
+          {tab === "lowstock" && Array.isArray(data) && (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card warning"><span>Low Stock Items</span><strong>{data.length}</strong></div>
+                <div className="summary-card"><span>Out of Stock</span><strong className="loss">{data.filter(p => p.status === 'OUT OF STOCK').length}</strong></div>
+                <div className="summary-card"><span>Below Reorder</span><strong>{data.filter(p => p.status === 'LOW').length}</strong></div>
+              </div>
+              <div className="panel"><h2>Low Stock Products</h2>
+                <div className="table-wrap">
+                  <table><thead><tr><th>Barcode</th><th>Product</th><th>Category</th><th>Stock</th><th>Reorder Level</th><th>Price</th><th>Status</th></tr></thead>
+                    <tbody>{data.map((p, i) => (
+                      <tr key={i}><td><code>{p.barcode}</code></td><td>{p.name}</td><td>{p.category}</td>
+                        <td className="low-stock">{p.stock}</td><td>{p.reorder_level}</td><td>{fmt(p.price)}</td>
+                        <td><span className={`status-badge ${p.status === 'OUT OF STOCK' ? 'inactive' : 'warning'}`}>{p.status}</span></td></tr>
+                    ))}</tbody>
+                  </table>
+                  {!data.length && <p className="muted">All products are well-stocked.</p>}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ═══ CASHIER SALES ═══ */}
+          {tab === "cashiers" && Array.isArray(data) && (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card accent"><span>Cashiers</span><strong>{data.length}</strong></div>
+                <div className="summary-card"><span>Total Revenue</span><strong>{fmt(data.reduce((s, c) => s + c.revenue, 0))}</strong></div>
+                <div className="summary-card"><span>Top Cashier</span><strong>{data[0]?.cashier_name || '—'}</strong></div>
+              </div>
+              <div className="panel"><h2>Cashier Performance</h2>
+                <div className="table-wrap">
+                  <table><thead><tr><th>Cashier</th><th>Email</th><th>Transactions</th><th>Revenue</th><th>Avg Sale</th></tr></thead>
+                    <tbody>{data.map((c, i) => (
+                      <tr key={i}><td><strong>{c.cashier_name}</strong></td><td>{c.email}</td><td>{c.transactions}</td><td>{fmt(c.revenue)}</td><td>{fmt(c.avg_sale)}</td></tr>
+                    ))}</tbody>
+                  </table>
+                  {!data.length && <p className="muted">No cashier sales data.</p>}
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -1661,7 +1772,7 @@ export default function App() {
           <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/finance" element={<FinancePage />} />
-          <Route path="/dailyreport" element={<DailyReportPage />} />
+          <Route path="/dailyreport" element={<ReportsPage />} />
           <Route path="/cashdrawer" element={<CashDrawerPage />} />
           <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />
