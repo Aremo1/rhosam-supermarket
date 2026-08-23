@@ -214,11 +214,35 @@ function POSPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [customers, setCustomers] = useState([]);
+  const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
+  const scanTimeoutRef = useRef(null);
+
+  // Play a short beep for successful scans
+  const playBeep = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 1200; osc.type = "square";
+      gain.gain.value = 0.1;
+      osc.start(); osc.stop(ctx.currentTime + 0.08);
+    } catch { }
+  }, []);
+
+  // Show a brief scan feedback toast
+  const showScanFeedback = useCallback((product) => {
+    setScanFeedback({ name: product.name, price: product.price, id: Date.now() });
+    playBeep();
+    if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    scanTimeoutRef.current = setTimeout(() => setScanFeedback(null), 1500);
+  }, [playBeep]);
 
   useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); }, [fetchProducts, fetchCustomers]);
 
-  useEffect(() => { searchRef.current?.focus(); }, []);
+  // Auto-focus search on mount and after cart changes
+  useEffect(() => { searchRef.current?.focus(); }, [cart, receipt]);
 
   const filtered = products.filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -226,15 +250,56 @@ function POSPage() {
     p.category.toLowerCase().includes(search.toLowerCase())
   );
 
-  function addToCart(product) {
+  function addToCart(product, fromScan = false) {
+    if (product.stock <= 0) { setError(`${product.name} is out of stock!`); return; }
     setCart(prev => {
       const existing = prev.find(c => c.productId === product.id);
       if (existing) return prev.map(c => c.productId === product.id ? { ...c, quantity: c.quantity + 1 } : c);
       return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, discount: 0 }];
     });
+    setError("");
+    if (fromScan) showScanFeedback(product);
     setSearch("");
-    searchRef.current?.focus();
+    setTimeout(() => searchRef.current?.focus(), 10);
   }
+
+  // Handle barcode scanner input: Enter key triggers exact barcode match
+  function handleSearchKeyDown(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const term = search.trim();
+      if (!term) return;
+      // Try exact barcode match first
+      const exactMatch = products.find(p => p.barcode === term);
+      if (exactMatch) {
+        addToCart(exactMatch, true);
+        return;
+      }
+      // Try exact name match (case-insensitive)
+      const nameMatch = products.find(p => p.name.toLowerCase() === term.toLowerCase());
+      if (nameMatch) {
+        addToCart(nameMatch, true);
+        return;
+      }
+      // If single filtered result, add it
+      if (filtered.length === 1) {
+        addToCart(filtered[0], true);
+        return;
+      }
+      // No match found
+      setError(`No product found for "${term}"`);
+      setTimeout(() => setError(""), 2000);
+    }
+  }
+
+  // Auto-detect barcode: if input exactly matches a barcode, add immediately
+  useEffect(() => {
+    if (!search.trim()) return;
+    const match = products.find(p => p.barcode === search.trim());
+    if (match) {
+      addToCart(match, true);
+    }
+  }, [search, products]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateQty(productId, qty) {
     if (qty < 1) { setCart(prev => prev.filter(c => c.productId !== productId)); return; }
@@ -296,8 +361,25 @@ function POSPage() {
 
   return (
     <div className="pos-layout">
+      {scanFeedback && (
+        <div className="scan-toast" key={scanFeedback.id}>
+          <span className="scan-toast-icon">✓</span>
+          <span className="scan-toast-text">{scanFeedback.name} — ₦{Number(scanFeedback.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
+        </div>
+      )}
       <div className="pos-products">
-        <input ref={searchRef} type="text" placeholder="Search by name, barcode, or category…" value={search} onChange={e => setSearch(e.target.value)} className="pos-search" />
+        <div className="pos-search-wrapper">
+          <input ref={searchRef} type="text"
+            placeholder="🔍 Scan barcode or search products…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            className="pos-search"
+            autoComplete="off"
+            autoFocus
+          />
+          <small className="pos-search-hint">Point scanner here • Press Enter to add</small>
+        </div>
         <div className="product-grid">
           {filtered.map(p => (
             <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
