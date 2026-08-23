@@ -111,6 +111,21 @@ export function AuthProvider({ children }) {
     fetchProductSales: (params) => request(`/reports/product-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
     fetchLowStockReport: () => request("/reports/low-stock"),
     fetchCashierSales: (params) => request(`/reports/cashier-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // AI Forecasting
+    fetchDemandForecast: (productId) => request(`/forecast/demand${productId ? `?product_id=${productId}` : ""}`),
+    // Auto Reorder
+    fetchAutoReorderSuggestions: () => request("/auto-reorder/suggestions"),
+    createAutoReorder: (items) => request("/auto-reorder/create", { method: "POST", body: JSON.stringify({ items }) }),
+    // Executive Dashboard
+    fetchExecutiveOverview: () => request("/executive/overview"),
+    // Customer Display
+    getCustomerDisplay: (saleId) => request(`/customer-display/${saleId}`),
+    // Supplier Portal
+    fetchSupplierPortalOrders: (supplierId) => request(`/supplier-portal/orders/${supplierId}`),
+    getSupplierPortalOrder: (id) => request(`/supplier-portal/order/${id}`),
+    confirmSupplierOrder: (id) => request(`/supplier-portal/order/${id}/confirm`, { method: "PATCH" }),
+    // Offline Sync
+    syncOfflineSales: (sales) => request("/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
     uploadProductImage: async (productId, file) => {
       const formData = new FormData();
       formData.append("image", file);

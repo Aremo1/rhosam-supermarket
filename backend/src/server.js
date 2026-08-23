@@ -1159,6 +1159,353 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
   } catch (e) { next(e); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: AI FORECASTING & DEMAND PREDICTION
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/forecast/demand", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const productId = req.query.product_id;
+    // Get 90 days of sales data per product
+    let sql = `
+      SELECT si.product_id, p.name AS product_name, p.stock AS current_stock,
+             p.reorder_level, p.cost_price::float, p.price::float,
+             DATE(s.created_at) AS sale_date,
+             SUM(si.quantity)::int AS daily_qty
+      FROM sale_items si
+      JOIN products p ON p.id = si.product_id
+      JOIN sales s ON s.id = si.sale_id
+      WHERE s.created_at >= NOW() - INTERVAL '90 days'`;
+    const params = [];
+    if (productId) { sql += ` AND si.product_id = $1`; params.push(Number(productId)); }
+    sql += ` GROUP BY si.product_id, p.name, p.stock, p.reorder_level, p.cost_price, p.price, DATE(s.created_at) ORDER BY sale_date`;
+
+    const { rows: salesData } = await pool.query(sql, params);
+
+    // Group by product and calculate simple moving average forecast
+    const productMap = {};
+    for (const row of salesData) {
+      if (!productMap[row.product_id]) {
+        productMap[row.product_id] = {
+          productId: row.product_id,
+          productName: row.product_name,
+          currentStock: row.current_stock,
+          reorderLevel: row.reorder_level,
+          costPrice: row.cost_price,
+          price: row.price,
+          dailySales: [],
+        };
+      }
+      productMap[row.product_id].dailySales.push({ date: row.sale_date, qty: row.daily_qty });
+    }
+
+    const forecasts = Object.values(productMap).map(p => {
+      const sales = p.dailySales.map(d => d.qty);
+      const n = sales.length;
+      if (n === 0) return { ...p, avgDaily: 0, predicted7Day: 0, predicted30Day: 0, daysUntilStockout: Infinity, risk: 'UNKNOWN' };
+
+      // Simple moving average (last 7 days weighted heavier)
+      const recent7 = sales.slice(-7);
+      const recent30 = sales.slice(-30);
+      const avgRecent7 = recent7.reduce((a, b) => a + b, 0) / recent7.length;
+      const avgRecent30 = recent30.reduce((a, b) => a + b, 0) / (recent30.length || 1);
+      const avgDaily = avgRecent7 * 0.7 + avgRecent30 * 0.3;
+
+      const predicted7Day = Math.round(avgDaily * 7);
+      const predicted30Day = Math.round(avgDaily * 30);
+      const daysUntilStockout = avgDaily > 0 ? Math.floor(p.currentStock / avgDaily) : Infinity;
+
+      let risk = 'LOW';
+      if (daysUntilStockout <= 3) risk = 'CRITICAL';
+      else if (daysUntilStockout <= 7) risk = 'HIGH';
+      else if (daysUntilStockout <= 14) risk = 'MEDIUM';
+
+      return {
+        productId: p.productId,
+        productName: p.productName,
+        currentStock: p.currentStock,
+        reorderLevel: p.reorderLevel,
+        costPrice: p.costPrice,
+        price: p.price,
+        avgDaily: Math.round(avgDaily * 10) / 10,
+        predicted7Day,
+        predicted30Day,
+        daysUntilStockout,
+        risk,
+      };
+    });
+
+    // Sort by risk (CRITICAL first)
+    const riskOrder = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, UNKNOWN: 4 };
+    forecasts.sort((a, b) => (riskOrder[a.risk] || 4) - (riskOrder[b.risk] || 4));
+
+    res.json(forecasts);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: AUTO REORDER
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/auto-reorder/suggestions", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
+  try {
+    // Find products at or below reorder level
+    const { rows: lowStock } = await pool.query(
+      `SELECT p.id, p.barcode, p.name, p.category, p.stock, p.reorder_level,
+              p.cost_price::float, p.price::float, s.name AS supplier_name, s.id AS supplier_id
+       FROM products p
+       LEFT JOIN suppliers s ON s.is_active = TRUE
+       WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
+       ORDER BY (p.stock::float / GREATEST(p.reorder_level, 1)) ASC`
+    );
+
+    // Auto-calculate suggested reorder quantity
+    const suggestions = lowStock.map(p => {
+      const suggestedQty = Math.max(p.reorder_level * 3, 20); // Order 3x reorder level or min 20
+      const totalCost = suggestedQty * p.costPrice;
+      return { ...p, suggestedQty, totalCost };
+    });
+
+    res.json(suggestions);
+  } catch (e) { n(e); }
+});
+
+app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { items } = req.body; // [{ productId, supplierId, quantity, unitCost }]
+    if (!Array.isArray(items) || !items.length)
+      return res.status(400).json({ message: "Items required." });
+
+    // Group by supplier
+    const supplierGroups = {};
+    for (const item of items) {
+      const sid = item.supplierId;
+      if (!supplierGroups[sid]) supplierGroups[sid] = [];
+      supplierGroups[sid].push(item);
+    }
+
+    const created = [];
+    await client.query("BEGIN");
+
+    for (const [supplierId, supplierItems] of Object.entries(supplierGroups)) {
+      let total = 0;
+      const poNumber = `AUTO-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
+
+      const { rows: poRows } = await client.query(
+        `INSERT INTO purchase_orders(po_number,supplier_id,notes,created_by)
+         VALUES($1,$2,$3,$4) RETURNING id`,
+        [poNumber, Number(supplierId), "Auto-generated reorder", req.user.id]
+      );
+      const poId = poRows[0].id;
+
+      for (const item of supplierItems) {
+        const qty = Number(item.quantity);
+        const cost = Number(item.unitCost);
+        const lineTotal = qty * cost;
+        total += lineTotal;
+        await client.query(
+          "INSERT INTO purchase_order_items(po_id,product_id,quantity,unit_cost,line_total) VALUES($1,$2,$3,$4,$5)",
+          [poId, item.productId, qty, cost, lineTotal]
+        );
+      }
+
+      await client.query("UPDATE purchase_orders SET total=$1 WHERE id=$2", [total, poId]);
+      await audit(client, req.user.id, "AUTO_REORDER", "PURCHASE_ORDER", poId, { poNumber, supplierId, total });
+      created.push({ poId, poNumber, supplierId: Number(supplierId), total });
+    }
+
+    await client.query("COMMIT");
+    res.status(201).json({ message: `Created ${created.length} purchase order(s).`, orders: created });
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
+  finally { client.release(); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: EXECUTIVE DASHBOARD
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/executive/overview", auth, allow("ADMIN"), async (_q, r, n) => {
+  try {
+    const [revenue, expenses, products, customers, salesTrend, topCashiers, categoryBreakdown, recentAlerts] = await Promise.all([
+      pool.query(`SELECT
+        COALESCE(SUM(total),0)::float AS total_revenue,
+        COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '7 days' THEN total END),0)::float AS week_revenue,
+        COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN total END),0)::float AS month_revenue,
+        COUNT(*)::int AS total_transactions,
+        COALESCE(AVG(total),0)::float AS avg_transaction
+       FROM sales`),
+      pool.query(`SELECT
+        COALESCE(SUM(amount),0)::float AS total_expenses,
+        COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN amount END),0)::float AS month_expenses
+       FROM expenses`),
+      pool.query(`SELECT
+        COUNT(*)::int AS total,
+        COUNT(CASE WHEN stock <= reorder_level THEN 1 END)::int AS low_stock,
+        COUNT(CASE WHEN stock = 0 THEN 1 END)::int AS out_of_stock
+       FROM products WHERE is_active = TRUE`),
+      pool.query(`SELECT
+        COUNT(*)::int AS total,
+        COALESCE(SUM(total_spent),0)::float AS total_spent,
+        COALESCE(AVG(total_spent),0)::float AS avg_spent
+       FROM customers`),
+      pool.query(`SELECT date_trunc('day',created_at)::date AS day,
+        COUNT(*)::int AS transactions, COALESCE(SUM(total),0)::float AS revenue
+       FROM sales WHERE created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY 1 ORDER BY 1`),
+      pool.query(`SELECT u.name, COUNT(s.id)::int AS transactions, COALESCE(SUM(s.total),0)::float AS revenue
+       FROM sales s JOIN users u ON u.id = s.cashier_id
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY u.id, u.name ORDER BY revenue DESC LIMIT 5`),
+      pool.query(`SELECT p.category, SUM(si.line_total)::float AS revenue, SUM(si.quantity)::int AS qty
+       FROM sale_items si JOIN products p ON p.id = si.product_id JOIN sales s ON s.id = si.sale_id
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY p.category ORDER BY revenue DESC`),
+      pool.query(`SELECT p.name, p.stock, p.reorder_level
+       FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
+       ORDER BY p.stock ASC LIMIT 10`)
+    ]);
+
+    const r2 = revenue.rows[0];
+    const e2 = expenses.rows[0];
+    const p2 = products.rows[0];
+    const c2 = customers.rows[0];
+
+    res.json({
+      revenue: {
+        total: r2.total_revenue, week: r2.week_revenue, month: r2.month_revenue,
+        transactions: r2.total_transactions, avgTransaction: r2.avg_transaction,
+      },
+      expenses: { total: e2.total_expenses, month: e2.month_expenses },
+      profit: { total: r2.total_revenue - e2.total_expenses, month: r2.month_revenue - e2.month_expenses },
+      products: { total: p2.total, lowStock: p2.low_stock, outOfStock: p2.out_of_stock },
+      customers: { total: c2.total, totalSpent: c2.total_spent, avgSpent: c2.avg_spent },
+      salesTrend: salesTrend.rows,
+      topCashiers: topCashiers.rows,
+      categoryBreakdown: categoryBreakdown.rows,
+      alerts: recentAlerts.rows,
+    });
+  } catch (e) { n(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: CUSTOMER DISPLAY
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/customer-display/:saleId", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.saleId);
+    const { rows: saleRows } = await pool.query(
+      `SELECT s.*, u.name AS cashier_name FROM sales s JOIN users u ON u.id = s.cashier_id WHERE s.id=$1`, [id]
+    );
+    if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+    const { rows: items } = await pool.query("SELECT * FROM sale_items WHERE sale_id=$1", [id]);
+    res.json({ ...saleRows[0], items, display: true });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: SUPPLIER PORTAL
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/supplier-portal/orders/:supplierId", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.supplierId);
+    const { rows } = await pool.query(
+      `SELECT po.*, u.name AS created_by_name
+       FROM purchase_orders po JOIN users u ON u.id = po.created_by
+       WHERE po.supplier_id = $1 ORDER BY po.created_at DESC`, [id]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+app.get("/api/supplier-portal/order/:id", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows: poRows } = await pool.query(
+      `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
+       JOIN suppliers s ON s.id = po.supplier_id WHERE po.id=$1`, [id]
+    );
+    if (!poRows[0]) return res.status(404).json({ message: "Order not found." });
+    const { rows: items } = await pool.query(
+      `SELECT poi.*, p.name AS product_name FROM purchase_order_items poi
+       JOIN products p ON p.id = poi.product_id WHERE poi.po_id=$1`, [id]
+    );
+    res.json({ ...poRows[0], items });
+  } catch (e) { next(e); }
+});
+
+app.patch("/api/supplier-portal/order/:id/confirm", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      "UPDATE purchase_orders SET status='APPROVED', updated_at=NOW() WHERE id=$1 AND status='PENDING' RETURNING *", [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Order not found or not pending." });
+    await audit(pool, req.user.id, "SUPPLIER_CONFIRM", "PURCHASE_ORDER", id);
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 16: OFFLINE SYNC
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/sync/sales", auth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { sales } = req.body; // Array of offline sales to sync
+    if (!Array.isArray(sales) || !sales.length)
+      return res.status(400).json({ message: "No sales to sync." });
+
+    const results = [];
+    await client.query("BEGIN");
+
+    for (const sale of sales) {
+      try {
+        let subtotal = 0;
+        for (const item of (sale.items || [])) {
+          const { rows } = await client.query("SELECT price::float, stock FROM products WHERE id=$1 FOR UPDATE", [item.productId]);
+          const product = rows[0];
+          if (!product) continue;
+          if (product.stock < item.quantity) continue;
+          subtotal += product.price * item.quantity;
+        }
+
+        const receiptNumber = sale.receiptNumber || `SYNC-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
+        const total = subtotal - Number(sale.discount || 0) + Number(sale.tax || 0);
+
+        const { rows } = await client.query(
+          `INSERT INTO sales(receipt_number,customer_name,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          [receiptNumber, sale.customerName || "Walk-in Customer", sale.paymentMethod || "Cash",
+           subtotal, sale.discount || 0, sale.tax || 0, total, sale.amountPaid || total, 0, req.user.id]
+        );
+
+        for (const item of (sale.items || [])) {
+          const { rows: pRows } = await client.query("SELECT price::float FROM products WHERE id=$1", [item.productId]);
+          if (pRows[0]) {
+            await client.query(
+              "INSERT INTO sale_items(sale_id,product_id,product_name,unit_price,quantity,discount,line_total) VALUES($1,$2,$3,$4,$5,$6,$7)",
+              [rows[0].id, item.productId, item.name || 'Product', pRows[0].price, item.quantity, item.discount || 0, pRows[0].price * item.quantity]
+            );
+            await client.query("UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2", [item.quantity, item.productId]);
+          }
+        }
+
+        results.push({ localId: sale.localId, serverId: rows[0].id, receiptNumber, status: 'synced' });
+      } catch (err) {
+        results.push({ localId: sale.localId, status: 'failed', error: err.message });
+      }
+    }
+
+    await client.query("COMMIT");
+    res.json({ synced: results.filter(r => r.status === 'synced').length, failed: results.filter(r => r.status === 'failed').length, results });
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
+  finally { client.release(); }
+});
+
 // ── Error handler ────────────────────────────────────────────────
 app.use((e, _q, r, _n) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));

@@ -8,20 +8,22 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","dailyreport","cashdrawer","branches","users","audit"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","dailyreport","cashdrawer"],
+  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer"],
   CASHIER: ["dashboard","pos","cashdrawer","sales"],
 };
 const LABELS = {
-  dashboard: "Dashboard", pos: "Point of Sale", products: "Products", inventory: "Inventory",
+  dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
-  expenses: "Expenses", finance: "Finance",  dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
-  cashdrawer: "Cash Drawer", branches: "Branches",
+  expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
+  dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
+  cashdrawer: "Cash Drawer", branches: "Branches", display: "Customer Display", supplierportal: "Supplier Portal",
 };
 const ICONS = {
-  dashboard: "📊", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
-  suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", dailyreport: "📈", users: "👤", audit: "📝",
-  cashdrawer: "💵", branches: "🏢",
+  dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
+  suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
+  dailyreport: "📈", users: "👤", audit: "📝",
+  cashdrawer: "💵", branches: "🏢", display: "🖥️", supplierportal: "🏭",
 };
 
 function Layout({ children }) {
@@ -1214,6 +1216,362 @@ function FinancePage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// AI FORECASTING & DEMAND PREDICTION (Phase 16)
+// ═══════════════════════════════════════════════════════════════════
+function ForecastPage() {
+  const { fetchDemandForecast } = useAuth();
+  const [forecast, setForecast] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setForecast(await fetchDemandForecast()); }
+    catch { setForecast([]); }
+    finally { setLoading(false); }
+  }, [fetchDemandForecast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const riskColor = { CRITICAL: "inactive", HIGH: "warning", MEDIUM: "info", LOW: "active" };
+  const filtered = filter === "all" ? forecast : forecast.filter(f => f.risk === filter.toUpperCase());
+  const criticalCount = forecast.filter(f => f.risk === "CRITICAL").length;
+  const highCount = forecast.filter(f => f.risk === "HIGH").length;
+
+  return (
+    <div className="page-panel">
+      <div className="summary-grid">
+        <div className="summary-card"><span>Products Analyzed</span><strong>{forecast.length}</strong></div>
+        <div className="summary-card warning"><span>Critical Risk</span><strong>{criticalCount}</strong></div>
+        <div className="summary-card"><span>High Risk</span><strong>{highCount}</strong></div>
+      </div>
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>All</button>
+          <button className={filter === "critical" ? "active" : ""} onClick={() => setFilter("critical")}>Critical</button>
+          <button className={filter === "high" ? "active" : ""} onClick={() => setFilter("high")}>High</button>
+          <button className={filter === "medium" ? "active" : ""} onClick={() => setFilter("medium")}>Medium</button>
+        </div>
+        <button className="btn primary" onClick={load}>Refresh</button>
+      </div>
+      {loading ? <p className="loading">Analyzing sales patterns...</p> : (
+        <div className="table-wrap">
+          <table><thead><tr><th>Product</th><th>Stock</th><th>Avg Daily</th><th>7-Day Pred</th><th>30-Day Pred</th><th>Days Left</th><th>Risk</th></tr></thead>
+            <tbody>{filtered.map((f, i) => (
+              <tr key={i}>
+                <td><strong>{f.productName}</strong></td>
+                <td className={f.currentStock <= f.reorderLevel ? "low-stock" : ""}>{f.currentStock}</td>
+                <td>{f.avgDaily}</td>
+                <td>{f.predicted7Day}</td>
+                <td>{f.predicted30Day}</td>
+                <td className={f.daysUntilStockout <= 7 ? "low-stock" : ""}>{f.daysUntilStockout === Infinity ? "—" : `${f.daysUntilStockout} days`}</td>
+                <td><span className={`status-badge ${riskColor[f.risk] || ""}`}>{f.risk}</span></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!filtered.length && <p className="muted">No forecast data yet. Need at least some sales history.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTO REORDER (Phase 16)
+// ═══════════════════════════════════════════════════════════════════
+function AutoReorderPage() {
+  const { fetchAutoReorderSuggestions, createAutoReorder } = useAuth();
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState({});
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setSuggestions(await fetchAutoReorderSuggestions()); }
+    catch { setSuggestions([]); }
+    finally { setLoading(false); }
+  }, [fetchAutoReorderSuggestions]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  function toggle(id) { setSelected(prev => ({ ...prev, [id]: !prev[id] })); }
+
+  async function handleCreateOrders() {
+    const items = suggestions.filter(s => selected[s.id]).map(s => ({
+      productId: s.id, supplierId: s.supplier_id, quantity: s.suggestedQty, unitCost: s.costPrice,
+    }));
+    if (!items.length) return;
+    setBusy(true); setMsg("");
+    try {
+      const result = await createAutoReorder(items);
+      setMsg(`Created ${result.orders?.length || 0} purchase order(s)!`);
+      setSelected({}); load();
+    } catch (err) { setMsg(`Error: ${err.message}`); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="summary-grid">
+        <div className="summary-card warning"><span>Need Reorder</span><strong>{suggestions.length}</strong></div>
+        <div className="summary-card"><span>Selected</span><strong>{Object.values(selected).filter(Boolean).length}</strong></div>
+        <div className="summary-card"><span>Total Cost</span><strong>{fmt(suggestions.filter(s => selected[s.id]).reduce((sum, s) => sum + s.totalCost, 0))}</strong></div>
+      </div>
+      {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
+      <div className="panel-header">
+        <button className="btn primary" onClick={handleCreateOrders} disabled={busy || !Object.values(selected).some(Boolean)}>
+          {busy ? "Creating..." : "Create Purchase Orders"}
+        </button>
+        <button className="btn secondary" onClick={load}>Refresh</button>
+      </div>
+      {loading ? <p className="loading">Checking stock levels...</p> : (
+        <div className="table-wrap">
+          <table><thead><tr><th></th><th>Product</th><th>Category</th><th>Stock</th><th>Reorder</th><th>Suggested Qty</th><th>Unit Cost</th><th>Total</th><th>Supplier</th></tr></thead>
+            <tbody>{suggestions.map(s => (
+              <tr key={s.id} style={{ background: selected[s.id] ? "#f0fdf4" : "" }}>
+                <td><input type="checkbox" checked={!!selected[s.id]} onChange={() => toggle(s.id)} /></td>
+                <td><strong>{s.name}</strong><br /><small>{s.barcode}</small></td>
+                <td>{s.category}</td>
+                <td className="low-stock">{s.stock}</td>
+                <td>{s.reorder_level}</td>
+                <td><strong>{s.suggestedQty}</strong></td>
+                <td>{fmt(s.costPrice)}</td>
+                <td>{fmt(s.totalCost)}</td>
+                <td>{s.supplier_name || '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!suggestions.length && <p className="muted">All products are well-stocked!</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EXECUTIVE DASHBOARD (Phase 16)
+// ═══════════════════════════════════════════════════════════════════
+function ExecutiveDashboard() {
+  const { fetchExecutiveOverview } = useAuth();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { fetchExecutiveOverview().then(setData).catch(() => {}).finally(() => setLoading(false)); }, [fetchExecutiveOverview]);
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  if (loading) return <p className="loading">Loading executive dashboard...</p>;
+  if (!data) return <div className="error-msg">Failed to load data.</div>;
+
+  return (
+    <div className="dashboard">
+      <div className="summary-grid">
+        <div className="summary-card accent"><span>Total Revenue</span><strong>{fmt(data.revenue?.total)}</strong><small>Last 30 days: {fmt(data.revenue?.month)}</small></div>
+        <div className="summary-card"><span>Total Profit</span><strong className={data.profit?.total >= 0 ? "profit" : "loss"}>{fmt(data.profit?.total)}</strong><small>Month: {fmt(data.profit?.month)}</small></div>
+        <div className="summary-card warning"><span>Total Expenses</span><strong>{fmt(data.expenses?.total)}</strong></div>
+        <div className="summary-card"><span>Transactions</span><strong>{data.revenue?.transactions?.toLocaleString()}</strong><small>Avg: {fmt(data.revenue?.avgTransaction)}</small></div>
+        <div className="summary-card"><span>Products</span><strong>{data.products?.total}</strong><small className="loss">{data.products?.outOfStock} out of stock</small></div>
+        <div className="summary-card"><span>Customers</span><strong>{data.customers?.total}</strong><small>Avg spend: {fmt(data.customers?.avgSpent)}</small></div>
+      </div>
+
+      <div className="grid-2">
+        <div className="panel"><h2>Sales Trend (30 Days)</h2>
+          <div className="chart-bars">
+            {(data.salesTrend || []).map((d, i) => {
+              const maxRev = Math.max(...(data.salesTrend || []).map(x => x.revenue || 1));
+              const pct = ((d.revenue || 0) / maxRev) * 100;
+              return (
+                <div key={i} className="bar-col" title={`${d.day}: ${fmt(d.revenue)} (${d.transactions} sales)`}>
+                  <div className="bar" style={{ height: `${Math.max(pct, 4)}%` }} />
+                  <small>{new Date(d.day).getDate()}</small>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="panel"><h2>Top Cashiers (30 Days)</h2>
+          <table><thead><tr><th>Cashier</th><th>Transactions</th><th>Revenue</th></tr></thead>
+            <tbody>{(data.topCashiers || []).map((c, i) => (
+              <tr key={i}><td>{c.name}</td><td>{c.transactions}</td><td>{fmt(c.revenue)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="panel"><h2>Revenue by Category</h2>
+          <div className="category-chart">
+            {(data.categoryBreakdown || []).map((c, i) => {
+              const maxRev = Math.max(...(data.categoryBreakdown || []).map(x => x.revenue || 1));
+              return (
+                <div key={i} className="cat-bar-row">
+                  <span className="cat-label">{c.category}</span>
+                  <div className="cat-bar-track"><div className="cat-bar-fill" style={{ width: `${((c.revenue || 0) / maxRev) * 100}%` }} /></div>
+                  <span className="cat-value">{fmt(c.revenue)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="panel"><h2>Stock Alerts</h2>
+          <div className="table-wrap">
+            <table><thead><tr><th>Product</th><th>Stock</th><th>Reorder</th></tr></thead>
+              <tbody>{(data.alerts || []).map((a, i) => (
+                <tr key={i} className="low-stock-row"><td>{a.name}</td><td className="low-stock">{a.stock}</td><td>{a.reorder_level}</td></tr>
+              ))}</tbody>
+            </table>
+            {!data.alerts?.length && <p className="muted">No stock alerts.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CUSTOMER DISPLAY (Phase 16)
+// ═══════════════════════════════════════════════════════════════════
+function CustomerDisplayPage() {
+  const { getCustomerDisplay } = useAuth();
+  const [saleId, setSaleId] = useState("");
+  const [sale, setSale] = useState(null);
+  const [error, setError] = useState("");
+
+  async function handleLookup(e) {
+    e.preventDefault();
+    if (!saleId) return;
+    try {
+      setSale(await getCustomerDisplay(saleId));
+      setError("");
+    } catch (err) { setError(err.message); setSale(null); }
+  }
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div className="page-panel">
+      <form onSubmit={handleLookup} className="form-grid" style={{ maxWidth: 400 }}>
+        <label>Sale Receipt ID
+          <input type="number" value={saleId} onChange={e => setSaleId(e.target.value)} placeholder="Enter sale ID" required />
+        </label>
+        <button type="submit" className="btn primary">Display Sale</button>
+      </form>
+      {error && <div className="error-msg" style={{ marginTop: 12 }}>{error}</div>}
+      {sale && (
+        <div className="receipt" style={{ maxWidth: 500, marginTop: 20, background: 'white', padding: 24, borderRadius: 12 }}>
+          <h2 style={{ textAlign: 'center' }}>RHoSAM Supermarket</h2>
+          <p className="muted" style={{ textAlign: 'center' }}>Receipt: {sale.receipt_number}</p>
+          <p className="muted" style={{ textAlign: 'center' }}>Cashier: {sale.cashier_name}</p>
+          <p className="muted" style={{ textAlign: 'center' }}>Payment: {sale.payment_method}</p>
+          <hr />
+          {sale.items?.map((item, i) => (
+            <div key={i} className="receipt-line">
+              <span>{item.product_name} x{item.quantity}</span>
+              <span>{fmt(item.line_total)}</span>
+            </div>
+          ))}
+          <hr />
+          <div className="receipt-line receipt-total"><span><strong>TOTAL</strong></span><strong>{fmt(sale.total)}</strong></div>
+          <p style={{ textAlign: 'center', marginTop: 16, color: 'var(--primary)' }}>Thank you for shopping!</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPPLIER PORTAL (Phase 16)
+// ═══════════════════════════════════════════════════════════════════
+function SupplierPortalPage() {
+  const { fetchSuppliers, fetchSupplierPortalOrders, getSupplierPortalOrder, confirmSupplierOrder } = useAuth();
+  const [suppliers, setSuppliers] = useState([]);
+  const [selectedSupplier, setSelectedSupplier] = useState(null);
+  const [orders, setOrders] = useState([]);
+  const [orderDetail, setOrderDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { fetchSuppliers().then(setSuppliers).catch(() => {}).finally(() => setLoading(false)); }, [fetchSuppliers]);
+
+  async function loadOrders(supplierId) {
+    setSelectedSupplier(supplierId);
+    setOrderDetail(null);
+    try { setOrders(await fetchSupplierPortalOrders(supplierId)); }
+    catch { setOrders([]); }
+  }
+
+  async function viewOrder(id) {
+    try { setOrderDetail(await getSupplierPortalOrder(id)); }
+    catch { setOrderDetail(null); }
+  }
+
+  async function handleConfirm(id) {
+    try { await confirmSupplierOrder(id); viewOrder(id); loadOrders(selectedSupplier); }
+    catch (err) { alert(err.message); }
+  }
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const statusColor = { PENDING: "warning", APPROVED: "info", RECEIVED: "active", CANCELLED: "inactive" };
+
+  if (loading) return <p className="loading">Loading suppliers...</p>;
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header"><h2>Supplier Portal</h2></div>
+      <div className="tabs">
+        {suppliers.map(s => (
+          <button key={s.id} className={selectedSupplier === s.id ? "active" : ""} onClick={() => loadOrders(s.id)}>{s.name}</button>
+        ))}
+      </div>
+      {!selectedSupplier && <p className="muted" style={{ marginTop: 16 }}>Select a supplier to view their orders.</p>}
+      {selectedSupplier && !orderDetail && (
+        <div className="table-wrap">
+          <table><thead><tr><th>PO #</th><th>Total</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>{orders.map(o => (
+              <tr key={o.id}>
+                <td><code>{o.po_number}</code></td>
+                <td>{fmt(o.total)}</td>
+                <td><span className={`status-badge ${statusColor[o.status] || ""}`}>{o.status}</span></td>
+                <td>{new Date(o.created_at).toLocaleDateString()}</td>
+                <td>
+                  <button className="btn-sm" onClick={() => viewOrder(o.id)}>View</button>
+                  {o.status === "PENDING" && <button className="btn-sm" onClick={() => handleConfirm(o.id)}>Confirm</button>}
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!orders.length && <p className="muted">No orders for this supplier.</p>}
+        </div>
+      )}
+      {orderDetail && (
+        <div className="panel" style={{ marginTop: 12 }}>
+          <div className="panel-header">
+            <h2>Order: {orderDetail.po_number}</h2>
+            <button className="btn secondary" onClick={() => setOrderDetail(null)}>Back to Orders</button>
+          </div>
+          <div className="summary-grid" style={{ marginBottom: 16 }}>
+            <div className="summary-card"><span>Status</span><strong><span className={`status-badge ${statusColor[orderDetail.status] || ""}`}>{orderDetail.status}</span></strong></div>
+            <div className="summary-card"><span>Total</span><strong>{fmt(orderDetail.total)}</strong></div>
+            <div className="summary-card"><span>Supplier</span><strong>{orderDetail.supplier_name}</strong></div>
+          </div>
+          <div className="table-wrap">
+            <table><thead><tr><th>Product</th><th>Qty</th><th>Unit Cost</th><th>Line Total</th></tr></thead>
+              <tbody>{(orderDetail.items || []).map((item, i) => (
+                <tr key={i}><td>{item.product_name}</td><td>{item.quantity}</td><td>{fmt(item.unit_cost)}</td><td>{fmt(item.line_total)}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // DAILY REPORTS & EMAIL (Phase 15)
 // ═══════════════════════════════════════════════════════════════════
 function ReportsPage() {
@@ -1801,8 +2159,13 @@ export default function App() {
           <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/finance" element={<FinancePage />} />
+          <Route path="/executive" element={<ExecutiveDashboard />} />
+          <Route path="/forecast" element={<ForecastPage />} />
+          <Route path="/reorder" element={<AutoReorderPage />} />
           <Route path="/dailyreport" element={<ReportsPage />} />
           <Route path="/cashdrawer" element={<CashDrawerPage />} />
+          <Route path="/display" element={<CustomerDisplayPage />} />
+          <Route path="/supplierportal" element={<SupplierPortalPage />} />
           <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/audit" element={<AuditPage />} />
