@@ -9,9 +9,9 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","loginhistory","change-password","mfa"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","change-password","mfa"],
-  CASHIER: ["dashboard","pos","cashdrawer","sales","change-password"],
+  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","change-password","mfa","wifiqr"],
+  CASHIER: ["dashboard","pos","cashdrawer","sales","change-password","wifiqr"],
 };
 const LABELS = {
   dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", inventory: "Inventory",
@@ -19,14 +19,14 @@ const LABELS = {
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
   cashdrawer: "Cash Drawer", branches: "Branches", display: "Customer Display", supplierportal: "Supplier Portal",
-  "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History",
+  "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", display: "🖥️", supplierportal: "🏭",
-  "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐",
+  "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶",
 };
 
 function Layout({ children }) {
@@ -2714,6 +2714,127 @@ function MfaSetupPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// WI-FI QR CODE GENERATOR (Bonus Utility)
+// ═══════════════════════════════════════════════════════════════════
+function WifiQRPage() {
+  const [ssid, setSsid] = useState("");
+  const [password, setPassword] = useState("");
+  const [encryption, setEncryption] = useState("WPA");
+  const [hidden, setHidden] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState(null);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
+  const [error, setError] = useState("");
+
+  // Watch for dark mode changes
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setDarkMode(document.body.classList.contains("dark"));
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  // Generate QR code when inputs change
+  useEffect(() => {
+    if (!ssid.trim()) { setQrDataUrl(null); return; }
+    // Wi-Fi QR format: WIFI:T:WPA;S:networkname;P:password;H:hidden;;
+    const esc = (s) => s.replace(/\\/g, "\\\\\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/"/g, '\\"');
+    let wifiString = "WIFI:T:" + encryption + ";S:" + esc(ssid) + ";";
+    if (encryption !== "nopass") wifiString += "P:" + esc(password) + ";";
+    if (hidden) wifiString += "H:true;";
+    wifiString += ";";
+
+    const colors = darkMode
+      ? { dark: '#f1f5f9', light: '#1e293b' }
+      : { dark: '#172033', light: '#ffffff' };
+
+    QRCode.toDataURL(wifiString, {
+      width: 280,
+      margin: 2,
+      color: colors,
+      errorCorrectionLevel: 'M',
+    }).then(setQrDataUrl).catch(() => { setError("Failed to generate QR code."); setQrDataUrl(null); });
+  }, [ssid, password, encryption, hidden, darkMode]);
+
+  function handleDownload() {
+    if (!qrDataUrl) return;
+    const a = document.createElement('a');
+    a.href = qrDataUrl;
+    a.download = `wifi-${ssid || 'network'}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  return (
+    <div className="page-panel" style={{ maxWidth: 600 }}>
+      <div className="panel">
+        <h2>📶 Wi-Fi QR Code Generator</h2>
+        <p className="muted" style={{ marginBottom: 16 }}>Generate a QR code that customers or staff can scan to connect to your Wi-Fi network instantly.</p>
+
+        <div className="form-grid">
+          <label>Network Name (SSID)
+            <input type="text" value={ssid} onChange={e => setSsid(e.target.value)} placeholder="e.g. RHoSAM-Guest-WiFi" required />
+          </label>
+          <label>Encryption
+            <select value={encryption} onChange={e => setEncryption(e.target.value)}>
+              <option value="WPA">WPA/WPA2/WPA3 (Most common)</option>
+              <option value="WEP">WEP (Legacy)</option>
+              <option value="nopass">None (Open network)</option>
+            </select>
+          </label>
+          {encryption !== "nopass" && (
+            <label>Password
+              <input type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="Wi-Fi password" />
+            </label>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={hidden} onChange={e => setHidden(e.target.checked)} style={{ width: 'auto' }} />
+            Hidden network (not broadcasting SSID)
+          </label>
+        </div>
+
+        {error && <div className="error-msg" style={{ marginTop: 12 }}>{error}</div>}
+
+        <div style={{ textAlign: 'center', marginTop: 24 }}>
+          {qrDataUrl ? (
+            <>
+              <img src={qrDataUrl} alt="Wi-Fi QR Code" style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: darkMode ? '#1e293b' : 'white', transition: 'background 0.3s' }} />
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'center' }}>
+                <button className="btn primary" onClick={handleDownload}>📥 Download QR</button>
+                <button className="btn secondary" onClick={() => window.print()}>🖨️ Print</button>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <p className="muted" style={{ fontSize: '0.8rem' }}>Scan this code with any phone camera to connect automatically</p>
+              </div>
+            </>
+          ) : (
+            <div style={{ width: 280, height: 280, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', borderRadius: 12, border: '1px dashed var(--border)' }}>
+              <p className="muted" style={{ textAlign: 'center', padding: 20 }}>Enter a network name above to generate the QR code</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Print-only version */}
+      <div className="wifi-print" style={{ display: 'none' }}>
+        <style>{`
+          @media print {
+            .wifi-print { display: block !important; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 99999; padding: 40px; font-family: Arial, sans-serif; text-align: center; }
+            .wifi-print * { visibility: visible !important; }
+          }
+        `}</style>
+        <h1 style={{ fontSize: 24, marginBottom: 8 }}>📶 Connect to Wi-Fi</h1>
+        <p style={{ fontSize: 16, color: '#666', marginBottom: 24 }}>Scan this code with your phone camera</p>
+        {qrDataUrl && <img src={qrDataUrl} alt="Wi-Fi QR" style={{ width: 240, height: 240 }} />}
+        <p style={{ marginTop: 16, fontSize: 14 }}><strong>{ssid}</strong></p>
+        <p style={{ fontSize: 12, color: '#999', marginTop: 8 }}>RHoSAM Supermarket</p>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -2747,6 +2868,7 @@ export default function App() {
           <Route path="/loginhistory" element={<LoginHistoryPage />} />
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/mfa" element={<MfaSetupPage />} />
+          <Route path="/wifiqr" element={<WifiQRPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout></AuthGate>} />
