@@ -8,19 +8,19 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","cashdrawer","branches","users","audit"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","cashdrawer"],
+  ADMIN: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","dailyreport","cashdrawer","branches","users","audit"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","dailyreport","cashdrawer"],
   CASHIER: ["dashboard","pos","cashdrawer","sales"],
 };
 const LABELS = {
   dashboard: "Dashboard", pos: "Point of Sale", products: "Products", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
-  expenses: "Expenses", finance: "Finance", users: "User Management", audit: "Audit Logs",
+  expenses: "Expenses", finance: "Finance", dailyreport: "Daily Report", users: "User Management", audit: "Audit Logs",
   cashdrawer: "Cash Drawer", branches: "Branches",
 };
 const ICONS = {
   dashboard: "📊", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
-  suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", users: "👤", audit: "📝",
+  suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢",
 };
 
@@ -1149,6 +1149,104 @@ function FinancePage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// DAILY REPORTS & EMAIL (Phase 15)
+// ═══════════════════════════════════════════════════════════════════
+function DailyReportPage() {
+  const { fetchDailyReport, emailDailyReport } = useAuth();
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [emailTo, setEmailTo] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendMsg, setSendMsg] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true); setSendMsg("");
+    try { setReport(await fetchDailyReport(date)); }
+    catch { setReport(null); }
+    finally { setLoading(false); }
+  }, [fetchDailyReport, date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSendEmail(e) {
+    e.preventDefault();
+    if (!emailTo) return;
+    setSending(true); setSendMsg("");
+    try {
+      await emailDailyReport({ date, recipientEmail: emailTo });
+      setSendMsg("Report sent successfully!");
+    } catch (err) { setSendMsg(`Error: ${err.message}`); }
+    finally { setSending(false); }
+  }
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  if (loading) return <p className="loading">Loading report...</p>;
+  if (!report) return <div className="error-msg">Failed to load report.</div>;
+
+  const { summary: s, itemsSold, topProducts } = report;
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="filters">
+          <label>Date
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+          </label>
+          <button className="btn primary" onClick={load}>Refresh</button>
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="summary-grid">
+        <div className="summary-card accent"><span>Transactions</span><strong>{s.totalTransactions}</strong></div>
+        <div className="summary-card"><span>Revenue</span><strong>{fmt(s.totalRevenue)}</strong></div>
+        <div className="summary-card"><span>Expenses</span><strong className="loss">{fmt(s.totalExpenses)}</strong></div>
+        <div className="summary-card"><span>Net Profit</span><strong className={s.netProfit >= 0 ? "profit" : "loss"}>{fmt(s.netProfit)}</strong></div>
+        <div className="summary-card"><span>Discounts</span><strong>{fmt(s.totalDiscount)}</strong></div>
+        <div className="summary-card"><span>Tax</span><strong>{fmt(s.totalTax)}</strong></div>
+      </div>
+
+      <div className="grid-2">
+        {/* Items Sold */}
+        <div className="panel">
+          <h2>Items Sold ({itemsSold.length})</h2>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Product</th><th>Qty</th><th>Revenue</th></tr></thead>
+              <tbody>{itemsSold.map((item, i) => (
+                <tr key={i}><td>{item.product_name}</td><td>{item.qty}</td><td>{fmt(item.revenue)}</td></tr>
+              ))}</tbody>
+            </table>
+            {!itemsSold.length && <p className="muted">No items sold on this date.</p>}
+          </div>
+        </div>
+
+        {/* Email Report */}
+        <div className="panel">
+          <h2>Email Daily Report</h2>
+          <p className="muted" style={{ marginBottom: 12 }}>Send a formatted summary of this day's sales to any email address.</p>
+          <form onSubmit={handleSendEmail} className="form-grid">
+            <label>Recipient Email
+              <input type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="manager@example.com" required />
+            </label>
+            <button type="submit" className="btn primary" disabled={sending || !emailTo}>
+              {sending ? "Sending..." : "Send Report"}
+            </button>
+          </form>
+          {sendMsg && (
+            <p className={sendMsg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginTop: 8 }}>
+              {sendMsg}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // USER MANAGEMENT (Phase 8)
 // ═══════════════════════════════════════════════════════════════════
 function UsersPage() {
@@ -1527,6 +1625,7 @@ export default function App() {
           <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/finance" element={<FinancePage />} />
+          <Route path="/dailyreport" element={<DailyReportPage />} />
           <Route path="/cashdrawer" element={<CashDrawerPage />} />
           <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />

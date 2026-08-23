@@ -105,6 +105,8 @@ export function AuthProvider({ children }) {
     getActiveDrawer: () => request("/cash-drawer/active"),
     openDrawer: (data) => request("/cash-drawer/open", { method: "POST", body: JSON.stringify(data) }),
     closeDrawer: (data) => request("/cash-drawer/close", { method: "POST", body: JSON.stringify(data) }),
+    fetchDailyReport: (date) => request(`/reports/daily${date ? `?date=${date}` : ""}`),
+    emailDailyReport: (data) => request("/reports/daily/email", { method: "POST", body: JSON.stringify(data) }),
   }), [user, loading, login, logout, request]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

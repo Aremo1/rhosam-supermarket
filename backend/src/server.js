@@ -3,7 +3,10 @@ const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
+const { Resend } = require("resend");
 require("dotenv").config();
+
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -855,6 +858,174 @@ app.get("/api/categories", auth, async (_q, r, n) => {
   try {
     r.json((await pool.query("SELECT DISTINCT category FROM products ORDER BY category")).rows.map(r => r.category));
   } catch (e) { n(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 15: DAILY REPORTS & EMAIL
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/reports/daily", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const startDate = `${date}T00:00:00`;
+    const endDate = `${date}T23:59:59`;
+
+    const [salesResult, itemsResult, expensesResult, topProducts] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS total_transactions,
+                COALESCE(SUM(total),0)::float AS total_revenue,
+                COALESCE(SUM(subtotal),0)::float AS subtotal,
+                COALESCE(SUM(discount),0)::float AS total_discount,
+                COALESCE(SUM(tax),0)::float AS total_tax,
+                COALESCE(SUM(amount_paid),0)::float AS total_paid,
+                COALESCE(SUM(change_amount),0)::float AS total_change
+         FROM sales WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+      ),
+      pool.query(
+        `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
+         FROM sale_items si JOIN sales s ON s.id = si.sale_id
+         WHERE s.created_at BETWEEN $1 AND $2
+         GROUP BY si.product_name ORDER BY revenue DESC`, [startDate, endDate]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0)::float AS total_expenses
+         FROM expenses WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+      ),
+      pool.query(
+        `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
+         FROM sale_items si JOIN sales s ON s.id = si.sale_id
+         WHERE s.created_at BETWEEN $1 AND $2
+         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10`, [startDate, endDate]
+      )
+    ]);
+
+    const sales = salesResult.rows[0];
+    const expenses = expensesResult.rows[0].total_expenses;
+    const revenue = sales.total_revenue;
+
+    res.json({
+      date,
+      summary: {
+        totalTransactions: sales.total_transactions,
+        totalRevenue: revenue,
+        subtotal: sales.subtotal,
+        totalDiscount: sales.total_discount,
+        totalTax: sales.total_tax,
+        totalPaid: sales.total_paid,
+        totalChange: sales.total_change,
+        totalExpenses: expenses,
+        netProfit: revenue - expenses,
+      },
+      itemsSold: itemsResult.rows,
+      topProducts: topProducts.rows,
+    });
+  } catch (e) { next(e); }
+});
+
+app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    if (!resend) return res.status(503).json({ message: "Email not configured. Add RESEND_API_KEY to .env" });
+
+    const { date, recipientEmail } = req.body;
+    if (!recipientEmail) return res.status(400).json({ message: "Recipient email required." });
+
+    const reportDate = date || new Date().toISOString().slice(0, 10);
+    const startDate = `${reportDate}T00:00:00`;
+    const endDate = `${reportDate}T23:59:59`;
+
+    const [salesResult, itemsResult, expensesResult] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS total_transactions,
+                COALESCE(SUM(total),0)::float AS total_revenue,
+                COALESCE(SUM(discount),0)::float AS total_discount,
+                COALESCE(SUM(tax),0)::float AS total_tax
+         FROM sales WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+      ),
+      pool.query(
+        `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
+         FROM sale_items si JOIN sales s ON s.id = si.sale_id
+         WHERE s.created_at BETWEEN $1 AND $2
+         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 15`, [startDate, endDate]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0)::float AS total_expenses
+         FROM expenses WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+      )
+    ]);
+
+    const sales = salesResult.rows[0];
+    const expenses = expensesResult.rows[0].total_expenses;
+    const revenue = sales.total_revenue;
+    const profit = revenue - expenses;
+
+    const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+    // Build HTML email
+    const itemsHTML = itemsResult.rows.map((item, i) =>
+      `<tr style="border-bottom:1px solid #eee">
+        <td style="padding:8px">${i + 1}</td>
+        <td style="padding:8px">${item.product_name}</td>
+        <td style="padding:8px;text-align:center">${item.qty}</td>
+        <td style="padding:8px;text-align:right">${fmt(item.revenue)}</td>
+      </tr>`
+    ).join("");
+
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
+      <div style="background:#16a34a;color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center">
+        <h1 style="margin:0;font-size:22px">🛍 RHoSAM Daily Sales Report</h1>
+        <p style="margin:5px 0 0;opacity:0.9">${reportDate}</p>
+      </div>
+
+      <div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb">
+        <h2 style="margin:0 0 12px;font-size:16px;color:#374151">Summary</h2>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><td style="padding:6px 0;color:#6b7280">Total Transactions</td><td style="padding:6px 0;text-align:right;font-weight:bold">${sales.total_transactions}</td></tr>
+          <tr><td style="padding:6px 0;color:#6b7280">Total Revenue</td><td style="padding:6px 0;text-align:right;font-weight:bold;color:#16a34a">${fmt(revenue)}</td></tr>
+          <tr><td style="padding:6px 0;color:#6b7280">Discounts</td><td style="padding:6px 0;text-align:right;color:#b45309">-${fmt(sales.total_discount)}</td></tr>
+          <tr><td style="padding:6px 0;color:#6b7280">Tax</td><td style="padding:6px 0;text-align:right">${fmt(sales.total_tax)}</td></tr>
+          <tr><td style="padding:6px 0;color:#6b7280">Expenses</td><td style="padding:6px 0;text-align:right;color:#b42318">${fmt(expenses)}</td></tr>
+          <tr style="border-top:2px solid #374151">
+            <td style="padding:8px 0;font-weight:bold;font-size:15px">Net Profit</td>
+            <td style="padding:8px 0;text-align:right;font-weight:bold;font-size:15px;color:${profit >= 0 ? '#16a34a' : '#b42318'}">${fmt(profit)}</td>
+          </tr>
+        </table>
+      </div>
+
+      ${itemsResult.rows.length ? `
+      <div style="background:white;padding:20px;border:1px solid #e5e7eb;border-top:none">
+        <h2 style="margin:0 0 12px;font-size:16px;color:#374151">Items Sold (${itemsResult.rows.length} products)</h2>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="background:#f3f4f6">
+            <th style="padding:8px;text-align:left">#</th>
+            <th style="padding:8px;text-align:left">Product</th>
+            <th style="padding:8px;text-align:center">Qty</th>
+            <th style="padding:8px;text-align:right">Revenue</th>
+          </tr></thead>
+          <tbody>${itemsHTML}</tbody>
+        </table>
+      </div>` : ''}
+
+      <div style="text-align:center;padding:16px;color:#9ca3af;font-size:12px;border-top:1px solid #e5e7eb">
+        RHoSAM Supermarket POS • Generated ${new Date().toLocaleString('en-NG')}
+      </div>
+    </div>`;
+
+    const { data, error } = await resend.emails.send({
+      from: "RHoSAM Reports <onboarding@resend.dev>",
+      to: recipientEmail,
+      subject: `RHoSAM Daily Report — ${reportDate} — Revenue: ${fmt(revenue)}`,
+      html,
+    });
+
+    if (error) {
+      console.error("[EMAIL ERROR]", error);
+      return res.status(500).json({ message: error.message || "Failed to send email." });
+    }
+
+    await audit(pool, req.user.id, "SEND_REPORT", "DAILY_REPORT", null, { date: reportDate, recipient: recipientEmail });
+    res.json({ message: "Report sent successfully.", id: data?.id });
+  } catch (e) { next(e); }
 });
 
 // ── Error handler ────────────────────────────────────────────────
