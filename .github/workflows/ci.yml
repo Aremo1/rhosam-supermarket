@@ -1,0 +1,308 @@
+# ═══════════════════════════════════════════════════════════════════
+# RHoSAM Supermarket — CI Pipeline
+# Runs SIT and UAT tests automatically on push/PR
+# ═══════════════════════════════════════════════════════════════════
+name: CI — SIT & UAT Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rhosam_test
+  JWT_SECRET: ci-test-secret-key-for-testing-only
+  PORT: 5000
+  FRONTEND_URL: http://localhost:5173
+  NODE_ENV: test
+
+jobs:
+  # ── Job 1: System Integration Tests ──────────────────────────
+  sit:
+    name: 🧪 System Integration Tests (SIT)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rhosam_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: 📦 Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: 🗄️ Run database migrations
+        working-directory: backend
+        run: |
+          node -e "
+            const { Pool } = require('pg');
+            const fs = require('fs');
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+            (async () => {
+              const schema = fs.readFileSync('sql/schema.sql', 'utf8');
+              await pool.query(schema);
+              console.log('✅ Schema applied');
+              await pool.end();
+            })().catch(e => { console.error(e.message); process.exit(1); });
+          "
+
+      - name: 👤 Create test admin user
+        working-directory: backend
+        run: |
+          ADMIN_EMAIL=test-admin@rhosam.ci \
+          ADMIN_PASSWORD=TestAdmin@123456 \
+          ADMIN_NAME="CI Admin" \
+          node -e "
+            const bcrypt = require('bcrypt');
+            const { Pool } = require('pg');
+            require('dotenv').config();
+            (async () => {
+              const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+              const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+              await pool.query(
+                \`INSERT INTO users(name,email,password_hash,role,is_active)
+                 VALUES(\$1,\$2,\$3,'ADMIN',TRUE)
+                 ON CONFLICT(email) DO UPDATE SET password_hash=EXCLUDED.password_hash\`,
+                [process.env.ADMIN_NAME, process.env.ADMIN_EMAIL, hash]
+              );
+              console.log('✅ Test admin created');
+              await pool.end();
+            })().catch(e => { console.error(e.message); process.exit(1); });
+          "
+
+      - name: 🚀 Start backend server
+        working-directory: backend
+        run: node src/server.js &
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rhosam_test
+
+      - name: ⏳ Wait for server to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/api/health > /dev/null 2>&1; then
+              echo "✅ Server is ready"
+              exit 0
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "❌ Server failed to start"
+          exit 1
+
+      - name: 🧪 Run SIT tests
+        working-directory: backend
+        run: node test-sit.js
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rhosam_test
+
+  # ── Job 2: User Acceptance Tests ─────────────────────────────
+  uat:
+    name: ✅ User Acceptance Tests (UAT)
+    runs-on: ubuntu-latest
+    needs: sit  # Run after SIT passes
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rhosam_uat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: 📦 Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: 🗄️ Run database migrations
+        working-directory: backend
+        run: |
+          node -e "
+            const { Pool } = require('pg');
+            const fs = require('fs');
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+            (async () => {
+              const schema = fs.readFileSync('sql/schema.sql', 'utf8');
+              await pool.query(schema);
+              console.log('✅ Schema applied');
+              await pool.end();
+            })().catch(e => { console.error(e.message); process.exit(1); });
+          "
+
+      - name: 👤 Create test admin user
+        working-directory: backend
+        run: |
+          ADMIN_EMAIL=test-admin@rhosam.ci \
+          ADMIN_PASSWORD=TestAdmin@123456 \
+          ADMIN_NAME="CI Admin" \
+          node -e "
+            const bcrypt = require('bcrypt');
+            const { Pool } = require('pg');
+            require('dotenv').config();
+            (async () => {
+              const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+              const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+              await pool.query(
+                \`INSERT INTO users(name,email,password_hash,role,is_active)
+                 VALUES(\$1,\$2,\$3,'ADMIN',TRUE)
+                 ON CONFLICT(email) DO UPDATE SET password_hash=EXCLUDED.password_hash\`,
+                [process.env.ADMIN_NAME, process.env.ADMIN_EMAIL, hash]
+              );
+              console.log('✅ Test admin created');
+              await pool.end();
+            })().catch(e => { console.error(e.message); process.exit(1); });
+          "
+
+      - name: 🚀 Start backend server
+        working-directory: backend
+        run: node src/server.js &
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rhosam_uat
+
+      - name: ⏳ Wait for server to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/api/health > /dev/null 2>&1; then
+              echo "✅ Server is ready"
+              exit 0
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "❌ Server failed to start"
+          exit 1
+
+      - name: ✅ Run UAT tests
+        working-directory: backend
+        run: node test-uat.js
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rhosam_uat
+
+  # ── Job 3: Frontend Build Check ──────────────────────────────
+  build:
+    name: 🏗️ Frontend Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 📦 Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: 🏗️ Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: 📊 Report build size
+        run: |
+          echo "=== Frontend Build Size ==="
+          du -sh frontend/dist/
+          echo ""
+          echo "=== Asset Files ==="
+          ls -lh frontend/dist/assets/
+
+  # ── Job 4: Backend Syntax Check ──────────────────────────────
+  lint:
+    name: 🔍 Backend Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 🔍 Check server.js syntax
+        working-directory: backend
+        run: node -c src/server.js
+
+      - name: 🔍 Check test files syntax
+        working-directory: backend
+        run: |
+          node -c test-sit.js
+          node -c test-uat.js
+          node -c test-all-endpoints.js
+
+      - name: 📊 Report
+        run: echo "✅ All files pass syntax check"
+
+  # ── Summary ──────────────────────────────────────────────────
+  ci-complete:
+    name: 🎉 CI Complete
+    runs-on: ubuntu-latest
+    needs: [sit, uat, build, lint]
+    if: always()
+
+    steps:
+      - name: 📊 Report results
+        run: |
+          echo "══════════════════════════════════════════════════════════════"
+          echo "  CI Pipeline Results"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "  SIT:            ${{ needs.sit.result }}"
+          echo "  UAT:            ${{ needs.uat.result }}"
+          echo "  Frontend Build: ${{ needs.build.result }}"
+          echo "  Syntax Check:   ${{ needs.lint.result }}"
+          echo ""
+          if [ "${{ needs.sit.result }}" = "success" ] && \
+             [ "${{ needs.uat.result }}" = "success" ] && \
+             [ "${{ needs.build.result }}" = "success" ] && \
+             [ "${{ needs.lint.result }}" = "success" ]; then
+            echo "  🎉 ALL CHECKS PASSED"
+          else
+            echo "  ⚠️  Some checks failed — review above"
+            exit 1
+          fi
+          echo "══════════════════════════════════════════════════════════════"

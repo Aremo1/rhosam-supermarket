@@ -3,7 +3,7 @@
 // Tests cross-module integration: POS ↔ Inventory ↔ Sales ↔ Audit
 // Idempotent — safe to run multiple times
 // ═══════════════════════════════════════════════════════════════════
-const API = "http://localhost:5000/api";
+const API = process.env.TEST_API_URL || "http://localhost:5000/api";
 
 let pass = 0, fail = 0, total = 0;
 let TOKEN = "";

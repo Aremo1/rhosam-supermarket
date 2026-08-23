@@ -3,7 +3,7 @@
 // Business-focused tests verifying system meets user requirements
 // Run: node test-uat.js
 // ═══════════════════════════════════════════════════════════════════
-const API = "http://localhost:5000/api";
+const API = process.env.TEST_API_URL || "http://localhost:5000/api";
 
 let pass = 0, fail = 0, total = 0, skipped = 0;
 let TOKEN = "", CASHIER_TOKEN = "", MANAGER_TOKEN = "";
