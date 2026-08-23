@@ -33,8 +33,15 @@ function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const currentPage = location.pathname.slice(1) || "dashboard";
   const menuItems = MENUS[user?.role] || MENUS.CASHIER;
+
+  // Apply dark mode class to body
+  useEffect(() => {
+    document.body.classList.toggle("dark", darkMode);
+    localStorage.setItem("rhosam-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   // PWA Install prompt
   useEffect(() => {
@@ -43,7 +50,6 @@ function Layout({ children }) {
       setInstallPrompt(e);
     };
     window.addEventListener("beforeinstallprompt", handler);
-    // Check if already installed
     if (window.matchMedia("(display-mode: standalone)").matches) setIsInstalled(true);
     window.addEventListener("appinstalled", () => setIsInstalled(true));
     return () => window.removeEventListener("beforeinstallprompt", handler);
@@ -57,7 +63,7 @@ function Layout({ children }) {
   }
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${darkMode ? "dark" : ""}`}>
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-header">
           <h2>RHoSAM</h2>
@@ -95,6 +101,9 @@ function Layout({ children }) {
           <button className="menu-toggle" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
           <h1 className="page-title">{LABELS[currentPage] || "RHoSAM"}</h1>
           <div className="topbar-right">
+            <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)} title={darkMode ? "Switch to light mode" : "Switch to dark mode"}>
+              {darkMode ? "☀️" : "🌙"}
+            </button>
             <span className="user-badge">{user?.name} · <span className="role-tag">{user?.role}</span></span>
           </div>
         </header>
