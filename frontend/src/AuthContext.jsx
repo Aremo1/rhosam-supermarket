@@ -98,6 +98,13 @@ export function AuthProvider({ children }) {
     fetchAuditLogs: (limit) => request(`/audit-logs${limit ? `?limit=${limit}` : ""}`),
     fetchCategories: () => request("/categories"),
     fetchBranches: () => request("/branches"),
+    createBranch: (data) => request("/branches", { method: "POST", body: JSON.stringify(data) }),
+    updateBranch: (id, data) => request(`/branches/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteBranch: (id) => request(`/branches/${id}`, { method: "DELETE" }),
+    fetchCashDrawers: () => request("/cash-drawer"),
+    getActiveDrawer: () => request("/cash-drawer/active"),
+    openDrawer: (data) => request("/cash-drawer/open", { method: "POST", body: JSON.stringify(data) }),
+    closeDrawer: (data) => request("/cash-drawer/close", { method: "POST", body: JSON.stringify(data) }),
   }), [user, loading, login, logout, request]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

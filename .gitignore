@@ -3,3 +3,6 @@
 .env
 *.env
 backend/.env
+backend/debug-test.js
+backend/server.log
+*.log

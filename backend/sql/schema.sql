@@ -156,6 +156,9 @@ CREATE TABLE IF NOT EXISTS cash_drawer (
   drawer_name VARCHAR(80) NOT NULL DEFAULT 'Main Drawer',
   opening_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
   current_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+  closing_balance NUMERIC(12,2),
+  expected_balance NUMERIC(12,2),
+  variance NUMERIC(12,2) DEFAULT 0,
   status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
   opened_by INTEGER REFERENCES users(id),
   closed_by INTEGER REFERENCES users(id),
@@ -197,3 +200,5 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
 CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cash_drawer_status ON cash_drawer(status);
+CREATE INDEX IF NOT EXISTS idx_branches_name ON branches(name);

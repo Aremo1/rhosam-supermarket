@@ -43,6 +43,23 @@ async function audit(c, u, a, e, id, d = {}) {
   );
 }
 
+// Auto-calculate membership tier based on total_spent
+function calcMembershipTier(totalSpent) {
+  const t = Number(totalSpent || 0);
+  if (t >= 500000) return "PLATINUM";  // ₦500k+
+  if (t >= 200000) return "GOLD";       // ₦200k+
+  if (t >= 50000)  return "SILVER";     // ₦50k+
+  return "BRONZE";
+}
+
+async function updateCustomerTier(c, customerId) {
+  const { rows } = await c.query("SELECT total_spent FROM customers WHERE id=$1", [customerId]);
+  if (rows[0]) {
+    const tier = calcMembershipTier(rows[0].total_spent);
+    await c.query("UPDATE customers SET membership_tier=$1 WHERE id=$2", [tier, customerId]);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 7: AUTHENTICATION
 // ═══════════════════════════════════════════════════════════════════
@@ -134,6 +151,7 @@ app.patch("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
        RETURNING id,name,email,role,is_active,locked_until`,
       [role ?? null, isActive, Boolean(unlock), id]
     );
+    if (!rows[0]) return res.status(404).json({ message: "User not found." });
     await audit(pool, req.user.id, "UPDATE", "USER", id, req.body);
     res.json(rows[0]);
   } catch (e) { next(e); }
@@ -143,7 +161,8 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (id === req.user.id) return res.status(400).json({ message: "Cannot delete your own account." });
-    await pool.query("DELETE FROM users WHERE id=$1", [id]);
+    const { rowCount } = await pool.query("DELETE FROM users WHERE id=$1", [id]);
+    if (rowCount === 0) return res.status(404).json({ message: "User not found." });
     await audit(pool, req.user.id, "DELETE", "USER", id);
     res.json({ message: "User deleted." });
   } catch (e) { next(e); }
@@ -206,7 +225,8 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
 app.delete("/api/products/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    await pool.query("DELETE FROM products WHERE id=$1", [id]);
+    const { rowCount } = await pool.query("DELETE FROM products WHERE id=$1", [id]);
+    if (rowCount === 0) return res.status(404).json({ message: "Product not found." });
     await audit(pool, req.user.id, "DELETE", "PRODUCT", id);
     res.json({ message: "Product deleted." });
   } catch (e) { next(e); }
@@ -266,15 +286,17 @@ app.get("/api/sales", auth, async (req, res, next) => {
     if (from) { where.push(`s.created_at >= $${paramIdx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${paramIdx++}`); params.push(to); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
-    r.json((await pool.query(
-      `SELECT s.id,s.receipt_number,s.customer_name,s.payment_method,s.subtotal::float,s.discount::float,s.tax::float,
+    const sql = `SELECT s.id,s.receipt_number,s.customer_name,s.payment_method,s.subtotal::float,s.discount::float,s.tax::float,
               s.total::float,s.amount_paid::float,s.status,s.created_at,u.name AS cashier_name,
               COALESCE(SUM(si.quantity),0)::int AS item_count
        FROM sales s JOIN users u ON u.id = s.cashier_id
        LEFT JOIN sale_items si ON si.sale_id = s.id ${w}
-       GROUP BY s.id,u.name ORDER BY s.created_at DESC LIMIT 200`, params
-    )).rows);
-  } catch (e) { next(e); }
+       GROUP BY s.id,u.name ORDER BY s.created_at DESC LIMIT 200`;
+    console.log("[SALES DEBUG] sql:", sql.substring(0, 120), "params:", params);
+    const result = await pool.query(sql, params);
+    console.log("[SALES DEBUG] rows:", result.rows.length);
+    res.json(result.rows);
+  } catch (e) { console.error("[SALES ERROR]", e.message, e.code); next(e); }
 });
 
 app.get("/api/sales/:id", auth, async (req, res, next) => {
@@ -321,7 +343,8 @@ app.post("/api/sales", auth, async (req, res, next) => {
     }
 
     const total = subtotal - Number(discount) + Number(tax);
-    const paid = amountPaid != null ? Number(amountPaid) : total;
+    const paidRaw = amountPaid != null ? Number(amountPaid) : total;
+    const paid = Number.isFinite(paidRaw) && paidRaw >= 0 ? paidRaw : total;
     const change = Math.max(0, paid - total);
     const receiptNumber = `RHS-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
@@ -344,13 +367,14 @@ app.post("/api/sales", auth, async (req, res, next) => {
       );
     }
 
-    // Update customer loyalty points
+    // Update customer loyalty points and auto tier
     if (customerId) {
       const points = Math.floor(total / 100); // 1 point per 100 spent
       await client.query(
         "UPDATE customers SET loyalty_points = loyalty_points + $1, total_spent = total_spent + $2, visit_count = visit_count + 1 WHERE id = $3",
         [points, total, customerId]
       );
+      await updateCustomerTier(client, customerId);
     }
 
     await audit(client, req.user.id, "CREATE", "SALE", sale.id, { receiptNumber, total });
@@ -379,7 +403,15 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
     );
     if (!itemRows[0]) return res.status(404).json({ message: "Item not found in sale." });
     const qty = Number(quantity);
-    if (qty > itemRows[0].quantity) return res.status(400).json({ message: "Return quantity exceeds original." });
+    if (!Number.isInteger(qty) || qty < 1) return res.status(400).json({ message: "Return quantity must be a positive integer." });
+    // Check already-returned quantity for this item
+    const { rows: retRows } = await client.query(
+      "SELECT COALESCE(SUM(quantity),0)::int AS returned FROM returns WHERE sale_id=$1 AND product_id=$2",
+      [saleId, productId]
+    );
+    const alreadyReturned = retRows[0].returned || 0;
+    const remaining = itemRows[0].quantity - alreadyReturned;
+    if (qty > remaining) return res.status(400).json({ message: `Return quantity exceeds remaining (${remaining} left to return).` });
 
     await client.query("BEGIN");
     const refundAmount = Number(itemRows[0].unit_price) * qty;
@@ -484,13 +516,15 @@ app.put("/api/suppliers/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, 
        is_active=COALESCE($6,is_active) WHERE id=$7 RETURNING *`,
       [name, contactPerson, email, phone, address, isActive, id]
     );
+    if (!rows[0]) return res.status(404).json({ message: "Supplier not found." });
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
 
 app.delete("/api/suppliers/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
-    await pool.query("DELETE FROM suppliers WHERE id=$1", [Number(req.params.id)]);
+    const { rowCount } = await pool.query("DELETE FROM suppliers WHERE id=$1", [Number(req.params.id)]);
+    if (rowCount === 0) return res.status(404).json({ message: "Supplier not found." });
     await audit(pool, req.user.id, "DELETE", "SUPPLIER", req.params.id);
     res.json({ message: "Supplier deleted." });
   } catch (e) { next(e); }
@@ -567,6 +601,15 @@ app.patch("/api/purchase-orders/:id/status", auth, allow("ADMIN", "MANAGER"), as
       return res.status(400).json({ message: "Invalid status." });
 
     await client.query("BEGIN");
+    const { rows: existing } = await client.query("SELECT status FROM purchase_orders WHERE id=$1", [id]);
+    if (!existing[0]) { await client.query("ROLLBACK").catch(() => {}); client.release(); return res.status(404).json({ message: "Purchase order not found." }); }
+    const currentStatus = existing[0].status;
+    const validTransitions = { PENDING: ["APPROVED", "CANCELLED"], APPROVED: ["RECEIVED", "CANCELLED"] };
+    if (currentStatus === "RECEIVED" || currentStatus === "CANCELLED")
+      return res.status(400).json({ message: `Cannot change status from ${currentStatus}.` });
+    if (validTransitions[currentStatus] && !validTransitions[currentStatus].includes(status))
+      return res.status(400).json({ message: `Cannot transition from ${currentStatus} to ${status}.` });
+
     const updateFields = status === "RECEIVED"
       ? "status=$1, received_date=NOW(), updated_at=NOW()"
       : "status=$1, updated_at=NOW()";
@@ -623,6 +666,7 @@ app.put("/api/customers/:id", auth, async (req, res, next) => {
       "UPDATE customers SET name=COALESCE($1,name),email=COALESCE($2,email),phone=COALESCE($3,phone) WHERE id=$4 RETURNING *",
       [name, email, phone, id]
     );
+    if (!rows[0]) return res.status(404).json({ message: "Customer not found." });
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -659,7 +703,12 @@ app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (_q, r, n
     const [salesRev, totalExpenses, todaySales] = await Promise.all([
       pool.query("SELECT COALESCE(SUM(total),0)::float AS revenue FROM sales"),
       pool.query("SELECT COALESCE(SUM(amount),0)::float AS total FROM expenses"),
-      pool.query("SELECT COALESCE(SUM(total),0)::float AS revenue,COALESCE(SUM(total),0)::float AS cost FROM sales WHERE created_at::date = CURRENT_DATE")
+      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS revenue,
+        COALESCE((SELECT SUM(p.cost_price * si.quantity) FROM sale_items si
+          JOIN products p ON p.id = si.product_id
+          JOIN sales s2 ON s2.id = si.sale_id
+          WHERE s2.created_at::date = CURRENT_DATE),0)::float AS cost
+        FROM sales s WHERE s.created_at::date = CURRENT_DATE`)
     ]);
     const revenue = salesRev.rows[0].revenue;
     const expenses = totalExpenses.rows[0].total;
@@ -692,6 +741,113 @@ app.get("/api/branches", auth, async (_q, r, n) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// PHASE 14: CASH DRAWER
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/cash-drawer", auth, async (_q, r, n) => {
+  try {
+    r.json((await pool.query(
+      `SELECT cd.*, uo.name AS opened_by_name, uc.name AS closed_by_name
+       FROM cash_drawer cd
+       LEFT JOIN users uo ON uo.id = cd.opened_by
+       LEFT JOIN users uc ON uc.id = cd.closed_by
+       ORDER BY cd.opened_at DESC LIMIT 50`
+    )).rows);
+  } catch (e) { n(e); }
+});
+
+app.get("/api/cash-drawer/active", auth, async (_q, r, n) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT cd.*, uo.name AS opened_by_name
+       FROM cash_drawer cd LEFT JOIN users uo ON uo.id = cd.opened_by
+       WHERE cd.status = 'OPEN' ORDER BY cd.opened_at DESC LIMIT 1`
+    );
+    r.json(rows[0] || null);
+  } catch (e) { n(e); }
+});
+
+app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
+  try {
+    const { openingBalance = 0, drawerName = "Main Drawer" } = req.body;
+    const existing = await pool.query("SELECT id FROM cash_drawer WHERE status = 'OPEN' LIMIT 1");
+    if (existing.rows[0]) return res.status(409).json({ message: "A drawer is already open. Close it first." });
+    const { rows } = await pool.query(
+      `INSERT INTO cash_drawer(drawer_name, opening_balance, current_balance, opened_by)
+       VALUES($1, $2, $2, $3) RETURNING *`,
+      [drawerName, Number(openingBalance), req.user.id]
+    );
+    await audit(pool, req.user.id, "OPEN_DRAWER", "CASH_DRAWER", rows[0].id, { openingBalance, drawerName });
+    res.status(201).json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { closingBalance } = req.body;
+    if (closingBalance == null) return res.status(400).json({ message: "Closing balance required." });
+    const { rows: openDrawer } = await pool.query("SELECT * FROM cash_drawer WHERE status = 'OPEN' LIMIT 1");
+    if (!openDrawer[0]) return res.status(404).json({ message: "No open drawer found." });
+    const drawer = openDrawer[0];
+    const salesInPeriod = await pool.query(
+      "SELECT COALESCE(SUM(total),0)::float AS total FROM sales WHERE created_at >= $1",
+      [drawer.opened_at]
+    );
+    const expected = Number(drawer.opening_balance) + Number(salesInPeriod.rows[0].total);
+    const variance = Number(closingBalance) - expected;
+    const { rows } = await pool.query(
+      `UPDATE cash_drawer SET closing_balance=$1, expected_balance=$2, variance=$3,
+       status='CLOSED', closed_by=$4, closed_at=NOW()
+       WHERE id=$5 RETURNING *`,
+      [Number(closingBalance), expected, variance, req.user.id, drawer.id]
+    );
+    await audit(pool, req.user.id, "CLOSE_DRAWER", "CASH_DRAWER", drawer.id, { closingBalance: Number(closingBalance), expected, variance });
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// BRANCH MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/branches", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const { name, address, phone, managerId } = req.body;
+    if (!name) return res.status(400).json({ message: "Branch name required." });
+    const { rows } = await pool.query(
+      "INSERT INTO branches(name,address,phone,manager_id) VALUES($1,$2,$3,$4) RETURNING *",
+      [name, address || null, phone || null, managerId || null]
+    );
+    await audit(pool, req.user.id, "CREATE", "BRANCH", rows[0].id, { name });
+    res.status(201).json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+app.put("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, address, phone, managerId, isActive } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE branches SET name=COALESCE($1,name),address=COALESCE($2,address),
+       phone=COALESCE($3,phone),manager_id=COALESCE($4,manager_id),
+       is_active=COALESCE($5,is_active) WHERE id=$6 RETURNING *`,
+      [name, address, phone, managerId, isActive, id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Branch not found." });
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const { rowCount } = await pool.query("DELETE FROM branches WHERE id=$1", [Number(req.params.id)]);
+    if (rowCount === 0) return res.status(404).json({ message: "Branch not found." });
+    await audit(pool, req.user.id, "DELETE", "BRANCH", req.params.id);
+    res.json({ message: "Branch deleted." });
+  } catch (e) { n(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // CATEGORY LIST (for dropdowns)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -703,7 +859,7 @@ app.get("/api/categories", auth, async (_q, r, n) => {
 
 // ── Error handler ────────────────────────────────────────────────
 app.use((e, _q, r, _n) => {
-  console.error(e);
+  console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));
   r.status(e.status || 500).json({ message: e.status ? e.message : "Unexpected server error." });
 });
 

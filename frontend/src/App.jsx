@@ -7,18 +7,20 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","users","audit"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance"],
-  CASHIER: ["dashboard","pos","sales"],
+  ADMIN: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","cashdrawer","branches","users","audit"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","cashdrawer"],
+  CASHIER: ["dashboard","pos","cashdrawer","sales"],
 };
 const LABELS = {
   dashboard: "Dashboard", pos: "Point of Sale", products: "Products", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
   expenses: "Expenses", finance: "Finance", users: "User Management", audit: "Audit Logs",
+  cashdrawer: "Cash Drawer", branches: "Branches",
 };
 const ICONS = {
   dashboard: "📊", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", users: "👤", audit: "📝",
+  cashdrawer: "💵", branches: "🏢",
 };
 
 function Layout({ children }) {
@@ -575,7 +577,7 @@ function InventoryPage() {
                 <select value={adjForm.type} onChange={e => setAdjForm({ ...adjForm, type: e.target.value })}>
                   <option value="STOCK_IN">Stock In (Add)</option>
                   <option value="STOCK_OUT">Stock Out (Remove)</option>
-                  <option value="ADJUSTMENT">Adjustment (Set)</option>
+                  <option value="ADJUSTMENT">Adjustment (Add)</option>
                 </select>
               </label>
               <label>Quantity<input type="number" min="1" value={adjForm.quantity} onChange={e => setAdjForm({ ...adjForm, quantity: e.target.value })} required /></label>
@@ -1196,6 +1198,233 @@ function AuditPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// CASH DRAWER
+// ═══════════════════════════════════════════════════════════════════
+function CashDrawerPage() {
+  const { getActiveDrawer, openDrawer, closeDrawer, fetchCashDrawers, user } = useAuth();
+  const [activeDrawer, setActiveDrawer] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showOpenForm, setShowOpenForm] = useState(false);
+  const [showCloseForm, setShowCloseForm] = useState(false);
+  const [openBal, setOpenBal] = useState(0);
+  const [closeBal, setCloseBal] = useState(0);
+  const [drawerName, setDrawerName] = useState("Main Drawer");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [active, hist] = await Promise.all([getActiveDrawer(), fetchCashDrawers()]);
+      setActiveDrawer(active); setHistory(hist);
+    } catch { }
+    finally { setLoading(false); }
+  }, [getActiveDrawer, fetchCashDrawers]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleOpen(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await openDrawer({ openingBalance: Number(openBal), drawerName });
+      setShowOpenForm(false); load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleClose(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await closeDrawer({ closingBalance: Number(closeBal) });
+      setShowCloseForm(false); load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  const fmt = (n) => "₦" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  if (loading) return <p className="loading">Loading…</p>;
+
+  return (
+    <div className="page-panel">
+      {activeDrawer ? (
+        <div className="summary-grid">
+          <div className="summary-card accent">
+            <span>Status</span>
+            <strong style={{ color: "var(--success)" }}>🟢 OPEN</strong>
+            <small>{activeDrawer.drawer_name}</small>
+          </div>
+          <div className="summary-card">
+            <span>Opening Balance</span>
+            <strong>{fmt(activeDrawer.opening_balance)}</strong>
+          </div>
+          <div className="summary-card">
+            <span>Opened By</span>
+            <strong>{activeDrawer.opened_by_name}</strong>
+            <small>{new Date(activeDrawer.opened_at).toLocaleString()}</small>
+          </div>
+          <div className="summary-card">
+            <span>Opened At</span>
+            <strong>{new Date(activeDrawer.opened_at).toLocaleString()}</strong>
+          </div>
+        </div>
+      ) : (
+        <div className="summary-grid">
+          <div className="summary-card">
+            <span>Status</span>
+            <strong style={{ color: "var(--muted)" }}>🔴 No Active Drawer</strong>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="error-msg" style={{ marginBottom: 16 }}>{error}</div>}
+
+      <div className="panel-header">
+        <h2>Cash Drawer</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          {!activeDrawer && <button className="btn primary" onClick={() => { setShowOpenForm(true); setShowCloseForm(false); }}>💵 Open Drawer</button>}
+          {activeDrawer && <button className="btn danger" style={{ background: "var(--danger)" }} onClick={() => { setShowCloseForm(true); setShowOpenForm(false); }}>🔒 Close Drawer</button>}
+        </div>
+      </div>
+
+      {showOpenForm && (
+        <div className="modal-overlay" onClick={() => setShowOpenForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Open Cash Drawer</h2>
+            <form onSubmit={handleOpen} className="form-grid">
+              <label>Drawer Name<input value={drawerName} onChange={e => setDrawerName(e.target.value)} required /></label>
+              <label>Opening Balance (₦)<input type="number" min="0" step="0.01" value={openBal} onChange={e => setOpenBal(e.target.value)} required /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowOpenForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary" disabled={busy}>{busy ? "Opening…" : "Open Drawer"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showCloseForm && (
+        <div className="modal-overlay" onClick={() => setShowCloseForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Close Cash Drawer</h2>
+            <form onSubmit={handleClose} className="form-grid">
+              <label>Closing Balance (₦)<input type="number" min="0" step="0.01" value={closeBal} onChange={e => setCloseBal(e.target.value)} required /></label>
+              <p className="muted">The system will compare your closing balance against expected total.</p>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowCloseForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary" disabled={busy} style={{ background: "var(--danger)" }}>{busy ? "Closing…" : "Close Drawer"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <div className="panel">
+        <h2>Drawer History</h2>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Drawer</th><th>Opened</th><th>Closed</th><th>Opening Bal</th><th>Closing Bal</th><th>Expected</th><th>Variance</th><th>Opened By</th><th>Closed By</th></tr></thead>
+            <tbody>{history.map(d => (
+              <tr key={d.id}>
+                <td>{d.drawer_name}</td>
+                <td>{new Date(d.opened_at).toLocaleString()}</td>
+                <td>{d.closed_at ? new Date(d.closed_at).toLocaleString() : <span className="status-badge active">OPEN</span>}</td>
+                <td>{fmt(d.opening_balance)}</td>
+                <td>{d.closing_balance != null ? fmt(d.closing_balance) : "—"}</td>
+                <td>{d.expected_balance != null ? fmt(d.expected_balance) : "—"}</td>
+                <td className={d.variance > 0 ? "profit" : d.variance < 0 ? "loss" : ""}>
+                  {d.variance != null ? fmt(d.variance) : "—"}
+                </td>
+                <td>{d.opened_by_name || "—"}</td>
+                <td>{d.closed_by_name || "—"}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!history.length && <p className="muted">No drawer history yet.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BRANCHES (Phase 14)
+// ═══════════════════════════════════════════════════════════════════
+function BranchesPage() {
+  const { fetchBranches, createBranch, updateBranch, deleteBranch } = useAuth();
+  const [branches, setBranches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editBranch, setEditBranch] = useState(null);
+  const [form, setForm] = useState({ name: "", address: "", phone: "" });
+
+  const load = useCallback(async () => { try { setBranches(await fetchBranches()); } catch { } finally { setLoading(false); } }, [fetchBranches]);
+  useEffect(() => { load(); }, [load]);
+
+  function startEdit(b) { setEditBranch(b); setForm({ name: b.name, address: b.address || "", phone: b.phone || "" }); setShowForm(true); }
+  function startNew() { setEditBranch(null); setForm({ name: "", address: "", phone: "" }); setShowForm(true); }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    try {
+      if (editBranch) await updateBranch(editBranch.id, form);
+      else await createBranch(form);
+      setShowForm(false); load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleDelete(id, name) {
+    if (!confirm(`Delete branch "${name}"?`)) return;
+    try { await deleteBranch(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header"><button className="btn primary" onClick={startNew}>+ Add Branch</button></div>
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>{editBranch ? "Edit Branch" : "New Branch"}</h2>
+            <form onSubmit={handleSubmit} className="form-grid">
+              <label>Branch Name<input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></label>
+              <label>Address<textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} /></label>
+              <label>Phone<input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">{editBranch ? "Update" : "Create"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Address</th><th>Phone</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody>{branches.map(b => (
+              <tr key={b.id}>
+                <td>{b.name}</td>
+                <td>{b.address || "—"}</td>
+                <td>{b.phone || "—"}</td>
+                <td><span className={`status-badge ${b.is_active ? "active" : "inactive"}`}>{b.is_active ? "Active" : "Inactive"}</span></td>
+                <td>{new Date(b.created_at).toLocaleDateString()}</td>
+                <td>
+                  <button className="btn-sm" onClick={() => startEdit(b)}>Edit</button>
+                  <button className="btn-sm danger" onClick={() => handleDelete(b.id, b.name)}>Delete</button>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!branches.length && <p className="muted">No branches yet.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -1214,6 +1443,8 @@ export default function App() {
           <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/finance" element={<FinancePage />} />
+          <Route path="/cashdrawer" element={<CashDrawerPage />} />
+          <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
