@@ -1,0 +1,22 @@
+{
+  "name": "RHoSAM Supermarket POS",
+  "short_name": "RHoSAM POS",
+  "description": "Full-stack supermarket Point of Sale platform with inventory, sales, and business intelligence",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f6f9",
+  "theme_color": "#16a34a",
+  "orientation": "any",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "finance", "shopping"],
+  "lang": "en",
+  "dir": "ltr"
+}

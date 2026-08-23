@@ -29,8 +29,30 @@ function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [isInstalled, setIsInstalled] = useState(false);
   const currentPage = location.pathname.slice(1) || "dashboard";
   const menuItems = MENUS[user?.role] || MENUS.CASHIER;
+
+  // PWA Install prompt
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    // Check if already installed
+    if (window.matchMedia("(display-mode: standalone)").matches) setIsInstalled(true);
+    window.addEventListener("appinstalled", () => setIsInstalled(true));
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  async function handleInstall() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === "accepted") setInstallPrompt(null);
+  }
 
   return (
     <div className="app-layout">
@@ -60,6 +82,13 @@ function Layout({ children }) {
       <div className={`sidebar-overlay ${sidebarOpen ? "show" : ""}`} onClick={() => setSidebarOpen(false)} />
 
       <div className="main-content">
+        {installPrompt && !isInstalled && (
+          <div className="install-banner">
+            <span>📱 Install RHoSAM POS on your device for faster access</span>
+            <button className="btn primary" onClick={handleInstall}>Install</button>
+            <button className="btn secondary" onClick={() => setInstallPrompt(null)}>Dismiss</button>
+          </div>
+        )}
         <header className="topbar">
           <button className="menu-toggle" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
           <h1 className="page-title">{LABELS[currentPage] || "RHoSAM"}</h1>
