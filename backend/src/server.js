@@ -958,10 +958,26 @@ app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
   try {
     const limit = Math.min(Number(q.query.limit) || 200, 500);
     r.json((await pool.query(
-      `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.created_at
+      `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT $1`, [limit]
     )).rows);
   } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) => {
+  try {
+    const limit = Math.min(Number(q.query.limit) || 100, 500);
+    const userId = q.query.user_id;
+    let sql = `
+      SELECT a.id, u.name AS user_name, u.email, a.action, a.details, a.ip_address, a.user_agent, a.created_at
+      FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.action IN ('LOGIN','FORGOT_PASSWORD','RESET_PASSWORD','CHANGE_PASSWORD','MFA_ENABLED','MFA_DISABLED')`;
+    const params = [];
+    if (userId) { params.push(Number(userId)); sql += ` AND a.user_id = $${params.length}`; }
+    sql += ` ORDER BY a.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    r.json((await pool.query(sql, params)).rows);
+  } catch (e) { console.error("[LOGIN-HISTORY]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════

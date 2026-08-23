@@ -102,6 +102,7 @@ export function AuthProvider({ children }) {
     createExpense: (data) => request("/expenses", { method: "POST", body: JSON.stringify(data) }),
     fetchFinanceSummary: () => request("/finance/summary"),
     fetchAuditLogs: (limit) => request(`/audit-logs${limit ? `?limit=${limit}` : ""}`),
+    fetchLoginHistory: (params) => request(`/audit-logs/login-history${params ? `?${new URLSearchParams(params)}` : ""}`),
     fetchCategories: () => request("/categories"),
     fetchBranches: () => request("/branches"),
     createBranch: (data) => request("/branches", { method: "POST", body: JSON.stringify(data) }),

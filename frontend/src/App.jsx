@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
+import QRCode from "qrcode";
 import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
 import "./App.css";
@@ -8,7 +9,7 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","change-password","mfa"],
+  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","loginhistory","change-password","mfa"],
   MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","change-password","mfa"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","change-password"],
 };
@@ -18,14 +19,14 @@ const LABELS = {
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
   cashdrawer: "Cash Drawer", branches: "Branches", display: "Customer Display", supplierportal: "Supplier Portal",
-  "change-password": "Change Password", mfa: "MFA / Security",
+  "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", display: "🖥️", supplierportal: "🏭",
-  "change-password": "🔐", mfa: "🛡️",
+  "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐",
 };
 
 function Layout({ children }) {
@@ -2212,6 +2213,117 @@ function BranchesPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// LOGIN HISTORY
+// ═══════════════════════════════════════════════════════════════════
+function LoginHistoryPage() {
+  const { fetchLoginHistory, fetchUsers } = useAuth();
+  const [logs, setLogs] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [userFilter, setUserFilter] = useState("");
+  const [limit, setLimit] = useState(100);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = { limit };
+      if (userFilter) params.user_id = userFilter;
+      const [l, u] = await Promise.all([fetchLoginHistory(params), fetchUsers()]);
+      setLogs(l); setUsers(u);
+    } catch { }
+    finally { setLoading(false); }
+  }, [fetchLoginHistory, fetchUsers, userFilter, limit]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function parseUA(ua) {
+    if (!ua) return { device: "Unknown", browser: "—", os: "—" };
+    const browser = ua.includes("Firefox") ? "Firefox"
+      : ua.includes("Edg") ? "Edge"
+      : ua.includes("Chrome") ? "Chrome"
+      : ua.includes("Safari") ? "Safari"
+      : ua.includes("Opera") ? "Opera"
+      : "Other";
+    const os = ua.includes("Windows") ? "Windows"
+      : ua.includes("Mac OS") ? "macOS"
+      : ua.includes("Linux") ? "Linux"
+      : ua.includes("Android") ? "Android"
+      : ua.includes("iPhone") || ua.includes("iPad") ? "iOS"
+      : "Other";
+    const device = ua.includes("Mobile") || ua.includes("Android") ? "📱 Mobile" : "💻 Desktop";
+    return { device, browser, os };
+  }
+
+  const actionColor = {
+    LOGIN: "active",
+    FORGOT_PASSWORD: "warning",
+    RESET_PASSWORD: "info",
+    CHANGE_PASSWORD: "info",
+    MFA_ENABLED: "active",
+    MFA_DISABLED: "inactive",
+  };
+
+  const actionLabel = {
+    LOGIN: "🟢 Login",
+    FORGOT_PASSWORD: "🔑 Forgot Password",
+    RESET_PASSWORD: "🔓 Password Reset",
+    CHANGE_PASSWORD: "🔐 Password Changed",
+    MFA_ENABLED: "🛡️ MFA Enabled",
+    MFA_DISABLED: "⚠️ MFA Disabled",
+  };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="filters">
+          <label>User
+            <select value={userFilter} onChange={e => setUserFilter(e.target.value)}>
+              <option value="">All Users</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+            </select>
+          </label>
+          <label>Limit
+            <select value={limit} onChange={e => setLimit(Number(e.target.value))}>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+              <option value={500}>500</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>User</th><th>Action</th><th>IP Address</th><th>Device</th><th>Browser</th><th>OS</th><th>Details</th></tr></thead>
+            <tbody>{logs.map(l => {
+              const ua = parseUA(l.user_agent);
+              return (
+                <tr key={l.id}>
+                  <td>{new Date(l.created_at).toLocaleString()}</td>
+                  <td>
+                    <strong>{l.user_name || "—"}</strong><br />
+                    <small className="muted">{l.email || ""}</small>
+                  </td>
+                  <td><span className={`action-badge ${actionColor[l.action] || ""}`}>{actionLabel[l.action] || l.action}</span></td>
+                  <td><code>{l.ip_address || "—"}</code></td>
+                  <td>{ua.device}</td>
+                  <td>{ua.browser}</td>
+                  <td>{ua.os}</td>
+                  <td><code className="details-cell" title={typeof l.details === 'object' ? JSON.stringify(l.details) : l.details}>{typeof l.details === 'object' ? JSON.stringify(l.details) : (l.details || '—')}</code></td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
+          {!logs.length && <p className="muted">No login history found.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // CHANGE PASSWORD
 // ═══════════════════════════════════════════════════════════════════
 function ChangePasswordPage() {
@@ -2351,6 +2463,7 @@ function MfaSetupPage() {
   const [mfaEnabled, setMfaEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [setupData, setSetupData] = useState(null);
+  const [qrDataUrl, setQrDataUrl] = useState(null);
   const [code, setCode] = useState("");
   const [disablePassword, setDisablePassword] = useState("");
   const [error, setError] = useState("");
@@ -2362,8 +2475,20 @@ function MfaSetupPage() {
     getMfaStatus().then(d => { setMfaEnabled(d.mfaEnabled); setLoading(false); }).catch(() => setLoading(false));
   }, [getMfaStatus]);
 
+  // Generate QR code when setupData changes
+  useEffect(() => {
+    if (setupData?.otpauthUrl) {
+      QRCode.toDataURL(setupData.otpauthUrl, {
+        width: 240,
+        margin: 2,
+        color: { dark: '#172033', light: '#ffffff' },
+        errorCorrectionLevel: 'M',
+      }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
+    }
+  }, [setupData]);
+
   async function handleSetup() {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setQrDataUrl(null);
     try {
       const data = await setupMfa();
       setSetupData(data);
@@ -2426,15 +2551,23 @@ function MfaSetupPage() {
       {tab === "verify" && setupData && (
         <div className="panel">
           <h2>Setup Authenticator</h2>
-          <p className="muted">1. Add this secret to your authenticator app (Google Authenticator, Authy, etc.):</p>
-          <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', margin: '8px 0' }}>
-            {setupData.secret}
+          <p className="muted" style={{ marginBottom: 16 }}>Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.):</p>
+          <div style={{ textAlign: 'center', margin: '16px 0' }}>
+            {qrDataUrl ? (
+              <img src={qrDataUrl} alt="MFA QR Code" style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'white' }} />
+            ) : (
+              <div style={{ width: 240, height: 240, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', borderRadius: 12 }}>
+                <div className="spinner" />
+              </div>
+            )}
           </div>
-          <p className="muted">2. Or use this URL for QR code generation:</p>
-          <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontSize: '0.8rem', wordBreak: 'break-all', margin: '8px 0' }}>
-            {setupData.otpauthUrl}
-          </div>
-          <p className="muted">3. Enter the 6-digit code from your app:</p>
+          <details style={{ marginTop: 12 }}>
+            <summary className="muted" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>Can't scan? Enter secret manually</summary>
+            <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', margin: '8px 0' }}>
+              {setupData.secret}
+            </div>
+          </details>
+          <p className="muted" style={{ marginTop: 16 }}>Enter the 6-digit code from your app to verify:</p>
           <form onSubmit={handleVerify} style={{ marginTop: 12 }}>
             <label>Verification Code
               <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="000000" maxLength={8} required autoFocus style={{ fontFamily: 'monospace', fontSize: '1.2rem', letterSpacing: '0.3em', textAlign: 'center', width: 200 }} />
@@ -2497,6 +2630,7 @@ export default function App() {
           <Route path="/branches" element={<BranchesPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/loginhistory" element={<LoginHistoryPage />} />
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/mfa" element={<MfaSetupPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
