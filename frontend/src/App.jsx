@@ -2464,6 +2464,7 @@ function MfaSetupPage() {
   const [loading, setLoading] = useState(true);
   const [setupData, setSetupData] = useState(null);
   const [qrDataUrl, setQrDataUrl] = useState(null);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const [code, setCode] = useState("");
   const [disablePassword, setDisablePassword] = useState("");
   const [error, setError] = useState("");
@@ -2475,17 +2476,29 @@ function MfaSetupPage() {
     getMfaStatus().then(d => { setMfaEnabled(d.mfaEnabled); setLoading(false); }).catch(() => setLoading(false));
   }, [getMfaStatus]);
 
-  // Generate QR code when setupData changes
+  // Watch for dark mode changes via MutationObserver
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setDarkMode(document.body.classList.contains("dark"));
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  // Generate QR code when setupData or darkMode changes
   useEffect(() => {
     if (setupData?.otpauthUrl) {
+      const colors = darkMode
+        ? { dark: '#f1f5f9', light: '#1e293b' }   // Light QR on dark background
+        : { dark: '#172033', light: '#ffffff' };    // Dark QR on light background
       QRCode.toDataURL(setupData.otpauthUrl, {
         width: 240,
         margin: 2,
-        color: { dark: '#172033', light: '#ffffff' },
+        color: colors,
         errorCorrectionLevel: 'M',
       }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
     }
-  }, [setupData]);
+  }, [setupData, darkMode]);
 
   async function handleSetup() {
     setBusy(true); setError(""); setQrDataUrl(null);
@@ -2554,7 +2567,19 @@ function MfaSetupPage() {
           <p className="muted" style={{ marginBottom: 16 }}>Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.):</p>
           <div style={{ textAlign: 'center', margin: '16px 0' }}>
             {qrDataUrl ? (
-              <img src={qrDataUrl} alt="MFA QR Code" style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'white' }} />
+              <>
+                <img src={qrDataUrl} alt="MFA QR Code" style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: darkMode ? '#1e293b' : 'white', transition: 'background 0.3s' }} />
+                <div style={{ marginTop: 12 }}>
+                  <button type="button" className="btn secondary" onClick={() => {
+                    const a = document.createElement('a');
+                    a.href = qrDataUrl;
+                    a.download = `rhosam-mfa-qr-${user?.email || 'code'}.png`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                  }}>📥 Download QR Code</button>
+                </div>
+              </>
             ) : (
               <div style={{ width: 240, height: 240, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', borderRadius: 12 }}>
                 <div className="spinner" />
