@@ -294,6 +294,106 @@ app.get("/api/auth/mfa/status", auth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ── MFA Backup PDF Builder (zero-dependency) ────────────────────
+function buildMfaBackupPDF(userName, userEmail, secret, backupCodes) {
+  const lines = [];
+  const add = (text, opts = {}) => lines.push({ text, ...opts });
+  const center = (text, opts = {}) => lines.push({ text, align: "center", ...opts });
+  const hr = () => center("────────────────────────────────────────", { leading: 8 });
+
+  center("RHoSAM SUPERMARKET", { size: 18, bold: true, leading: 22 });
+  center("Multi-Factor Authentication Backup Sheet", { size: 11, leading: 14 });
+  hr();
+  add("", { leading: 6 });
+
+  add(`User: ${userName}`, { leading: 13 });
+  add(`Email: ${userEmail}`, { leading: 13 });
+  add(`Generated: ${new Date().toLocaleString("en-NG")}`, { leading: 13 });
+  add("", { leading: 8 });
+
+  add("SECRET KEY", { bold: true, size: 12, leading: 16 });
+  hr();
+  add("Scan the QR code in your authenticator app, or enter", { leading: 13 });
+  add("this secret key manually:", { leading: 13 });
+  add("", { leading: 4 });
+  add(secret, { size: 9, leading: 12 });
+  add("", { leading: 10 });
+
+  add("BACKUP CODES", { bold: true, size: 12, leading: 16 });
+  hr();
+  add("Each code can only be used ONCE. Use these if you lose", { leading: 13 });
+  add("access to your authenticator app.", { leading: 13 });
+  add("", { leading: 4 });
+
+  for (let i = 0; i < backupCodes.length; i += 2) {
+    const left = `${String(i + 1).padStart(2, " ")}. ${backupCodes[i]}`;
+    const right = i + 1 < backupCodes.length ? `${String(i + 2).padStart(2, " ")}. ${backupCodes[i + 1]}` : "";
+    add(`${left.padEnd(28)}${right}`, { size: 10, leading: 14 });
+  }
+
+  add("", { leading: 10 });
+  add("INSTRUCTIONS", { bold: true, size: 12, leading: 16 });
+  hr();
+  add("1. Install Google Authenticator or Authy on your phone", { leading: 13 });
+  add("2. Add a new account and enter the secret key above", { leading: 13 });
+  add("3. The app generates a 6-digit code every 30 seconds", { leading: 13 });
+  add("4. Enter that code on the RHoSAM setup screen to verify", { leading: 13 });
+  add("5. Store this sheet in a secure location (locked safe)", { leading: 13 });
+  add("", { leading: 10 });
+
+  hr();
+  add("WARNING: This document contains sensitive security data.", { size: 9, leading: 12 });
+  add("Do not share. Destroy after MFA is disabled.", { size: 9, leading: 12 });
+
+  // Build minimal PDF
+  const pageW = 595, pageH = 842, margin = 40;
+  const objects = [];
+  let objNum = 1;
+  function addObj(content) { objects.push(content); return objNum++; }
+  addObj("<< /Type /Catalog /Pages 2 0 R >>");
+  addObj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+  addObj(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>`);
+
+  let stream = "BT\n";
+  let y = pageH - margin;
+  for (const line of lines) {
+    if (y < margin + 30) break;
+    const text = line.text || "";
+    const size = line.size || 10;
+    const bold = line.bold || false;
+    const align = line.align || "left";
+    stream += `/F1 ${size} Tf\n`;
+    let x;
+    if (align === "center") { const tw = text.length * size * 0.5; x = pageW / 2 - tw / 2; }
+    else if (align === "right") { const tw = text.length * size * 0.5; x = pageW - margin - tw; }
+    else x = margin;
+    const escaped = text.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+    if (bold) {
+      stream += `1 0 0 1 ${x} ${y} Tm\n(${escaped}) Tj\n`;
+      stream += `1 0 0 1 ${x + 0.3} ${y} Tm\n(${escaped}) Tj\n`;
+    } else {
+      stream += `1 0 0 1 ${x} ${y} Tm\n(${escaped}) Tj\n`;
+    }
+    y -= line.leading || 14;
+  }
+  stream += "ET\n";
+  const streamLength = stream.length;
+  addObj(`<< /Length ${streamLength} >>\nstream\n${stream}\nendstream`);
+  addObj("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>");
+
+  const offsets = [];
+  let pdf = "%PDF-1.4\n";
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += String(off).padStart(10, "0") + " 00000 n \n";
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf);
+}
+
 app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
   try {
     if (!resend) return res.status(503).json({ message: "Email not configured. Add RESEND_API_KEY to .env" });
@@ -339,15 +439,24 @@ app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
         <br />This is a confidential security document. Do not forward this email.
       </div>
     </div>`;
+    // Generate PDF attachment
+    const pdfBuffer = buildMfaBackupPDF(user.name, user.email, secret, backupCodes);
+    const pdfBase64 = pdfBuffer.toString("base64");
+
     const { error } = await resend.emails.send({
       from: "RHoSAM Security <onboarding@resend.dev>",
       to: user.email,
       subject: "🛡️ RHoSAM — Your MFA Backup Codes",
       html,
+      attachments: [{
+        filename: `rhosam-mfa-backup-${new Date().toISOString().slice(0,10)}.pdf`,
+        content: pdfBase64,
+        contentType: "application/pdf",
+      }],
     });
     if (error) { console.error("[EMAIL MFA]", error); return res.status(500).json({ message: error.message || "Failed to send email." }); }
     await audit(pool, req.user.id, "EMAIL_MFA_BACKUP", "USER", req.user.id, {}, req);
-    res.json({ message: "MFA backup codes sent to your email." });
+    res.json({ message: "MFA backup codes sent to your email with PDF attachment." });
   } catch (e) { next(e); }
 });
 
