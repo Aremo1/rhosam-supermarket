@@ -7,11 +7,23 @@ const { Resend } = require("resend");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { v2: cloudinary } = require("cloudinary");
 require("dotenv").config();
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// ── File Upload Setup ───────────────────────────────────────────
+// ── Cloudinary Setup ────────────────────────────────────────────
+const useCloudinary = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+if (useCloudinary) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+  console.log("Cloudinary configured for image uploads");
+}
+
+// ── File Upload Setup (fallback to local) ───────────────────────
 const uploadsDir = path.join(__dirname, "..", "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -32,7 +44,7 @@ const upload = multer({
   },
 });
 
-app.use("/uploads", express.static(uploadsDir));
+if (!useCloudinary) app.use("/uploads", express.static(uploadsDir));
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -269,13 +281,32 @@ app.post("/api/products/:id/image", auth, allow("ADMIN", "MANAGER"), (req, res, 
     if (!req.file) return res.status(400).json({ message: "No image file provided." });
     try {
       const id = Number(req.params.id);
-      const imageUrl = `/uploads/${req.file.filename}`;
-      // Delete old image if exists
+      let imageUrl;
+
+      if (useCloudinary) {
+        // Upload to Cloudinary
+        const b64 = fs.readFileSync(req.file.path).toString("base64");
+        const dataUri = `data:${req.file.mimetype};base64,${b64}`;
+        const result = await cloudinary.uploader.upload(dataUri, {
+          folder: "rhosam/products",
+          public_id: `product-${id}-${Date.now()}`,
+          transformation: [{ width: 800, height: 800, crop: "limit", quality: "auto" }],
+        });
+        imageUrl = result.secure_url;
+        // Delete local temp file
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      } else {
+        // Local storage fallback
+        imageUrl = `/uploads/${req.file.filename}`;
+      }
+
+      // Delete old image if exists (skip for Cloudinary URLs)
       const { rows } = await pool.query("SELECT image_url FROM products WHERE id=$1", [id]);
-      if (rows[0]?.image_url) {
+      if (rows[0]?.image_url && !rows[0].image_url.startsWith("http")) {
         const oldPath = path.join(__dirname, "..", rows[0].image_url);
         if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
       }
+
       await pool.query("UPDATE products SET image_url=$1, updated_at=NOW() WHERE id=$2", [imageUrl, id]);
       await audit(pool, req.user.id, "UPLOAD_IMAGE", "PRODUCT", id, { imageUrl });
       res.json({ imageUrl });
