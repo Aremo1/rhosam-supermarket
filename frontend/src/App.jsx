@@ -2459,7 +2459,7 @@ function ResetPasswordPage() {
 // MFA SETUP
 // ═══════════════════════════════════════════════════════════════════
 function MfaSetupPage() {
-  const { setupMfa, verifyMfa, disableMfa, getMfaStatus, user } = useAuth();
+  const { setupMfa, verifyMfa, disableMfa, getMfaStatus, emailMfaBackup, user } = useAuth();
   const [mfaEnabled, setMfaEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [setupData, setSetupData] = useState(null);
@@ -2470,6 +2470,8 @@ function MfaSetupPage() {
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailMsg, setEmailMsg] = useState("");
   const [tab, setTab] = useState("status");
 
   useEffect(() => {
@@ -2528,6 +2530,16 @@ function MfaSetupPage() {
       setMsg("MFA disabled."); setTab("status");
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
+  }
+
+  async function handleEmailBackup() {
+    if (!setupData) return;
+    setEmailBusy(true); setEmailMsg("");
+    try {
+      const result = await emailMfaBackup({ secret: setupData.secret, backupCodes: setupData.backupCodes });
+      setEmailMsg(result.message);
+    } catch (err) { setEmailMsg(`Error: ${err.message}`); }
+    finally { setEmailBusy(false); }
   }
 
   if (loading) return <p className="loading">Loading…</p>;
@@ -2605,8 +2617,85 @@ function MfaSetupPage() {
               <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.85rem' }}>
                 {setupData.backupCodes.map((c, i) => <div key={i}>{c}</div>)}
               </div>
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button type="button" className="btn secondary" onClick={() => window.print()}>🖨️ Print</button>
+                <button type="button" className="btn secondary" onClick={handleEmailBackup} disabled={emailBusy}>{emailBusy ? "Sending…" : "📧 Email Backup"}</button>
+              </div>
+              {emailMsg && <p className={emailMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 8, fontSize: '0.85rem' }}>{emailMsg}</p>}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Print-only backup sheet ─────────────────────────────── */}
+      {tab === "verify" && setupData && (
+        <div className="mfa-backup-sheet" style={{ display: 'none' }}>
+          <style>{`
+            @media print {
+              .mfa-backup-sheet { display: block !important; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 99999; padding: 40px; font-family: Arial, sans-serif; color: #111; }
+              .mfa-backup-sheet * { visibility: visible !important; }
+              .mfa-backup-sheet h1 { font-size: 24px; margin: 0 0 4px; }
+              .mfa-backup-sheet h2 { font-size: 16px; margin: 24px 0 8px; border-bottom: 2px solid #111; padding-bottom: 4px; }
+              .mfa-backup-sheet .backup-qr { text-align: center; margin: 16px 0; }
+              .mfa-backup-sheet .backup-qr img { width: 200px; height: 200px; border: 1px solid #ccc; }
+              .mfa-backup-sheet .secret-box { background: #f5f5f5; border: 1px solid #ccc; padding: 12px; font-family: monospace; font-size: 14px; word-break: break-all; margin: 8px 0; border-radius: 4px; }
+              .mfa-backup-sheet .codes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+              .mfa-backup-sheet .code-item { background: #f5f5f5; border: 1px solid #ccc; padding: 8px 12px; font-family: monospace; font-size: 14px; border-radius: 4px; }
+              .mfa-backup-sheet .warning { background: #fef3c7; border: 1px solid #f59e0b; padding: 12px; border-radius: 4px; margin: 16px 0; font-size: 13px; }
+              .mfa-backup-sheet .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #ccc; font-size: 11px; color: #666; text-align: center; }
+              .mfa-backup-sheet .instructions { font-size: 13px; line-height: 1.6; margin: 8px 0; }
+              .mfa-backup-sheet .instructions li { margin: 4px 0; }
+            }
+          `}</style>
+          <div style={{ maxWidth: 600, margin: '0 auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1>🛍️ RHoSAM Supermarket</h1>
+                <p style={{ margin: 0, color: '#666', fontSize: 14 }}>Multi-Factor Authentication — Backup Sheet</p>
+              </div>
+              <div style={{ textAlign: 'right', fontSize: 12, color: '#666' }}>
+                <div>User: {user?.name || '—'}</div>
+                <div>Email: {user?.email || '—'}</div>
+                <div>Date: {new Date().toLocaleDateString('en-NG', { dateStyle: 'long' })}</div>
+              </div>
+            </div>
+
+            <h2>📱 QR Code</h2>
+            <p className="instructions">Scan this code with your authenticator app (Google Authenticator, Authy, Microsoft Authenticator):</p>
+            <div className="backup-qr">
+              {qrDataUrl && <img src={qrDataUrl} alt="MFA QR Code" />}
+            </div>
+
+            <h2>🔑 Secret Key</h2>
+            <p className="instructions">If you can't scan the QR code, enter this secret key manually in your authenticator app:</p>
+            <div className="secret-box">{setupData.secret}</div>
+
+            <h2>🔐 Backup Codes</h2>
+            <p className="instructions">Use these codes to log in if you lose access to your authenticator app. Each code can only be used once.</p>
+            <div className="codes-grid">
+              {setupData.backupCodes.map((c, i) => (
+                <div key={i} className="code-item">{i + 1}. {c}</div>
+              ))}
+            </div>
+
+            <div className="warning">
+              <strong>⚠️ Important:</strong> Store this sheet in a safe place (e.g., a locked drawer or safe). Do not share it with anyone. Each backup code can only be used once.
+            </div>
+
+            <h2>📋 Instructions</h2>
+            <ol className="instructions">
+              <li>Download an authenticator app: <strong>Google Authenticator</strong> (iOS/Android) or <strong>Authy</strong> (iOS/Android/Desktop)</li>
+              <li>Open the app and tap <strong>+</strong> or <strong>Add Account</strong></li>
+              <li>Choose <strong>Scan QR Code</strong> and scan the code above, or choose <strong>Enter Manually</strong> and type the secret key</li>
+              <li>The app will generate a 6-digit code every 30 seconds — enter it on the setup screen to activate MFA</li>
+              <li>Save this backup sheet in a secure location</li>
+            </ol>
+
+            <div className="footer">
+              RHoSAM Supermarket POS — MFA Backup Sheet — Generated {new Date().toLocaleString('en-NG')}
+              <br />Keep this document confidential. Destroy after MFA is disabled.
+            </div>
+          </div>
         </div>
       )}
 

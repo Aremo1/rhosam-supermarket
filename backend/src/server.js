@@ -294,6 +294,63 @@ app.get("/api/auth/mfa/status", auth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
+  try {
+    if (!resend) return res.status(503).json({ message: "Email not configured. Add RESEND_API_KEY to .env" });
+    const { secret, backupCodes } = req.body;
+    if (!secret || !Array.isArray(backupCodes) || !backupCodes.length)
+      return res.status(400).json({ message: "secret and backupCodes required." });
+    const { rows } = await pool.query("SELECT name, email FROM users WHERE id=$1", [req.user.id]);
+    const user = rows[0];
+    if (!user?.email) return res.status(400).json({ message: "No email on file." });
+    const codesHTML = backupCodes.map((c, i) =>
+      `<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-family:monospace;font-size:14px">${i + 1}.</td><td style="padding:6px 12px;border:1px solid #e5e7eb;font-family:monospace;font-size:14px;letter-spacing:0.1em">${c}</td></tr>`
+    ).join("");
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:20px">
+      <div style="background:#16a34a;color:white;padding:24px;border-radius:12px 12px 0 0;text-align:center">
+        <h1 style="margin:0;font-size:22px">🛡️ MFA Backup Codes</h1>
+        <p style="margin:6px 0 0;opacity:0.9;font-size:14px">Keep these codes safe — you'll need them if you lose your authenticator</p>
+      </div>
+      <div style="background:#f9fafb;padding:24px;border:1px solid #e5e7eb;border-radius:0 0 12px 12px">
+        <p style="margin:0 0 16px;color:#374151">Hi ${user.name},</p>
+        <p style="margin:0 0 16px;color:#374151">Your Multi-Factor Authentication has been enabled on RHoSAM Supermarket POS. Below are your backup codes and secret key. Store them in a secure location.</p>
+        <h2 style="margin:0 0 8px;font-size:16px;color:#374151;border-bottom:2px solid #e5e7eb;padding-bottom:8px">🔑 Secret Key</h2>
+        <div style="background:white;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;word-break:break-all;margin-bottom:20px">${secret}</div>
+        <h2 style="margin:0 0 8px;font-size:16px;color:#374151;border-bottom:2px solid #e5e7eb;padding-bottom:8px">🔐 Backup Codes</h2>
+        <p style="margin:0 0 8px;color:#666;font-size:13px">Each code can only be used once. Use these if you lose access to your authenticator app.</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+          <thead><tr style="background:#e5e7eb"><th style="padding:8px 12px;text-align:left;border:1px solid #d1d5db;font-size:13px">#</th><th style="padding:8px 12px;text-align:left;border:1px solid #d1d5db;font-size:13px">Code</th></tr></thead>
+          <tbody>${codesHTML}</tbody>
+        </table>
+        <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:20px;font-size:13px;color:#92400e">
+          <strong>⚠️ Important:</strong> Store these codes in a password manager or a locked safe. Do not share them with anyone. Each code works only once.
+        </div>
+        <h2 style="margin:0 0 8px;font-size:16px;color:#374151;border-bottom:2px solid #e5e7eb;padding-bottom:8px">📋 How to use</h2>
+        <ol style="color:#374151;font-size:13px;line-height:1.8;padding-left:20px;margin:0">
+          <li>Install <strong>Google Authenticator</strong> or <strong>Authy</strong> on your phone</li>
+          <li>Add a new account and scan the QR code (or enter the secret key above)</li>
+          <li>Enter the 6-digit code shown in the app to verify</li>
+          <li>Save this email — you'll need the backup codes if you lose your phone</li>
+        </ol>
+      </div>
+      <div style="text-align:center;padding:16px;color:#9ca3af;font-size:12px">
+        RHoSAM Supermarket POS • MFA Backup — ${new Date().toLocaleString("en-NG")}
+        <br />This is a confidential security document. Do not forward this email.
+      </div>
+    </div>`;
+    const { error } = await resend.emails.send({
+      from: "RHoSAM Security <onboarding@resend.dev>",
+      to: user.email,
+      subject: "🛡️ RHoSAM — Your MFA Backup Codes",
+      html,
+    });
+    if (error) { console.error("[EMAIL MFA]", error); return res.status(500).json({ message: error.message || "Failed to send email." }); }
+    await audit(pool, req.user.id, "EMAIL_MFA_BACKUP", "USER", req.user.id, {}, req);
+    res.json({ message: "MFA backup codes sent to your email." });
+  } catch (e) { next(e); }
+});
+
 // ── Password Expiry Check (on login) ───────────────────────────
 // The login endpoint already checks locked_until; we add expiry check here
 const originalLoginHandler = app._router.stack.find(

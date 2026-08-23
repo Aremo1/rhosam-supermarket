@@ -83,6 +83,7 @@ export function AuthProvider({ children }) {
     setupMfa: () => request("/auth/mfa/setup", { method: "POST" }),
     verifyMfa: (code) => request("/auth/mfa/verify", { method: "POST", body: JSON.stringify({ code }) }),
     disableMfa: (password) => request("/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) }),
+    emailMfaBackup: (data) => request("/auth/mfa/email-backup", { method: "POST", body: JSON.stringify(data) }),
     getMfaStatus: () => request("/auth/mfa/status"),
     fetchDashboard: () => request("/dashboard/stats"),
     fetchTopProducts: () => request("/dashboard/top-products"),
