@@ -107,6 +107,17 @@ export function AuthProvider({ children }) {
     closeDrawer: (data) => request("/cash-drawer/close", { method: "POST", body: JSON.stringify(data) }),
     fetchDailyReport: (date) => request(`/reports/daily${date ? `?date=${date}` : ""}`),
     emailDailyReport: (data) => request("/reports/daily/email", { method: "POST", body: JSON.stringify(data) }),
+    uploadProductImage: async (productId, file) => {
+      const formData = new FormData();
+      formData.append("image", file);
+      const r = await fetch(`${API}/products/${productId}/image`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        body: formData,
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.message || "Upload failed"); }
+      return r.json();
+    },
   }), [user, loading, login, logout, request]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

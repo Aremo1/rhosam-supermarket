@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS products (
   reorder_level INTEGER NOT NULL DEFAULT 5 CHECK(reorder_level >= 0),
   unit VARCHAR(20) DEFAULT 'PCS',
   description TEXT,
+  image_url VARCHAR(500),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

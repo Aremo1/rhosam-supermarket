@@ -4,9 +4,35 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
 const { Resend } = require("resend");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 require("dotenv").config();
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+// ── File Upload Setup ───────────────────────────────────────────
+const uploadsDir = path.join(__dirname, "..", "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadsDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".jpg";
+    cb(null, `product-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (_req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif|webp/;
+    const ok = allowed.test(path.extname(file.originalname).toLowerCase()) && allowed.test(file.mimetype);
+    cb(ok ? null : new Error("Only image files (jpg, png, gif, webp) are allowed."), ok);
+  },
+});
+
+app.use("/uploads", express.static(uploadsDir));
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -178,7 +204,7 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
 app.get("/api/products", auth, async (q, r, n) => {
   try {
     const search = q.query.search;
-    let sql = "SELECT id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,is_active,created_at FROM products";
+    let sql = "SELECT id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active,created_at FROM products";
     const params = [];
     if (search) {
       sql += " WHERE LOWER(name) LIKE $1 OR barcode LIKE $1 OR LOWER(category) LIKE $1";
@@ -195,10 +221,10 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
     if (!barcode || !name || !category || Number(price) < 0 || Number(stock) < 0)
       return res.status(400).json({ message: "Invalid product details." });
     const { rows } = await pool.query(
-      `INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,description)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,is_active`,
-      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description]
+      `INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,description,image_url)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
+      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null]
     );
     await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name });
     res.status(201).json(rows[0]);
@@ -214,10 +240,11 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
         barcode=COALESCE($1,barcode), name=COALESCE($2,name), category=COALESCE($3,category),
         price=COALESCE($4,price), cost_price=COALESCE($5,cost_price), stock=COALESCE($6,stock),
         reorder_level=COALESCE($7,reorder_level), unit=COALESCE($8,unit),
-        description=COALESCE($9,description), is_active=COALESCE($10,is_active), updated_at=NOW()
+        description=COALESCE($9,description), is_active=COALESCE($10,is_active),
+        image_url=COALESCE($12,image_url), updated_at=NOW()
        WHERE id=$11
-       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,is_active`,
-      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id]
+       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
+      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null]
     );
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
     await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body);
@@ -233,6 +260,27 @@ app.delete("/api/products/:id", auth, allow("ADMIN"), async (req, res, next) => 
     await audit(pool, req.user.id, "DELETE", "PRODUCT", id);
     res.json({ message: "Product deleted." });
   } catch (e) { next(e); }
+});
+
+// ── Product Image Upload ───────────────────────────────────────
+app.post("/api/products/:id/image", auth, allow("ADMIN", "MANAGER"), (req, res, next) => {
+  upload.single("image")(req, res, async (err) => {
+    if (err) return res.status(400).json({ message: err.message });
+    if (!req.file) return res.status(400).json({ message: "No image file provided." });
+    try {
+      const id = Number(req.params.id);
+      const imageUrl = `/uploads/${req.file.filename}`;
+      // Delete old image if exists
+      const { rows } = await pool.query("SELECT image_url FROM products WHERE id=$1", [id]);
+      if (rows[0]?.image_url) {
+        const oldPath = path.join(__dirname, "..", rows[0].image_url);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+      await pool.query("UPDATE products SET image_url=$1, updated_at=NOW() WHERE id=$2", [imageUrl, id]);
+      await audit(pool, req.user.id, "UPLOAD_IMAGE", "PRODUCT", id, { imageUrl });
+      res.json({ imageUrl });
+    } catch (e) { next(e); }
+  });
 });
 
 app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {

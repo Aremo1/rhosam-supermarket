@@ -385,6 +385,7 @@ function POSPage() {
         <div className="product-grid">
           {filtered.map(p => (
             <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
+              {p.image_url && <img src={`${(import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "")}${p.image_url}`} alt={p.name} className="product-card-image" />}
               <div className="product-card-header">
                 <strong>{p.name}</strong>
                 <small>{p.barcode}</small>
@@ -464,14 +465,17 @@ function POSPage() {
 // PRODUCTS (Phase 3)
 // ═══════════════════════════════════════════════════════════════════
 function ProductsPage() {
-  const { fetchProducts, createProduct, updateProduct, deleteProduct, user } = useAuth();
+  const { fetchProducts, createProduct, updateProduct, deleteProduct, uploadProductImage, user } = useAuth();
   const [products, setProducts] = useState([]);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
 
+  const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "");
   const formDefault = { barcode: "", name: "", category: "", price: "", costPrice: "", stock: "", reorderLevel: "5", unit: "PCS", description: "" };
   const [form, setForm] = useState(formDefault);
 
@@ -482,14 +486,35 @@ function ProductsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  function startEdit(p) { setEditProduct(p); setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "" }); setShowForm(true); }
-  function startNew() { setEditProduct(null); setForm(formDefault); setShowForm(true); }
+  function startEdit(p) {
+    setEditProduct(p); setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "" });
+    setImageFile(null); setImagePreview(p.image_url ? `${API_BASE}${p.image_url}` : null);
+    setShowForm(true);
+  }
+  function startNew() { setEditProduct(null); setForm(formDefault); setImageFile(null); setImagePreview(null); setShowForm(true); }
+
+  function handleImageChange(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     try {
-      if (editProduct) { await updateProduct(editProduct.id, form); }
-      else { await createProduct(form); }
+      let productId;
+      if (editProduct) {
+        const updated = await updateProduct(editProduct.id, form);
+        productId = updated.id || editProduct.id;
+      } else {
+        const created = await createProduct(form);
+        productId = created.id;
+      }
+      // Upload image if selected
+      if (imageFile && productId) {
+        await uploadProductImage(productId, imageFile);
+      }
       setShowForm(false); load();
     } catch (err) { alert(err.message); }
   }
@@ -522,6 +547,16 @@ function ProductsPage() {
                 <option>PCS</option><option>KG</option><option>LTR</option><option>BOX</option><option>CARTON</option><option>BAG</option>
               </select></label>
               <label>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></label>
+              <label>Product Image
+                <div className="image-upload-area">
+                  {imagePreview ? (
+                    <img src={imagePreview} alt="Preview" className="image-preview" />
+                  ) : (
+                    <div className="image-placeholder">📷 Click to upload image</div>
+                  )}
+                  <input type="file" accept="image/*" onChange={handleImageChange} className="image-input" />
+                </div>
+              </label>
               <div className="form-actions">
                 <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
                 <button type="submit" className="btn primary">{editProduct ? "Update" : "Create"}</button>
@@ -534,9 +569,10 @@ function ProductsPage() {
       {loading ? <p className="loading">Loading…</p> : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Barcode</th><th>Name</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Reorder</th><th>Unit</th><th>Status</th>{isAdmin && <th>Actions</th>}</tr></thead>
+            <thead><tr><th>Image</th><th>Barcode</th><th>Name</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Reorder</th><th>Unit</th><th>Status</th>{isAdmin && <th>Actions</th>}</tr></thead>
             <tbody>{products.map(p => (
               <tr key={p.id}>
+                <td>{p.image_url ? <img src={`${API_BASE}${p.image_url}`} alt={p.name} className="product-thumb" /> : <span className="no-image">—</span>}</td>
                 <td><code>{p.barcode}</code></td><td>{p.name}</td><td>{p.category}</td>
                 <td>₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td>₦{Number(p.cost_price || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
