@@ -92,7 +92,7 @@ function makeRateLimiter(windowMs, max) {
   };
 }
 app.use("/api/auth/login", makeRateLimiter(15 * 60 * 1000, 50));
-app.use("/api/auth/forgot-password", makeRateLimiter(15 * 60 * 1000, 20));
+app.use("/api/auth/forgot-password", makeRateLimiter(15 * 60 * 1000, 50));
 
 // ── Cache headers for static resources ─────────────────────────
 app.use((req, res, next) => {
@@ -279,7 +279,9 @@ app.post("/api/auth/mfa/setup", auth, async (req, res, next) => {
   try {
     const crypto = require("crypto");
     const secret = crypto.randomBytes(20).toString("hex");
-    await pool.query("UPDATE users SET mfa_secret=$1 WHERE id=$2", [secret, req.user.id]);
+    await pool.query("UPDATE users SET mfa_secret=$1, mfa_enabled=FALSE WHERE id=$2", [secret, req.user.id]);
+    // Clear any old backup codes from previous setup attempts
+    await pool.query("DELETE FROM mfa_backup_codes WHERE user_id=$1", [req.user.id]);
 
     // Convert hex secret to Base32 for the otpauth URL (authenticator apps require Base32)
     const hexToBase32 = (hex) => {
@@ -1060,6 +1062,9 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
     const { productId, quantity, reason } = req.body;
     const { rows: saleRows } = await client.query("SELECT * FROM sales WHERE id=$1", [saleId]);
     if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+    // Branch scoping: MANAGERs can only return sales from their own branch
+    if (req.user.role === "MANAGER" && req.user.branchId && saleRows[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: "Cannot process returns for sales from another branch." });
     const { rows: itemRows } = await client.query(
       "SELECT * FROM sale_items WHERE sale_id=$1 AND product_id=$2", [saleId, productId]
     );
@@ -1082,11 +1087,12 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
       [saleId, productId, qty, reason || "", refundAmount, req.user.id]
     );
     await client.query("UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2", [qty, productId]);
-    // Restore branch_inventory if user is assigned to a branch
-    if (req.user.branchId) {
+    // Restore stock to the sale's original branch (not the user's branch)
+    const saleBranchId = saleRows[0].branch_id;
+    if (saleBranchId) {
       await client.query(
         "UPDATE branch_inventory SET quantity = quantity + $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
-        [qty, req.user.branchId, productId]
+        [qty, saleBranchId, productId]
       );
     }
     await client.query(
@@ -1104,33 +1110,44 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
 // PHASE 9: DASHBOARD / BI
 // ═══════════════════════════════════════════════════════════════════
 
+// Helper: Build parameterized branch filter for queries
+// Returns { sql, params, nextIdx } where sql is the WHERE clause fragment and params is the param array
+function buildBranchFilter(req, opts = {}) {
+  const { tableAlias = "s", userAlias, useCashierFallback = false } = opts;
+  const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+  const params = [];
+  let sql = "";
+  if (adminBranchId) {
+    params.push(adminBranchId);
+    sql = ` AND ${tableAlias}.branch_id = $${params.length}`;
+  } else if (req.user.role === "ADMIN") {
+    sql = "";
+  } else if (req.user.branchId) {
+    params.push(req.user.branchId);
+    sql = ` AND ${tableAlias}.branch_id = $${params.length}`;
+  } else if (useCashierFallback && req.user.id) {
+    params.push(req.user.id);
+    sql = ` AND ${tableAlias}.cashier_id = $${params.length}`;
+  }
+  return { sql, params, targetBranchId: adminBranchId || req.user.branchId || null };
+}
+
 app.get("/api/dashboard/stats", auth, async (req, r, n) => {
   try {
-    // Branch-scoped: ADMIN can pick a branch via ?branchId=X; others see their own branch
-    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
-    let branchFilter, userBranchFilter;
-    if (adminBranchId) {
-      branchFilter = ` AND s.branch_id = ${adminBranchId}`;
-      userBranchFilter = ` AND u.branch_id = ${adminBranchId}`;
-    } else if (req.user.role === "ADMIN") {
-      branchFilter = "";
-      userBranchFilter = "";
-    } else if (req.user.branchId) {
-      branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
-      userBranchFilter = ` AND u.branch_id = ${req.user.branchId}`;
-    } else {
-      branchFilter = ` AND s.cashier_id = ${req.user.id}`;
-      userBranchFilter = ` AND u.id = ${req.user.id}`;
-    }
+    const branchFilter = buildBranchFilter(req, { tableAlias: "s", useCashierFallback: true });
+    const userBranchFilter = buildBranchFilter(req, { tableAlias: "u", useCashierFallback: true });
+    const targetBranchId = branchFilter.targetBranchId;
+
     // When viewing a specific branch, scope products to those sold at that branch
-    const productFilter = adminBranchId
-      ? ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = ${adminBranchId})`
-      : (req.user.role !== 'ADMIN' && req.user.branchId)
-        ? ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = ${req.user.branchId})`
-        : '';
+    let productFilterSql = "";
+    let productFilterParams = [];
+    if (targetBranchId) {
+      productFilterParams = [targetBranchId];
+      productFilterSql = ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = $${productFilterParams.length})`;
+    }
+
     // Build a branch-aware low-stock query
     let lowStockQuery;
-    const targetBranchId = adminBranchId || req.user.branchId;
     if (targetBranchId) {
       lowStockQuery = pool.query(
         `SELECT COUNT(*)::int AS count FROM products p
@@ -1141,17 +1158,24 @@ app.get("/api/dashboard/stats", auth, async (req, r, n) => {
     } else {
       lowStockQuery = pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE`);
     }
+
+    const allParams = [...branchFilter.params];
+    const ufParams = [...userBranchFilter.params];
+    const pfParams = [...productFilterParams];
+
     const [totalProducts, totalSales, totalRevenue, lowStock, todaySales, todayRevenue, totalUsers, recentSales] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.is_active = TRUE${productFilter}`),
-      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE 1=1${branchFilter}`),
-      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE 1=1${branchFilter}`),
+      pfParams.length
+        ? pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.is_active = TRUE${productFilterSql}`, pfParams)
+        : pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.is_active = TRUE`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE 1=1${branchFilter.sql}`, branchFilter.params),
+      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE 1=1${branchFilter.sql}`, branchFilter.params),
       lowStockQuery,
-      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
-      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
-      pool.query(`SELECT COUNT(*)::int AS count FROM users u WHERE u.is_active = TRUE${userBranchFilter}`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter.sql}`, branchFilter.params),
+      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter.sql}`, branchFilter.params),
+      pool.query(`SELECT COUNT(*)::int AS count FROM users u WHERE u.is_active = TRUE${userBranchFilter.sql}`, userBranchFilter.params),
       pool.query(`SELECT date_trunc('day',s.created_at)::date AS day, COUNT(*)::int AS count, COALESCE(SUM(s.total),0)::float AS revenue
-                  FROM sales s WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
-                  GROUP BY 1 ORDER BY 1`)
+                  FROM sales s WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter.sql}
+                  GROUP BY 1 ORDER BY 1`, branchFilter.params)
     ]);
     r.json({
       totalProducts: totalProducts.rows[0].count,
@@ -1168,34 +1192,24 @@ app.get("/api/dashboard/stats", auth, async (req, r, n) => {
 
 app.get("/api/dashboard/top-products", auth, async (req, r, n) => {
   try {
-    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
-    let branchFilter;
-    if (adminBranchId) branchFilter = ` AND s.branch_id = ${adminBranchId}`;
-    else if (req.user.role === "ADMIN") branchFilter = "";
-    else if (req.user.branchId) branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
-    else branchFilter = ` AND s.cashier_id = ${req.user.id}`;
+    const bf = buildBranchFilter(req, { tableAlias: "s", useCashierFallback: true });
     r.json((await pool.query(
       `SELECT si.product_name, SUM(si.quantity)::int AS total_qty, SUM(si.line_total)::float AS total_revenue
        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
-       GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${bf.sql}
+       GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`, bf.params
     )).rows);
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/dashboard/category-sales", auth, async (req, r, n) => {
   try {
-    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
-    let branchFilter;
-    if (adminBranchId) branchFilter = ` AND s.branch_id = ${adminBranchId}`;
-    else if (req.user.role === "ADMIN") branchFilter = "";
-    else if (req.user.branchId) branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
-    else branchFilter = ` AND s.cashier_id = ${req.user.id}`;
+    const bf = buildBranchFilter(req, { tableAlias: "s", useCashierFallback: true });
     r.json((await pool.query(
       `SELECT p.category, SUM(si.line_total)::float AS revenue, SUM(si.quantity)::int AS qty
        FROM sale_items si JOIN products p ON p.id = si.product_id JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
-       GROUP BY p.category ORDER BY revenue DESC`
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${bf.sql}
+       GROUP BY p.category ORDER BY revenue DESC`, bf.params
     )).rows);
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
@@ -1508,17 +1522,28 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
     // Branch-scoped for managers
-    const branchFilter = req.user.role === "ADMIN" ? ""
-      : req.user.branchId ? ` AND branch_id = ${req.user.branchId}` : "";
+    const params = [];
+    let branchFilter = "";
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      params.push(req.user.branchId);
+      branchFilter = ` AND branch_id = $${params.length}`;
+    }
     const [salesRev, totalExpenses, todaySales] = await Promise.all([
-      pool.query(`SELECT COALESCE(SUM(total),0)::float AS revenue FROM sales WHERE 1=1${branchFilter}`),
-      pool.query(`SELECT COALESCE(SUM(amount),0)::float AS total FROM expenses WHERE 1=1${branchFilter}`),
-      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS revenue,
-        COALESCE((SELECT SUM(p.cost_price * si.quantity) FROM sale_items si
-          JOIN products p ON p.id = si.product_id
-          JOIN sales s2 ON s2.id = si.sale_id
-          WHERE s2.created_at::date = CURRENT_DATE${branchFilter.replace(/branch_id/g, 's2.branch_id')}),0)::float AS cost
-        FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter.replace(/branch_id/g, 's.branch_id')}`)
+      pool.query(`SELECT COALESCE(SUM(total),0)::float AS revenue FROM sales WHERE 1=1${branchFilter}`, params),
+      pool.query(`SELECT COALESCE(SUM(amount),0)::float AS total FROM expenses WHERE 1=1${branchFilter}`, params),
+      params.length > 0
+        ? pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS revenue,
+          COALESCE((SELECT SUM(p.cost_price * si.quantity) FROM sale_items si
+            JOIN products p ON p.id = si.product_id
+            JOIN sales s2 ON s2.id = si.sale_id
+            WHERE s2.created_at::date = CURRENT_DATE AND s2.branch_id = $1),0)::float AS cost
+          FROM sales s WHERE s.created_at::date = CURRENT_DATE AND s.branch_id = $1`, params)
+        : pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS revenue,
+          COALESCE((SELECT SUM(p.cost_price * si.quantity) FROM sale_items si
+            JOIN products p ON p.id = si.product_id
+            JOIN sales s2 ON s2.id = si.sale_id
+            WHERE s2.created_at::date = CURRENT_DATE),0)::float AS cost
+          FROM sales s WHERE s.created_at::date = CURRENT_DATE`)
     ]);
     const revenue = salesRev.rows[0].revenue;
     const expenses = totalExpenses.rows[0].total;
@@ -1644,10 +1669,10 @@ app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, 
     const { rows: openDrawer } = await pool.query(drawerQuery, drawerParams);
     if (!openDrawer[0]) return res.status(404).json({ message: "No open drawer found." });
     const drawer = openDrawer[0];
-    // Branch-scoped: only count sales from the same branch
+    // Always filter by the drawer's own branch to get accurate expected balance
     let salesQuery = "SELECT COALESCE(SUM(total),0)::float AS total FROM sales WHERE created_at >= $1";
     const salesParams = [drawer.opened_at];
-    if (req.user.role !== "ADMIN" && drawer.branch_id) {
+    if (drawer.branch_id) {
       salesQuery += " AND branch_id = $2";
       salesParams.push(drawer.branch_id);
     }
@@ -1857,9 +1882,19 @@ app.post("/api/stock-transfers", auth, allow("ADMIN", "MANAGER"), async (req, re
       return res.status(400).json({ message: "To branch, product and quantity are required." });
     if (Number(toBranchId) === fromBranchId)
       return res.status(400).json({ message: "Cannot transfer to your own branch." });
-    // Check source branch has enough stock
-    const { rows: stockRows } = await pool.query("SELECT stock FROM products WHERE id=$1", [productId]);
-    if (!stockRows[0]) return res.status(404).json({ message: "Product not found." });
+    // Check source branch has enough stock (branch_inventory first, fallback to global)
+    const { rows: biRows } = await pool.query(
+      "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2", [fromBranchId, productId]
+    );
+    if (biRows[0]) {
+      if (Number(biRows[0].quantity) < Number(quantity))
+        return res.status(400).json({ message: `Insufficient stock at your branch. Available: ${biRows[0].quantity}` });
+    } else {
+      const { rows: stockRows } = await pool.query("SELECT stock FROM products WHERE id=$1", [productId]);
+      if (!stockRows[0]) return res.status(404).json({ message: "Product not found." });
+      if (Number(stockRows[0].stock) < Number(quantity))
+        return res.status(400).json({ message: `Insufficient stock. Available: ${stockRows[0].stock}` });
+    }
     const { rows } = await pool.query(
       `INSERT INTO stock_transfers(from_branch_id, to_branch_id, product_id, quantity, requested_by, notes)
        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
@@ -1999,28 +2034,24 @@ app.get("/api/categories", auth, async (_q, r, n) => {
 app.get("/api/reports/monthly", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     const year = Number(req.query.year) || new Date().getFullYear();
-    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
-    let branchFilter;
-    if (adminBranchId) branchFilter = ` AND branch_id = ${adminBranchId}`;
-    else if (req.user.role === "ADMIN") branchFilter = "";
-    else if (req.user.branchId) branchFilter = ` AND branch_id = ${req.user.branchId}`;
-    else branchFilter = "";
+    const bf = buildBranchFilter(req);
+    const params = [year, ...bf.params];
+    const branchSql = bf.params.length ? ` AND branch_id = $${1 + bf.params.length}` : "";
     const result = await pool.query(
       `SELECT EXTRACT(MONTH FROM created_at)::int AS month,
               COUNT(*)::int AS transactions,
               COALESCE(SUM(total),0)::float AS revenue,
               COALESCE(SUM(discount),0)::float AS discounts,
               COALESCE(SUM(tax),0)::float AS taxes
-       FROM sales WHERE EXTRACT(YEAR FROM created_at) = $1${branchFilter}
-       GROUP BY 1 ORDER BY 1`, [year]
+       FROM sales WHERE EXTRACT(YEAR FROM created_at) = $1${branchSql}
+       GROUP BY 1 ORDER BY 1`, params
     );
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const data = result.rows.map(r => ({ month: months[r.month - 1], ...r }));
     // Look up branch name
     let branchName = null;
-    const targetBranchId = adminBranchId || req.user.branchId;
-    if (targetBranchId) {
-      const { rows: bRows } = await pool.query("SELECT name FROM branches WHERE id=$1", [targetBranchId]);
+    if (bf.targetBranchId) {
+      const { rows: bRows } = await pool.query("SELECT name FROM branches WHERE id=$1", [bf.targetBranchId]);
       branchName = bRows[0]?.name || null;
     }
     res.json({ year, data, branchName });
@@ -2059,16 +2090,33 @@ app.get("/api/reports/product-sales", auth, allow("ADMIN", "MANAGER"), async (re
 });
 
 // Low Stock Report
-app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
+app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
-    r.json((await pool.query(
-      `SELECT id, barcode, name, category, stock, reorder_level, price::float, cost_price::float,
-              CASE WHEN stock = 0 THEN 'OUT OF STOCK'
-                   WHEN stock <= reorder_level THEN 'LOW'
-                   ELSE 'OK' END AS status
-       FROM products WHERE stock <= reorder_level AND is_active = TRUE
-       ORDER BY stock ASC`
-    )).rows);
+    const branchId = req.user.branchId;
+    if (branchId) {
+      // Branch-aware: use branch_inventory for per-branch stock levels
+      r.json((await pool.query(
+        `SELECT p.id, p.barcode, p.name, p.category, COALESCE(bi.quantity, 0)::int AS stock,
+                COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+                p.price::float, p.cost_price::float,
+                CASE WHEN COALESCE(bi.quantity, 0) = 0 THEN 'OUT OF STOCK'
+                     WHEN COALESCE(bi.quantity, 0) <= COALESCE(bi.reorder_level, p.reorder_level) THEN 'LOW'
+                     ELSE 'OK' END AS status
+         FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) <= COALESCE(bi.reorder_level, p.reorder_level)
+         ORDER BY COALESCE(bi.quantity, 0) ASC`, [branchId]
+      )).rows);
+    } else {
+      r.json((await pool.query(
+        `SELECT id, barcode, name, category, stock, reorder_level, price::float, cost_price::float,
+                CASE WHEN stock = 0 THEN 'OUT OF STOCK'
+                     WHEN stock <= reorder_level THEN 'LOW'
+                     ELSE 'OK' END AS status
+         FROM products WHERE stock <= reorder_level AND is_active = TRUE
+         ORDER BY stock ASC`
+      )).rows);
+    }
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
@@ -2114,21 +2162,12 @@ app.get("/api/reports/daily", auth, allow("ADMIN", "MANAGER"), async (req, res, 
     const endDate = `${date}T23:59:59`;
 
     // Branch-scoped: ADMIN can pick a branch via ?branchId=X
-    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
-    let branchFilter, expenseBranchFilter;
-    if (adminBranchId) {
-      branchFilter = ` AND s.branch_id = ${adminBranchId}`;
-      expenseBranchFilter = ` AND e.branch_id = ${adminBranchId}`;
-    } else if (req.user.role === "ADMIN") {
-      branchFilter = "";
-      expenseBranchFilter = "";
-    } else if (req.user.branchId) {
-      branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
-      expenseBranchFilter = ` AND e.branch_id = ${req.user.branchId}`;
-    } else {
-      branchFilter = "";
-      expenseBranchFilter = "";
-    }
+    const bf = buildBranchFilter(req);
+    const saleBranchSql = bf.params.length ? ` AND s.branch_id = $${2 + bf.params.length}` : "";
+    const expBranchSql = bf.params.length ? ` AND e.branch_id = $${2 + bf.params.length}` : "";
+    const saleBaseParams = [startDate, endDate];
+    const saleParams = [...saleBaseParams, ...bf.params];
+    const expParams = [...saleBaseParams, ...bf.params];
 
     const [salesResult, itemsResult, expensesResult, topProducts] = await Promise.all([
       pool.query(
@@ -2139,23 +2178,23 @@ app.get("/api/reports/daily", auth, allow("ADMIN", "MANAGER"), async (req, res, 
                 COALESCE(SUM(s.tax),0)::float AS total_tax,
                 COALESCE(SUM(s.amount_paid),0)::float AS total_paid,
                 COALESCE(SUM(s.change_amount),0)::float AS total_change
-         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${branchFilter}`, [startDate, endDate]
+         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${saleBranchSql}`, saleParams
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
-         GROUP BY si.product_name ORDER BY revenue DESC`, [startDate, endDate]
+         WHERE s.created_at BETWEEN $1 AND $2${saleBranchSql}
+         GROUP BY si.product_name ORDER BY revenue DESC`, saleParams
       ),
       pool.query(
         `SELECT COALESCE(SUM(e.amount),0)::float AS total_expenses
-         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expenseBranchFilter}`, [startDate, endDate]
+         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expBranchSql}`, expParams
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
-         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10`, [startDate, endDate]
+         WHERE s.created_at BETWEEN $1 AND $2${saleBranchSql}
+         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10`, saleParams
       )
     ]);
 
@@ -2202,10 +2241,11 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
     const endDate = `${reportDate}T23:59:59`;
 
     // Branch-scoped: MANAGERs see only their branch
-    const branchFilter = req.user.role === "ADMIN" ? ""
-      : req.user.branchId ? ` AND s.branch_id = ${req.user.branchId}` : "";
-    const expenseBranchFilter = req.user.role === "ADMIN" ? ""
-      : req.user.branchId ? ` AND e.branch_id = ${req.user.branchId}` : "";
+    const bf = buildBranchFilter(req);
+    const saleBranchSql = bf.params.length ? ` AND s.branch_id = $${2 + bf.params.length}` : "";
+    const expBranchSql = bf.params.length ? ` AND e.branch_id = $${2 + bf.params.length}` : "";
+    const saleParams = [startDate, endDate, ...bf.params];
+    const expParams = [startDate, endDate, ...bf.params];
 
     const [salesResult, itemsResult, expensesResult] = await Promise.all([
       pool.query(
@@ -2213,17 +2253,17 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
                 COALESCE(SUM(s.total),0)::float AS total_revenue,
                 COALESCE(SUM(s.discount),0)::float AS total_discount,
                 COALESCE(SUM(s.tax),0)::float AS total_tax
-         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${branchFilter}`, [startDate, endDate]
+         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${saleBranchSql}`, saleParams
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
-         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 15`, [startDate, endDate]
+         WHERE s.created_at BETWEEN $1 AND $2${saleBranchSql}
+         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 15`, saleParams
       ),
       pool.query(
         `SELECT COALESCE(SUM(e.amount),0)::float AS total_expenses
-         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expenseBranchFilter}`, [startDate, endDate]
+         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expBranchSql}`, expParams
       )
     ]);
 
@@ -2327,7 +2367,16 @@ app.get("/api/forecast/demand", auth, allow("ADMIN", "MANAGER"), async (req, res
       JOIN sales s ON s.id = si.sale_id
       WHERE s.created_at >= NOW() - INTERVAL '90 days'`;
     const params = [];
-    if (productId) { sql += ` AND si.product_id = $1`; params.push(Number(productId)); }
+    let paramIdx = 1;
+    // Branch scoping
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      sql += ` AND s.branch_id = $${paramIdx++}`;
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+      sql += ` AND s.branch_id = $${paramIdx++}`;
+      params.push(req.user.branchId);
+    }
+    if (productId) { sql += ` AND si.product_id = $${paramIdx++}`; params.push(Number(productId)); }
     sql += ` GROUP BY si.product_id, p.name, p.stock, p.reorder_level, p.cost_price, p.price, DATE(s.created_at) ORDER BY sale_date`;
 
     const { rows: salesData } = await pool.query(sql, params);
@@ -2399,13 +2448,31 @@ app.get("/api/forecast/demand", auth, allow("ADMIN", "MANAGER"), async (req, res
 
 app.get("/api/auto-reorder/suggestions", auth, allow("ADMIN", "MANAGER"), async (req, res) => {
   try {
-    const { rows: lowStock } = await pool.query(
-      `SELECT p.id, p.barcode, p.name, p.category, p.stock, p.reorder_level,
-              p.cost_price::float, p.price::float
-       FROM products p
-       WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
-       ORDER BY (p.stock::float / GREATEST(p.reorder_level, 1)) ASC`
-    );
+    const branchId = req.user.branchId;
+    let lowStock;
+    if (branchId) {
+      // Branch-aware: show low stock products for this specific branch
+      const result = await pool.query(
+        `SELECT p.id, p.barcode, p.name, p.category, COALESCE(bi.quantity, 0)::int AS stock,
+                COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+                p.cost_price::float, p.price::float
+         FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) <= COALESCE(bi.reorder_level, p.reorder_level)
+         ORDER BY (COALESCE(bi.quantity, 0)::float / GREATEST(COALESCE(bi.reorder_level, p.reorder_level), 1)) ASC`,
+        [branchId]
+      );
+      lowStock = result.rows;
+    } else {
+      const result = await pool.query(
+        `SELECT p.id, p.barcode, p.name, p.category, p.stock, p.reorder_level,
+                p.cost_price::float, p.price::float
+         FROM products p
+         WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
+         ORDER BY (p.stock::float / GREATEST(p.reorder_level, 1)) ASC`
+      );
+      lowStock = result.rows;
+    }
     const { rows: suppliers } = await pool.query("SELECT id, name FROM suppliers WHERE is_active = TRUE ORDER BY name LIMIT 1");
     const defaultSupplier = suppliers[0] || null;
     const suggestions = lowStock.map(p => {
@@ -2695,10 +2762,9 @@ app.post("/api/sales/:id/email-receipt", auth, async (req, res, next) => {
       return res.status(500).json({ message: error.message || "Failed to send email." });
     }
 
-    // Save customer email on the sale
-    if (email && !sale.customer_email) {
-      await pool.query("UPDATE sales SET customer_name = COALESCE(customer_name, $1) WHERE id = $2 AND customer_name = 'Walk-in Customer'", [email, saleId]);
-    }
+    // Note: Receipt email sent successfully. We intentionally do NOT overwrite
+    // customer_name with the email address — that field stores the customer's name.
+    // If a customer_email column is added in the future, store it there instead.
 
     await audit(pool, req.user.id, "EMAIL_RECEIPT", "SALE", saleId, { email, receiptNumber: sale.receipt_number }, req);
     res.json({ message: "Receipt sent successfully.", id: data?.id });

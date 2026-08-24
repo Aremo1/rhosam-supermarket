@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS sales (
   amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0,
   change_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
   cashier_id INTEGER NOT NULL REFERENCES users(id),
-  branch_id INTEGER DEFAULT 1,
+  branch_id INTEGER REFERENCES branches(id),
   status VARCHAR(20) NOT NULL DEFAULT 'COMPLETED',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   total NUMERIC(14,2) NOT NULL DEFAULT 0,
   notes TEXT,
   created_by INTEGER NOT NULL REFERENCES users(id),
-  branch_id INTEGER DEFAULT 1,
+  branch_id INTEGER REFERENCES branches(id),
   expected_date DATE,
   received_date TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS expenses (
   payment_method VARCHAR(20) DEFAULT 'Cash',
   reference VARCHAR(100),
   approved_by INTEGER REFERENCES users(id),
-  branch_id INTEGER DEFAULT 1,
+  branch_id INTEGER REFERENCES branches(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS cash_drawer (
   status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
   opened_by INTEGER REFERENCES users(id),
   closed_by INTEGER REFERENCES users(id),
-  branch_id INTEGER DEFAULT 1,
+  branch_id INTEGER REFERENCES branches(id),
   opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   closed_at TIMESTAMPTZ
 );
@@ -202,6 +202,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   entity_type VARCHAR(40) NOT NULL,
   entity_id VARCHAR(40),
   details JSONB DEFAULT '{}',
+  ip_address VARCHAR(45),
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

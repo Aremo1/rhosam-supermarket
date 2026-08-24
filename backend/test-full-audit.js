@@ -6,6 +6,8 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 const BASE = process.env.API_URL || "http://localhost:5000";
+// Unique run ID for email isolation — ensures idempotent test runs
+const RUN_ID = `audit${Date.now()}`;
 let token = "", adminUser = null;
 let cashierToken = "", cashierUser = null;
 let managerToken = "", managerUser = null;
@@ -41,11 +43,90 @@ async function preTest() {
     const { Pool } = require("pg");
     require("dotenv").config();
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    // Unlock admin
     await pool.query("UPDATE users SET failed_login_attempts=0, locked_until=NULL WHERE email='admin@rhosam.com'");
     console.log("  ✅ Admin account unlocked");
+
+    // Collect IDs of stale test users (any non-admin, non-seeded user with test email patterns)
+    const staleEmails = [
+      "cashier2@test.com", "manager2@test.com",
+      "cashier3@test.com", "manager3@test.com",
+      "cashier@test.com", "manager@test.com",
+      "final-cashier@test.com",
+      "bad@test.com",
+      "cashier4@test.com", "manager4@test.com",
+    ];
+    const { rows: staleUsers } = await pool.query(
+      `SELECT id FROM users WHERE email = ANY($1)`, [staleEmails]
+    );
+    const staleUserIds = staleUsers.map(u => u.id);
+
+    // Also collect stale test product barcodes
+    const testBarcodes = ['TEST-AUDIT-001', 'TEST-AUDIT-002', 'RBAC-CASH-FAIL', 'RBAC-MAN-OK', 'DEBUG-TEST-001'];
+    const { rows: staleProducts } = await pool.query(
+      `SELECT id FROM products WHERE barcode = ANY($1)`, [testBarcodes]
+    );
+    const staleProductIds = staleProducts.map(p => p.id);
+
+    if (staleUserIds.length || staleProductIds.length) {
+      console.log(`  🔍 Found ${staleUserIds.length} stale user(s), ${staleProductIds.length} stale product(s) — cleaning…`);
+    }
+
+    // ── Step 1: Delete records that REFERENCE stale users/products (FK-dependent) ──
+    // audit_logs.user_id → users(id) — no CASCADE
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM audit_logs WHERE user_id = ANY($1)`, [staleUserIds]);
+    }
+    // sale_items → sales (CASCADE already), but sales.cashier_id → users(id) — no CASCADE
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE cashier_id = ANY($1))`, [staleUserIds]);
+      await pool.query(`DELETE FROM sales WHERE cashier_id = ANY($1)`, [staleUserIds]);
+    }
+    // returns.processed_by → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM returns WHERE processed_by = ANY($1)`, [staleUserIds]);
+    }
+    // purchase_orders.created_by → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE created_by = ANY($1))`, [staleUserIds]);
+      await pool.query(`DELETE FROM purchase_orders WHERE created_by = ANY($1)`, [staleUserIds]);
+    }
+    // expenses.approved_by → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM expenses WHERE approved_by = ANY($1)`, [staleUserIds]);
+    }
+    // cash_drawer.opened_by/closed_by → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`UPDATE cash_drawer SET opened_by = NULL WHERE opened_by = ANY($1)`, [staleUserIds]);
+      await pool.query(`UPDATE cash_drawer SET closed_by = NULL WHERE closed_by = ANY($1)`, [staleUserIds]);
+    }
+    // branches.manager_id → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`UPDATE branches SET manager_id = NULL WHERE manager_id = ANY($1)`, [staleUserIds]);
+    }
+    // inventory_movements.user_id → users(id)
+    if (staleUserIds.length) {
+      await pool.query(`DELETE FROM inventory_movements WHERE user_id = ANY($1)`, [staleUserIds]);
+    }
+    // ── Step 2: Delete records that REFERENCE stale products (no CASCADE) ──
+    if (staleProductIds.length) {
+      await pool.query(`DELETE FROM sale_items WHERE product_id = ANY($1)`, [staleProductIds]);
+      await pool.query(`DELETE FROM inventory_movements WHERE product_id = ANY($1)`, [staleProductIds]);
+      await pool.query(`DELETE FROM returns WHERE product_id = ANY($1)`, [staleProductIds]);
+      await pool.query(`DELETE FROM purchase_order_items WHERE product_id = ANY($1)`, [staleProductIds]);
+    }
+    // Also clean by receipt_number / po_number patterns for good measure
+    await pool.query(`DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE receipt_number LIKE 'RHS-AUDIT%')`);
+    await pool.query(`DELETE FROM sales WHERE receipt_number LIKE 'RHS-AUDIT%'`);
+    await pool.query(`DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE po_number LIKE 'PO-AUDIT%')`);
+    await pool.query(`DELETE FROM purchase_orders WHERE po_number LIKE 'PO-AUDIT%'`);
+    // ── Step 3: Now safe to delete stale users and products ──
+    await pool.query(`DELETE FROM users WHERE email = ANY($1)`, [staleEmails]);
+    await pool.query(`DELETE FROM products WHERE barcode = ANY($1)`, [testBarcodes]);
+    console.log("  ✅ Cleaned stale test data (users, products, FK-dependent records)");
     await pool.end();
   } catch (e) {
-    console.log("  ⚠️ Pre-test unlock failed:", e.message);
+    console.log("  ⚠️ Pre-test cleanup failed:", e.message);
   }
 }
 
@@ -100,23 +181,23 @@ async function testUsers() {
   ok("Users include admin", r.data?.some(u => u.role === "ADMIN"));
 
   // Create cashier
-  r = await api("POST", "/api/users", { name: "Test Cashier", email: "cashier2@test.com", password: "CashierTest1234", role: "CASHIER" }, token);
+  r = await api("POST", "/api/users", { name: "Test Cashier", email: `cashier2-${RUN_ID}@test.com`, password: "CashierTest1234", role: "CASHIER" }, token);
   ok("Create cashier returns 201", r.status === 201 && r.data?.id);
   if (r.data?.id) created.users.push(r.data.id);
 
   // Create manager
-  r = await api("POST", "/api/users", { name: "Test Manager", email: "manager2@test.com", password: "ManagerTest1234", role: "MANAGER" }, token);
+  r = await api("POST", "/api/users", { name: "Test Manager", email: `manager2-${RUN_ID}@test.com`, password: "ManagerTest1234", role: "MANAGER" }, token);
   ok("Create manager returns 201", r.status === 201 && r.data?.id);
   if (r.data?.id) created.users.push(r.data.id);
 
-  r = await api("POST", "/api/users", { name: "Dup", email: "cashier2@test.com", password: "DupTest1234567", role: "CASHIER" }, token);
+  r = await api("POST", "/api/users", { name: "Dup", email: `cashier2-${RUN_ID}@test.com`, password: "DupTest1234567", role: "CASHIER" }, token);
   ok("Duplicate email returns 409", r.status === 409);
 
   r = await api("POST", "/api/users", { name: "Bad", email: "bad@test.com", password: "BadRole1234567", role: "SUPERVISOR" }, token);
   ok("Invalid role returns 400", r.status === 400);
 
   // Login as CASHIER (do RBAC tests BEFORE any promotions)
-  r = await api("POST", "/api/auth/login", { email: "cashier2@test.com", password: "CashierTest1234" });
+  r = await api("POST", "/api/auth/login", { email: `cashier2-${RUN_ID}@test.com`, password: "CashierTest1234" });
   ok("Cashier login returns 200", r.status === 200);
   cashierToken = r.data?.token;
   cashierUser = r.data?.user;
@@ -135,7 +216,7 @@ async function testUsers() {
   ok("Cashier blocked from creating expenses (403)", r.status === 403);
 
   // Login as MANAGER
-  r = await api("POST", "/api/auth/login", { email: "manager2@test.com", password: "ManagerTest1234" });
+  r = await api("POST", "/api/auth/login", { email: `manager2-${RUN_ID}@test.com`, password: "ManagerTest1234" });
   ok("Manager login returns 200", r.status === 200);
   managerToken = r.data?.token;
   managerUser = r.data?.user;
@@ -147,7 +228,7 @@ async function testUsers() {
   r = await api("GET", "/api/users", null, managerToken);
   ok("Manager blocked from /users (403)", r.status === 403);
 
-  r = await api("DELETE", `/api/users/${created.users[0]}`, managerToken);
+  r = await api("DELETE", `/api/users/${created.users[0]}`, null, managerToken);
   ok("Manager blocked from deleting users (403)", r.status === 403 || r.status === 400, `got ${r.status}`);
 
   // Post-RBAC: update/deactivate/promote the cashier
@@ -609,7 +690,7 @@ async function testBranches() {
   r = await api("PUT", `/api/branches/${created.branches[0]}`, { name: "Updated Branch" }, token);
   ok("Update branch returns 200", r.status === 200 && r.data?.name === "Updated Branch");
 
-  r = await api("DELETE", `/api/branches/${created.branches[0]}`, token);
+  r = await api("DELETE", `/api/branches/${created.branches[0]}`, null, token);
   ok("Delete branch returns 200", r.status === 200, `got ${r.status}`);
 }
 
@@ -773,8 +854,8 @@ async function testResponseStructure() {
 // ═══════════════════════════════════════════════════════════════════
 async function cleanup() {
   section("CLEANUP");
-  for (const pid of created.products) await api("DELETE", `/api/products/${pid}`, token);
-  for (const uid of created.users) await api("DELETE", `/api/users/${uid}`, token);
+  for (const pid of created.products) await api("DELETE", `/api/products/${pid}`, null, token);
+  for (const uid of created.users) await api("DELETE", `/api/users/${uid}`, null, token);
   ok("Cleanup completed", true);
 }
 
