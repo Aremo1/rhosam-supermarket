@@ -338,19 +338,20 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 
 /* ── Category Filter Bar ─────────────────────────────────── */
 .pos-category-filter {
-  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px;
-  padding: 10px 12px; border-radius: var(--radius-sm);
-  background: var(--card-bg, white); border: 1px solid var(--border);
-  scrollbar-width: thin;
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;
+  padding: 12px 14px; border-radius: var(--radius);
+  background: var(--card-bg, white); border: 1.5px solid var(--border);
+  scrollbar-width: thin; box-shadow: var(--shadow);
 }
 .pos-category-filter::-webkit-scrollbar { height: 4px; }
 .pos-category-filter::-webkit-scrollbar-track { background: transparent; }
 .pos-category-filter::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .category-chip {
-  padding: 8px 18px; border-radius: 999px; border: 2px solid var(--border);
+  padding: 10px 22px; border-radius: 999px; border: 2px solid var(--border);
   background: var(--card-bg, white); color: var(--text);
-  font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  font-size: 0.9rem; font-weight: 700; cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap; line-height: 1.2;
+  letter-spacing: 0.01em;
 }
 .category-chip:hover { border-color: var(--primary); color: var(--primary); background: rgba(22,163,74,0.06); transform: translateY(-1px); }
 .category-chip:active { transform: scale(0.95); transition-duration: 0.1s; }

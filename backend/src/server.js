@@ -2011,10 +2011,52 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
 // CATEGORY LIST (for dropdowns)
 // ═══════════════════════════════════════════════════════════════════
 
+// ── Categories ──────────────────────────────────────────────
 app.get("/api/categories", auth, async (_q, r, n) => {
   try {
     r.json((await pool.query("SELECT DISTINCT category FROM products ORDER BY category")).rows.map(r => r.category));
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+app.post("/api/categories", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { name } = req.body;
+    if (!name || !String(name).trim()) return res.status(400).json({ message: "Category name required." });
+    const trimmed = String(name).trim();
+    // Check if category already exists (case-insensitive)
+    const { rows: existing } = await pool.query(
+      "SELECT DISTINCT category FROM products WHERE LOWER(category) = LOWER($1)", [trimmed]
+    );
+    if (existing.length > 0)
+      return res.status(409).json({ message: `Category "${existing[0].category}" already exists.` });
+    // Create a placeholder product in this category so it appears in listings
+    // Categories are derived from products, so we insert a minimal placeholder
+    await pool.query(
+      "INSERT INTO products(barcode, name, category, price, cost_price, stock, reorder_level, unit) VALUES($1, $2, $3, 0, 0, 0, 0, 'PCS')",
+      [`CAT-${Date.now()}`, `${trimmed} (Category)`, trimmed]
+    );
+    await audit(pool, req.user.id, "CREATE", "CATEGORY", null, { name: trimmed }, req);
+    res.status(201).json({ name: trimmed, message: `Category "${trimmed}" created.` });
+  } catch (e) { next(e); }
+});
+
+app.delete("/api/categories/:name", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const name = decodeURIComponent(req.params.name);
+    // Check if any real products use this category
+    const { rows: products } = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM products WHERE LOWER(category) = LOWER($1) AND stock > 0",
+      [name]
+    );
+    if (products[0].count > 0)
+      return res.status(400).json({ message: `Cannot delete category "${name}" — ${products[0].count} product(s) still have stock in this category.` });
+    // Remove placeholder products and products with zero stock in this category
+    const { rowCount } = await pool.query(
+      "DELETE FROM products WHERE LOWER(category) = LOWER($1) AND stock = 0", [name]
+    );
+    await audit(pool, req.user.id, "DELETE", "CATEGORY", null, { name, removed: rowCount }, req);
+    res.json({ message: `Category "${name}" deleted (${rowCount} placeholder product(s) removed).` });
+  } catch (e) { next(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════

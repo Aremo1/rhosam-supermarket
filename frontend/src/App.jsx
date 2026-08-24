@@ -9,12 +9,12 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","categories","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
+  MANAGER: ["dashboard","pos","products","categories","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","change-password","wifiqr"],
 };
 const LABELS = {
-  dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", inventory: "Inventory",
+  dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", categories: "Categories", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
@@ -22,7 +22,7 @@ const LABELS = {
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR",
 };
 const ICONS = {
-  dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
+  dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
@@ -2494,6 +2494,112 @@ function CashDrawerPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// CATEGORIES
+// ═══════════════════════════════════════════════════════════════════
+function CategoriesPage() {
+  const { fetchCategories, createCategory, deleteCategory, user } = useAuth();
+  const [categories, setCategories] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newCat, setNewCat] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [busy, setBusy] = useState(false);
+  const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try { setCategories(await fetchCategories()); } catch { }
+    finally { setLoading(false); }
+  }, [fetchCategories]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    if (!newCat.trim()) return;
+    setBusy(true); setError(""); setSuccess("");
+    try {
+      await createCategory({ name: newCat.trim() });
+      setSuccess(`Category "${newCat.trim()}" created!`);
+      setNewCat("");
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDelete(name) {
+    if (!confirm(`Delete category "${name}"? This will remove any placeholder products.`)) return;
+    setBusy(true); setError(""); setSuccess("");
+    try {
+      const result = await deleteCategory(name);
+      setSuccess(result.message || `Category "${name}" deleted.`);
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel">
+        <h2 style={{ marginBottom: 8 }}>📦 Manage Categories</h2>
+        <p className="muted" style={{ marginBottom: 16 }}>Categories are derived from products. Create a new category to make it available when adding products.</p>
+
+        {error && <div className="error-msg" style={{ marginBottom: 12 }}>{error}</div>}
+        {success && <div style={{ background: '#dcfce7', border: '1px solid #86efac', color: '#166534', padding: '10px 14px', borderRadius: 'var(--radius-sm)', marginBottom: 12, fontWeight: 600 }}>{success}</div>}
+
+        {isAdmin && (
+          <form onSubmit={handleCreate} style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={newCat}
+              onChange={e => setNewCat(e.target.value)}
+              placeholder="Enter new category name…"
+              className="search-input"
+              style={{ flex: 1, minWidth: 200 }}
+              required
+            />
+            <button type="submit" className="btn primary" disabled={busy || !newCat.trim()}>
+              {busy ? 'Creating…' : '+ Add Category'}
+            </button>
+          </form>
+        )}
+
+        {loading ? <p className="loading">Loading…</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Category Name</th>
+                  <th>Products</th>
+                  {isAdmin && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {categories.map(cat => (
+                  <tr key={cat}>
+                    <td><strong style={{ fontSize: '0.95rem' }}>{cat}</strong></td>
+                    <td><span className="status-badge info">{cat}</span></td>
+                    {isAdmin && (
+                      <td>
+                        <button
+                          className="btn-sm danger"
+                          onClick={() => handleDelete(cat)}
+                          disabled={busy}
+                        >Delete</button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!categories.length && <p className="muted">No categories found. Create one above.</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // BRANCHES (Phase 14)
 // ═══════════════════════════════════════════════════════════════════
 function BranchesPage() {
@@ -3556,6 +3662,7 @@ export default function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/pos" element={<POSPage />} />
           <Route path="/products" element={<ProductsPage />} />
+          <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/customers" element={<CustomersPage />} />
