@@ -276,6 +276,74 @@ await test("4.3 Inventory movement history is complete and ordered", async () =>
   return true;
 });
 
+await test("4.4 Report damage deducts stock and records movement", async () => {
+  const { status: ps, data: products } = await req("GET", "/products", null, TOKEN);
+  if (ps !== 200 || !products.length) return "could not load products";
+  const p = products[0];
+  const beforeStock = p.stock;
+  const { status, data } = await req("POST", "/inventory/damage", {
+    productId: p.id, quantity: 1, reason: "UAT damage test"
+  }, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  // Verify stock decreased
+  const { data: after } = await req("GET", `/products`, null, TOKEN);
+  const pAfter = after.find(x => x.id === p.id);
+  if (pAfter.stock !== beforeStock - 1) return `stock expected ${beforeStock - 1}, got ${pAfter.stock}`;
+  // Verify movement recorded
+  const { data: movs } = await req("GET", `/inventory/movements?product_id=${p.id}`, null, TOKEN);
+  if (!movs.some(m => m.movement_type === "DAMAGED")) return "no DAMAGED movement found";
+  return true;
+});
+
+await test("4.5 Damage fails with insufficient stock", async () => {
+  const { data: products } = await req("GET", "/products", null, TOKEN);
+  const p = products[0];
+  const { status } = await req("POST", "/inventory/damage", {
+    productId: p.id, quantity: 999999, reason: "Overflow test"
+  }, TOKEN);
+  return status === 409 ? true : `got ${status}, expected 409`;
+});
+
+await test("4.6 Record wastage deducts stock and records movement", async () => {
+  const { data: products } = await req("GET", "/products", null, TOKEN);
+  const p = products[0];
+  const beforeStock = p.stock;
+  const { status } = await req("POST", "/inventory/wastage", {
+    productId: p.id, quantity: 1, reason: "UAT wastage test"
+  }, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const { data: after } = await req("GET", `/products`, null, TOKEN);
+  const pAfter = after.find(x => x.id === p.id);
+  if (pAfter.stock !== beforeStock - 1) return `stock expected ${beforeStock - 1}, got ${pAfter.stock}`;
+  const { data: movs } = await req("GET", `/inventory/movements?product_id=${p.id}`, null, TOKEN);
+  if (!movs.some(m => m.movement_type === "WASTAGE")) return "no WASTAGE movement found";
+  return true;
+});
+
+await test("4.7 Damage/wastage requires ADMIN or MANAGER role", async () => {
+  const { status } = await req("POST", "/inventory/damage", {
+    productId: 1, quantity: 1, reason: "Cashier test"
+  }, CASHIER_TOKEN);
+  return status === 403 ? true : `got ${status}, expected 403`;
+});
+
+await test("4.8 Stock valuation returns product values and summary", async () => {
+  const { status, data } = await req("GET", "/inventory/valuation", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.products || !data.summary) return "missing products or summary";
+  if (data.summary.totalProducts === undefined) return "missing totalProducts";
+  if (data.summary.totalValue === undefined) return "missing totalValue";
+  if (!data.summary.byCategory) return "missing byCategory";
+  return true;
+});
+
+await test("4.9 Stock valuation works with branch filter", async () => {
+  const { data: branches } = await req("GET", "/branches", null, TOKEN);
+  if (!branches.length) return "no branches";
+  const { status } = await req("GET", `/inventory/valuation?branchId=${branches[0].id}`, null, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
 // ═══════════════════════════════════════════════════════════════
 // UAT 5: REPORTS & BUSINESS INTELLIGENCE
 // ═══════════════════════════════════════════════════════════════

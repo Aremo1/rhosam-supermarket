@@ -9,8 +9,8 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","categories","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
-  MANAGER: ["dashboard","pos","products","categories","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","categories","inventory","damages","wastage","stock-valuation","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
+  MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","change-password","wifiqr"],
 };
 const LABELS = {
@@ -18,12 +18,14 @@ const LABELS = {
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
+  damages: "Damages", wastage: "Wastage", "stock-valuation": "Stock Valuation",
   cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
+  damages: "⚠️", wastage: "🗑️", "stock-valuation": "💎",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
   "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶",
@@ -1006,6 +1008,265 @@ function InventoryPage() {
             </form>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DAMAGES PAGE
+// ═══════════════════════════════════════════════════════════════════
+function DamagesPage() {
+  const { fetchProducts, reportDamage, fetchInventoryMovements, user } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [damages, setDamages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ productId: "", quantity: "", reason: "" });
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [p, m] = await Promise.all([
+        fetchProducts(undefined, user?.branchId),
+        fetchInventoryMovements()
+      ]);
+      setProducts(p);
+      setDamages(m.filter(mv => mv.movement_type === "DAMAGED"));
+    } catch { } finally { setLoading(false); }
+  }, [fetchProducts, fetchInventoryMovements, user]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setMsg("");
+    try {
+      await reportDamage({ productId: Number(form.productId), quantity: Number(form.quantity), reason: form.reason });
+      setMsg("Damage reported and stock deducted!");
+      setForm({ productId: "", quantity: "", reason: "" });
+      setShowForm(false); load();
+    } catch (err) { setMsg(`Error: ${err.message}`); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="summary-grid">
+        <div className="summary-card"><span>Total Damage Reports</span><strong>{damages.length}</strong></div>
+        <div className="summary-card"><span>Units Lost</span><strong>{damages.reduce((s, d) => s + Math.abs(d.quantity), 0)}</strong></div>
+      </div>
+      <div className="panel-header">
+        <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Report Damage</button>
+      </div>
+      {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Report Damaged Product</h2>
+            <form onSubmit={handleSubmit} className="form-grid">
+              <label>Product
+                <select value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} required>
+                  <option value="">Select product…</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {p.stock})</option>)}
+                </select>
+              </label>
+              <label>Quantity<input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required /></label>
+              <label>Reason<textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} rows={2} placeholder="e.g. Broken packaging, water damage" required /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Report Damage</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Product</th><th>Qty Lost</th><th>Reason</th><th>Reported By</th></tr></thead>
+            <tbody>{damages.map(d => (
+              <tr key={d.id}>
+                <td>{new Date(d.created_at).toLocaleDateString()}</td>
+                <td><strong>{d.product_name}</strong></td>
+                <td className="low-stock">{Math.abs(d.quantity)}</td>
+                <td>{d.notes || '—'}</td>
+                <td>{d.user_name || 'System'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!damages.length && <p className="muted">No damage reports yet.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WASTAGE PAGE
+// ═══════════════════════════════════════════════════════════════════
+function WastagePage() {
+  const { fetchProducts, reportWastage, fetchInventoryMovements, user } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [wastage, setWastage] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ productId: "", quantity: "", reason: "" });
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [p, m] = await Promise.all([
+        fetchProducts(undefined, user?.branchId),
+        fetchInventoryMovements()
+      ]);
+      setProducts(p);
+      setWastage(m.filter(mv => mv.movement_type === "WASTAGE"));
+    } catch { } finally { setLoading(false); }
+  }, [fetchProducts, fetchInventoryMovements, user]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setMsg("");
+    try {
+      await reportWastage({ productId: Number(form.productId), quantity: Number(form.quantity), reason: form.reason });
+      setMsg("Wastage recorded and stock deducted!");
+      setForm({ productId: "", quantity: "", reason: "" });
+      setShowForm(false); load();
+    } catch (err) { setMsg(`Error: ${err.message}`); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="summary-grid">
+        <div className="summary-card"><span>Total Wastage Records</span><strong>{wastage.length}</strong></div>
+        <div className="summary-card"><span>Units Wasted</span><strong>{wastage.reduce((s, w) => s + Math.abs(w.quantity), 0)}</strong></div>
+      </div>
+      <div className="panel-header">
+        <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Record Wastage</button>
+      </div>
+      {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Record Wastage</h2>
+            <form onSubmit={handleSubmit} className="form-grid">
+              <label>Product
+                <select value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} required>
+                  <option value="">Select product…</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {p.stock})</option>)}
+                </select>
+              </label>
+              <label>Quantity<input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required /></label>
+              <label>Reason<textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} rows={2} placeholder="e.g. Expired, spoilt, near-useless" required /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Record Wastage</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Product</th><th>Qty Wasted</th><th>Reason</th><th>Reported By</th></tr></thead>
+            <tbody>{wastage.map(w => (
+              <tr key={w.id}>
+                <td>{new Date(w.created_at).toLocaleDateString()}</td>
+                <td><strong>{w.product_name}</strong></td>
+                <td className="low-stock">{Math.abs(w.quantity)}</td>
+                <td>{w.notes || '—'}</td>
+                <td>{w.user_name || 'System'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!wastage.length && <p className="muted">No wastage records yet.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STOCK VALUATION PAGE
+// ═══════════════════════════════════════════════════════════════════
+function StockValuationPage() {
+  const { fetchValuation, user } = useAuth();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [categoryFilter, setCategoryFilter] = useState("");
+
+  const load = useCallback(async () => {
+    try { setData(await fetchValuation(user?.branchId)); } catch { } finally { setLoading(false); }
+  }, [fetchValuation, user]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const filtered = categoryFilter ? (data?.products || []).filter(p => p.category === categoryFilter) : (data?.products || []);
+  const categories = [...new Set((data?.products || []).map(p => p.category))].sort();
+
+  return (
+    <div className="page-panel">
+      {data && (
+        <>
+          <div className="summary-grid">
+            <div className="summary-card accent"><span>Total Products</span><strong>{data.summary.totalProducts}</strong></div>
+            <div className="summary-card"><span>Total Units</span><strong>{data.summary.totalUnits.toLocaleString()}</strong></div>
+            <div className="summary-card"><span>Total Value</span><strong>{fmt(data.summary.totalValue)}</strong></div>
+            <div className="summary-card"><span>Categories</span><strong>{Object.keys(data.summary.byCategory).length}</strong></div>
+          </div>
+          <div className="panel-header">
+            <div className="tabs" style={{ marginBottom: 0 }}>
+              <button className={!categoryFilter ? "active" : ""} onClick={() => setCategoryFilter("")}>All</button>
+              {categories.map(c => (
+                <button key={c} className={categoryFilter === c ? "active" : ""} onClick={() => setCategoryFilter(c)}>{c}</button>
+              ))}
+            </div>
+          </div>
+          {categoryFilter && (
+            <div className="summary-grid" style={{ marginTop: 8 }}>
+              <div className="summary-card"><span>{categoryFilter} Units</span><strong>{data.summary.byCategory[categoryFilter]?.units?.toLocaleString()}</strong></div>
+              <div className="summary-card"><span>{categoryFilter} Value</span><strong>{fmt(data.summary.byCategory[categoryFilter]?.value)}</strong></div>
+            </div>
+          )}
+          {loading ? <p className="loading">Loading…</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Product</th><th>Barcode</th><th>Category</th><th>Stock</th><th>Unit</th><th>Cost Price</th><th>Reorder</th><th>Total Value</th></tr></thead>
+                <tbody>{filtered.map(p => (
+                  <tr key={p.id}>
+                    <td><strong>{p.name}</strong></td>
+                    <td><code>{p.barcode}</code></td>
+                    <td>{p.category}</td>
+                    <td className={p.stock <= p.reorder_level ? "low-stock" : ""}>{p.stock}</td>
+                    <td>{p.unit}</td>
+                    <td>{fmt(p.cost_price)}</td>
+                    <td>{p.reorder_level}</td>
+                    <td><strong>{fmt(p.total_value)}</strong></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {/* Category value summary */}
+          <div className="panel" style={{ marginTop: 16 }}>
+            <h2>Value by Category</h2>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Category</th><th>Units</th><th>Value</th><th>% of Total</th></tr></thead>
+                <tbody>{Object.entries(data.summary.byCategory).sort((a, b) => b[1].value - a[1].value).map(([cat, vals]) => (
+                  <tr key={cat}>
+                    <td><strong>{cat}</strong></td>
+                    <td>{vals.units.toLocaleString()}</td>
+                    <td>{fmt(vals.value)}</td>
+                    <td>{((vals.value / (data.summary.totalValue || 1)) * 100).toFixed(1)}%</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -3704,6 +3965,9 @@ export default function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
+          <Route path="/damages" element={<DamagesPage />} />
+          <Route path="/wastage" element={<WastagePage />} />
+          <Route path="/stock-valuation" element={<StockValuationPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/customers" element={<CustomersPage />} />
           <Route path="/suppliers" element={<SuppliersPage />} />

@@ -889,6 +889,141 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// DAMAGES & WASTAGE (record stock losses)
+// ═══════════════════════════════════════════════════════════════════
+app.post("/api/inventory/damage", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { productId, quantity, reason } = req.body;
+    const qty = Math.abs(Number(quantity));
+    if (!productId || !qty || qty < 1)
+      return res.status(400).json({ message: "Product and valid quantity required." });
+
+    await client.query("BEGIN");
+    const { rows } = await client.query("SELECT id, name, stock FROM products WHERE id=$1 FOR UPDATE", [productId]);
+    const product = rows[0];
+    if (!product) throw Object.assign(new Error("Product not found."), { status: 404 });
+
+    // Check branch stock if assigned
+    if (req.user.branchId) {
+      const { rows: bi } = await client.query(
+        "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2 FOR UPDATE",
+        [req.user.branchId, productId]
+      );
+      const branchQty = bi[0]?.quantity ?? product.stock;
+      if (branchQty < qty)
+        throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${branchQty}`), { status: 409 });
+      await client.query(
+        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id=$2 AND product_id=$3",
+        [qty, req.user.branchId, productId]
+      );
+    } else {
+      if (product.stock < qty)
+        throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}`), { status: 409 });
+    }
+
+    await client.query("UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id=$2", [qty, productId]);
+    const ref = `DMG-${Date.now()}`;
+    await client.query(
+      "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'DAMAGED',$2,$3,$4,$5)",
+      [productId, -qty, ref, req.user.id, reason || "Damage reported"]
+    );
+    await audit(client, req.user.id, "DAMAGE", "PRODUCT", productId, { qty, reason, ref }, req);
+    await client.query("COMMIT");
+    res.json({ message: `${qty} unit(s) of ${product.name} marked as damaged.`, ref });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(e);
+  } finally { client.release(); }
+});
+
+app.post("/api/inventory/wastage", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { productId, quantity, reason } = req.body;
+    const qty = Math.abs(Number(quantity));
+    if (!productId || !qty || qty < 1)
+      return res.status(400).json({ message: "Product and valid quantity required." });
+
+    await client.query("BEGIN");
+    const { rows } = await client.query("SELECT id, name, stock FROM products WHERE id=$1 FOR UPDATE", [productId]);
+    const product = rows[0];
+    if (!product) throw Object.assign(new Error("Product not found."), { status: 404 });
+
+    if (req.user.branchId) {
+      const { rows: bi } = await client.query(
+        "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2 FOR UPDATE",
+        [req.user.branchId, productId]
+      );
+      const branchQty = bi[0]?.quantity ?? product.stock;
+      if (branchQty < qty)
+        throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${branchQty}`), { status: 409 });
+      await client.query(
+        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id=$2 AND product_id=$3",
+        [qty, req.user.branchId, productId]
+      );
+    } else {
+      if (product.stock < qty)
+        throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}`), { status: 409 });
+    }
+
+    await client.query("UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id=$2", [qty, productId]);
+    const ref = `WST-${Date.now()}`;
+    await client.query(
+      "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'WASTAGE',$2,$3,$4,$5)",
+      [productId, -qty, ref, req.user.id, reason || "Waste recorded"]
+    );
+    await audit(client, req.user.id, "WASTAGE", "PRODUCT", productId, { qty, reason, ref }, req);
+    await client.query("COMMIT");
+    res.json({ message: `${qty} unit(s) of ${product.name} marked as waste.`, ref });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(e);
+  } finally { client.release(); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// STOCK VALUATION
+// ═══════════════════════════════════════════════════════════════════
+app.get("/api/inventory/valuation", auth, async (req, res, next) => {
+  try {
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.id, p.barcode, p.name, p.category, p.unit,
+                   COALESCE(bi.quantity, 0)::int AS stock, p.cost_price::float,
+                   COALESCE(bi.quantity, 0) * p.cost_price AS total_value,
+                   COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+             WHERE p.is_active = TRUE
+             ORDER BY p.category, p.name`;
+      params = [branchId];
+    } else {
+      sql = `SELECT p.id, p.barcode, p.name, p.category, p.unit,
+                   p.stock::int, p.cost_price::float,
+                   p.stock * p.cost_price AS total_value, p.reorder_level
+             FROM products p
+             WHERE p.is_active = TRUE
+             ORDER BY p.category, p.name`;
+      params = [];
+    }
+    const { rows } = await pool.query(sql, params);
+    // Compute summary
+    const totalProducts = rows.length;
+    const totalUnits = rows.reduce((s, r) => s + r.stock, 0);
+    const totalValue = rows.reduce((s, r) => s + (r.total_value || 0), 0);
+    const byCategory = {};
+    rows.forEach(r => {
+      if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
+      byCategory[r.category].units += r.stock;
+      byCategory[r.category].value += r.total_value || 0;
+    });
+    res.json({ products: rows, summary: { totalProducts, totalUnits, totalValue, byCategory } });
+  } catch (e) { next(e); }
+});
+
 app.get("/api/products/low-stock", auth, async (req, r, n) => {
   try {
     const branchId = req.user.branchId;
