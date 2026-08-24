@@ -68,11 +68,19 @@ app.use(express.json({ limit: "2mb" }));
 
 // Simple in-memory rate limiter (Express 5 compatible)
 const rateLimits = {};
+let lastCleanup = Date.now();
 function makeRateLimiter(windowMs, max) {
   return (req, res, next) => {
     const ip = req.ip || req.connection?.remoteAddress || "unknown";
     const key = `${req.path}:${ip}`;
     const now = Date.now();
+    // Periodic cleanup of expired entries (every 5 minutes)
+    if (now - lastCleanup > 5 * 60 * 1000) {
+      lastCleanup = now;
+      for (const k of Object.keys(rateLimits)) {
+        if (now - rateLimits[k].start > windowMs) delete rateLimits[k];
+      }
+    }
     if (!rateLimits[key] || now - rateLimits[key].start > windowMs) {
       rateLimits[key] = { start: now, count: 0 };
     }
@@ -202,7 +210,6 @@ app.post("/api/auth/change-password", auth, async (req, res, next) => {
     if (!rows[0] || !(await bcrypt.compare(String(currentPassword || ""), rows[0].password_hash)))
       return res.status(401).json({ message: "Current password is incorrect." });
     const hash = await bcrypt.hash(newPassword, saltRounds);
-    await pool.query("UPDATE users SET password_hash=$1,password_changed_at=NOW(),updated_at=NOW() WHERE id=$2", [hash, req.user.id]);
     await pool.query("UPDATE users SET password_hash=$1,password_changed_at=NOW(),password_expires_at=NOW()+INTERVAL '90 days',updated_at=NOW() WHERE id=$2", [hash, req.user.id]);
     await audit(pool, req.user.id, "CHANGE_PASSWORD", "USER", req.user.id, {}, req);
     res.json({ message: "Password changed successfully." });
@@ -1213,7 +1220,7 @@ app.delete("/api/suppliers/:id", auth, allow("ADMIN"), async (req, res, next) =>
 });
 
 // Purchase Orders
-app.get("/api/purchase-orders", auth, async (_q, r, n) => {
+app.get("/api/purchase-orders", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
@@ -1375,7 +1382,7 @@ app.put("/api/customers/:id", auth, async (req, res, next) => {
 // PHASE 13: FINANCE — Expenses
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/expenses", auth, async (_q, r, n) => {
+app.get("/api/expenses", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
@@ -1405,7 +1412,7 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
   } catch (e) { next(e); }
 });
 
-app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
+app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
     // Branch-scoped for managers
     const branchFilter = req.user.role === "ADMIN" ? ""
@@ -1470,14 +1477,21 @@ app.get("/api/branches", auth, async (_q, r, n) => {
 // PHASE 14: CASH DRAWER
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/cash-drawer", auth, async (_q, r, n) => {
+app.get("/api/cash-drawer", auth, async (req, r, n) => {
   try {
+    let whereClause = "";
+    const params = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      whereClause = " WHERE cd.branch_id = $1";
+      params.push(req.user.branchId);
+    }
     r.json((await pool.query(
       `SELECT cd.*, uo.name AS opened_by_name, uc.name AS closed_by_name
        FROM cash_drawer cd
        LEFT JOIN users uo ON uo.id = cd.opened_by
        LEFT JOIN users uc ON uc.id = cd.closed_by
-       ORDER BY cd.opened_at DESC LIMIT 50`
+       ${whereClause}
+       ORDER BY cd.opened_at DESC LIMIT 50`, params
     )).rows);
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
@@ -1526,13 +1540,25 @@ app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, 
   try {
     const { closingBalance } = req.body;
     if (closingBalance == null) return res.status(400).json({ message: "Closing balance required." });
-    const { rows: openDrawer } = await pool.query("SELECT * FROM cash_drawer WHERE status = 'OPEN' LIMIT 1");
+    // Branch-scoped: only close drawer for same branch
+    let drawerQuery = "SELECT * FROM cash_drawer WHERE status = 'OPEN'";
+    const drawerParams = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      drawerQuery += " AND branch_id = $1";
+      drawerParams.push(req.user.branchId);
+    }
+    drawerQuery += " LIMIT 1";
+    const { rows: openDrawer } = await pool.query(drawerQuery, drawerParams);
     if (!openDrawer[0]) return res.status(404).json({ message: "No open drawer found." });
     const drawer = openDrawer[0];
-    const salesInPeriod = await pool.query(
-      "SELECT COALESCE(SUM(total),0)::float AS total FROM sales WHERE created_at >= $1",
-      [drawer.opened_at]
-    );
+    // Branch-scoped: only count sales from the same branch
+    let salesQuery = "SELECT COALESCE(SUM(total),0)::float AS total FROM sales WHERE created_at >= $1";
+    const salesParams = [drawer.opened_at];
+    if (req.user.role !== "ADMIN" && drawer.branch_id) {
+      salesQuery += " AND branch_id = $2";
+      salesParams.push(drawer.branch_id);
+    }
+    const salesInPeriod = await pool.query(salesQuery, salesParams);
     const expected = Number(drawer.opening_balance) + Number(salesInPeriod.rows[0].total);
     const variance = Number(closingBalance) - expected;
     const { rows } = await pool.query(
