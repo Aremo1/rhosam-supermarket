@@ -633,13 +633,15 @@ function POSPage() {
           {filtered.map(p => (
             <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
               {p.image_url && <img src={`${(import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "")}${p.image_url}`} alt={p.name} className="product-card-image" />}
-              <div className="product-card-header">
-                <strong>{p.name}</strong>
-                <small>{p.barcode}</small>
-              </div>
-              <div className="product-card-meta">
-                <span className="category-tag">{p.category}</span>
-                <span className={`stock-tag ${p.stock <= p.reorder_level ? "low" : ""}`}>{p.stock} in stock</span>
+              <div className="product-card-body">
+                <div className="product-card-header">
+                  <strong>{p.name}</strong>
+                  <small>{p.barcode}</small>
+                </div>
+                <div className="product-card-meta">
+                  <span className="category-tag">{p.category}</span>
+                  <span className={`stock-tag ${p.stock <= p.reorder_level ? "low" : ""}`}>{p.stock} in stock</span>
+                </div>
               </div>
               <div className="product-card-price">₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
             </div>
