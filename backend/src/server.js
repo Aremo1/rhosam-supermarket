@@ -1616,17 +1616,11 @@ app.get("/api/cash-drawer", auth, async (req, r, n) => {
 
 app.get("/api/cash-drawer/active", auth, async (req, r, n) => {
   try {
-    // Branch-scoped: filter active drawer by user's branch
-    let whereClause = "cd.status = 'OPEN'";
-    const params = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
-      whereClause += " AND cd.branch_id = $1";
-      params.push(req.user.branchId);
-    }
+    const bf = buildBranchFilter(req, { tableAlias: "cd" });
     const { rows } = await pool.query(
       `SELECT cd.*, uo.name AS opened_by_name
        FROM cash_drawer cd LEFT JOIN users uo ON uo.id = cd.opened_by
-       WHERE ${whereClause} ORDER BY cd.opened_at DESC LIMIT 1`, params
+       WHERE cd.status = 'OPEN'${bf.sql} ORDER BY cd.opened_at DESC LIMIT 1`, bf.params
     );
     r.json(rows[0] || null);
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
@@ -1635,14 +1629,8 @@ app.get("/api/cash-drawer/active", auth, async (req, r, n) => {
 app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
   try {
     const { openingBalance = 0, drawerName = "Main Drawer" } = req.body;
-    // Branch-scoped: only check for open drawer in same branch
-    let existingQuery = "SELECT id FROM cash_drawer WHERE status = 'OPEN'";
-    const existingParams = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
-      existingQuery += " AND branch_id = $1";
-      existingParams.push(req.user.branchId);
-    }
-    const existing = await pool.query(existingQuery, existingParams);
+    const bf = buildBranchFilter(req, { tableAlias: "cash_drawer" });
+    const existing = await pool.query(`SELECT id FROM cash_drawer WHERE status = 'OPEN'${bf.sql}`, bf.params);
     if (existing.rows[0]) return res.status(409).json({ message: "A drawer is already open. Close it first." });
     const { rows } = await pool.query(
       `INSERT INTO cash_drawer(drawer_name, opening_balance, current_balance, opened_by, branch_id)
@@ -1658,15 +1646,8 @@ app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, 
   try {
     const { closingBalance } = req.body;
     if (closingBalance == null) return res.status(400).json({ message: "Closing balance required." });
-    // Branch-scoped: only close drawer for same branch
-    let drawerQuery = "SELECT * FROM cash_drawer WHERE status = 'OPEN'";
-    const drawerParams = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
-      drawerQuery += " AND branch_id = $1";
-      drawerParams.push(req.user.branchId);
-    }
-    drawerQuery += " LIMIT 1";
-    const { rows: openDrawer } = await pool.query(drawerQuery, drawerParams);
+    const bf = buildBranchFilter(req, { tableAlias: "cash_drawer" });
+    const { rows: openDrawer } = await pool.query(`SELECT * FROM cash_drawer WHERE status = 'OPEN'${bf.sql} LIMIT 1`, bf.params);
     if (!openDrawer[0]) return res.status(404).json({ message: "No open drawer found." });
     const drawer = openDrawer[0];
     // Always filter by the drawer's own branch to get accurate expected balance
@@ -1916,9 +1897,9 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
     const branchId = req.user.branchId;
     await client.query("BEGIN");
 
-    // Get the transfer
+    // Get the transfer — lock the row to prevent concurrent completions
     const { rows: existing } = await client.query(
-      "SELECT * FROM stock_transfers WHERE id=$1", [id]
+      "SELECT * FROM stock_transfers WHERE id=$1 FOR UPDATE", [id]
     );
     if (!existing[0]) {
       await client.query("ROLLBACK").catch(() => {});
@@ -1973,6 +1954,16 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
     // On COMPLETED: deduct stock from source, add stock to destination
     if (status === "COMPLETED") {
       const qty = Number(transfer.quantity);
+      // Pre-check: source branch must still have enough stock
+      const { rows: biCheck } = await client.query(
+        "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2",
+        [transfer.from_branch_id, transfer.product_id]
+      );
+      if (biCheck[0] && Number(biCheck[0].quantity) < qty) {
+        await client.query("ROLLBACK").catch(() => {});
+        client.release();
+        return res.status(400).json({ message: `Source branch no longer has enough stock. Available: ${biCheck[0].quantity}, requested: ${qty}` });
+      }
       // Deduct from global stock
       await client.query(
         "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND stock >= $1",
