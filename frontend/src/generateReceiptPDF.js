@@ -132,6 +132,9 @@ export function generateReceiptPDF(receipt) {
   add("", { leading: 6 });
 
   // Receipt info
+  if (receipt.branchName) {
+    add(`Branch: ${receipt.branchName}`, { leading: 13 });
+  }
   add(`Receipt: ${receipt.receiptNumber}`, { leading: 13 });
   add(`Date: ${new Date(receipt.createdAt || receipt.created_at).toLocaleString("en-NG")}`, { leading: 13 });
   add(`Cashier: ${receipt.cashierName || "—"}`, { leading: 13 });

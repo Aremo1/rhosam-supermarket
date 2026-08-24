@@ -9,8 +9,8 @@ import "./App.css";
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
-  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","change-password","mfa","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
+  MANAGER: ["dashboard","pos","products","inventory","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","change-password","wifiqr"],
 };
 const LABELS = {
@@ -18,14 +18,14 @@ const LABELS = {
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
-  cashdrawer: "Cash Drawer", branches: "Branches", display: "Customer Display", supplierportal: "Supplier Portal",
+  cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   dailyreport: "📈", users: "👤", audit: "📝",
-  cashdrawer: "💵", branches: "🏢", display: "🖥️", supplierportal: "🏭",
+  cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
   "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶",
 };
 
@@ -107,7 +107,10 @@ function Layout({ children }) {
             <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)} title={darkMode ? "Switch to light mode" : "Switch to dark mode"}>
               {darkMode ? "☀️" : "🌙"}
             </button>
-            <span className="user-badge">{user?.name} · <span className="role-tag">{user?.role}</span></span>
+            <span className="user-badge">
+              {user?.branch?.name && <span className="branch-tag">🏢 {user.branch.name} · </span>}
+              {user?.name} · <span className="role-tag">{user?.role}</span>
+            </span>
           </div>
         </header>
         <div className="page-content">{children}</div>
@@ -163,37 +166,120 @@ function LoginPage() {
 // DASHBOARD (Phase 9)
 // ═══════════════════════════════════════════════════════════════════
 function DashboardPage() {
-  const { fetchDashboard, fetchTopProducts, fetchCategorySales } = useAuth();
+  const { fetchDashboard, fetchTopProducts, fetchCategorySales, fetchBranchSummary, fetchBranches, user } = useAuth();
   const [stats, setStats] = useState(null);
   const [topProducts, setTopProducts] = useState([]);
   const [catSales, setCatSales] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [branches, setBranches] = useState([]);
+  const [branchSummary, setBranchSummary] = useState(null);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const isAdmin = user?.role === "ADMIN";
 
-  const load = useCallback(async () => {
+  // Load branches list for admin selector
+  useEffect(() => {
+    if (isAdmin) {
+      fetchBranches().then(setBranches).catch(() => {});
+      fetchBranchSummary().then(setBranchSummary).catch(() => {});
+    }
+  }, [isAdmin, fetchBranches, fetchBranchSummary]);
+
+  const load = useCallback(async (branchId) => {
     try {
-      const [s, tp, cs] = await Promise.all([fetchDashboard(), fetchTopProducts(), fetchCategorySales()]);
+      const bid = branchId || undefined;
+      const [s, tp, cs] = await Promise.all([fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid)]);
       setStats(s); setTopProducts(tp); setCatSales(cs);
     } catch { }
     finally { setLoading(false); }
   }, [fetchDashboard, fetchTopProducts, fetchCategorySales]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(selectedBranch || undefined); }, [load, selectedBranch]);
 
   if (loading) return <div className="loading">Loading dashboard…</div>;
   if (!stats) return <div className="error-msg">Failed to load dashboard.</div>;
 
   const fmt = (n) => "₦" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const selectedBranchName = branches.find(b => String(b.id) === String(selectedBranch))?.name;
 
   return (
     <div className="dashboard">
+      {/* Branch selector for Admin */}
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); setLoading(true); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches (Overview)</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          {selectedBranchName && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>— Viewing: <strong>{selectedBranchName}</strong></span>}
+          {!selectedBranchName && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>— Viewing aggregated data across all branches</span>}
+        </div>
+      )}
+
+      {/* Non-admin branch indicator */}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 16, padding: '10px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>{user.branch.name}</strong> — Dashboard showing your branch data.
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card accent"><span>Today's Sales</span><strong>{stats.todaySales}</strong><small>{fmt(stats.todayRevenue)}</small></div>
         <div className="summary-card"><span>Total Revenue</span><strong>{fmt(stats.totalRevenue)}</strong></div>
-        <div className="summary-card"><span>Products</span><strong>{stats.totalProducts}</strong></div>
-        <div className="summary-card warning"><span>Low Stock</span><strong>{stats.lowStockCount}</strong></div>
+        <div className="summary-card"><span>Products{selectedBranch ? ' at ' + selectedBranchName : ''}</span><strong>{stats.totalProducts}</strong></div>
+        <div className="summary-card warning"><span>Low Stock{selectedBranch ? ' at ' + selectedBranchName : ''}</span><strong>{stats.lowStockCount}</strong></div>
         <div className="summary-card"><span>Total Transactions</span><strong>{stats.totalSales}</strong></div>
-        <div className="summary-card"><span>Active Users</span><strong>{stats.totalUsers}</strong></div>
+        <div className="summary-card"><span>Active Users{selectedBranch ? ' at ' + selectedBranchName : ''}</span><strong>{stats.totalUsers}</strong></div>
       </div>
+
+      {/* Branch Overview Table (Admin only, when viewing all branches) */}
+      {isAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (
+        <div className="panel">
+          <h2>🏢 Branch Performance Overview</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Branch</th>
+                  <th>Total Sales</th>
+                  <th>Revenue</th>
+                  <th>Today Revenue</th>
+                  <th>Active Cashiers</th>
+                  <th>Low Stock</th>
+                </tr>
+              </thead>
+              <tbody>
+                {branchSummary.branches.map(b => (
+                  <tr key={b.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedBranch(String(b.id))}>
+                    <td><strong>{b.name}</strong></td>
+                    <td>{b.total_sales}</td>
+                    <td>{fmt(b.total_revenue)}</td>
+                    <td>{fmt(b.today_revenue)}</td>
+                    <td>{b.active_cashiers}</td>
+                    <td className={b.low_stock > 0 ? 'low-stock' : ''}>{b.low_stock}</td>
+                  </tr>
+                ))}
+              </tbody>
+              {branchSummary.totals && (
+                <tfoot>
+                  <tr style={{ fontWeight: 700, background: 'var(--surface, #f3f4f6)', borderTop: '2px solid var(--border)' }}>
+                    <td>📊 All Branches (Total)</td>
+                    <td>{branchSummary.totals.total_sales}</td>
+                    <td>{fmt(branchSummary.totals.total_revenue)}</td>
+                    <td>{fmt(branchSummary.totals.today_revenue)}</td>
+                    <td>{branchSummary.totals.active_cashiers}</td>
+                    <td className={branchSummary.totals.low_stock > 0 ? 'low-stock' : ''}>{branchSummary.totals.low_stock}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+          <p style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--muted)' }}>💡 Click any branch row to view its detailed dashboard.</p>
+        </div>
+      )}
 
       {/* Sales Trend Chart (CSS bars) */}
       <div className="panel">
@@ -249,10 +335,11 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, user } = useAuth();
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("");
   const [customerName, setCustomerName] = useState("Walk-in Customer");
   const [customerId, setCustomerId] = useState(null);
   const [payment, setPayment] = useState("Cash");
@@ -296,11 +383,29 @@ function POSPage() {
   // Auto-focus search on mount and after cart changes
   useEffect(() => { searchRef.current?.focus(); }, [cart, receipt]);
 
-  const filtered = products.filter(p =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.barcode.includes(search) ||
-    p.category.toLowerCase().includes(search.toLowerCase())
-  );
+  // Keyboard shortcut: Escape to clear cart (only when not in receipt view)
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === "Escape" && !receipt && cart.length > 0) {
+        e.preventDefault();
+        if (confirm("Clear all items from cart?")) setCart([]);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [cart, receipt]);
+
+  // Derive unique categories from products
+  const categories = [...new Set(products.map(p => p.category).filter(Boolean))].sort();
+
+  const filtered = products.filter(p => {
+    const matchesSearch = !search.trim() ||
+      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      p.barcode.includes(search) ||
+      p.category.toLowerCase().includes(search.toLowerCase());
+    const matchesCategory = !selectedCategory || p.category === selectedCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   function addToCart(product, fromScan = false) {
     if (product.stock <= 0) { setError(`${product.name} is out of stock!`); return; }
@@ -402,6 +507,7 @@ function POSPage() {
       <div className="receipt-view">
         <div className="receipt">
           <h2>🛍️ RHoSAM Supermarket</h2>
+          {user?.branch?.name && <p className="muted">Branch: {user.branch.name}</p>}
           <p className="muted">Receipt: {receipt.receiptNumber}</p>
           <p className="muted">Cashier: {receipt.cashierName}</p>
           <p className="muted">Customer: {receipt.customerName}</p>
@@ -432,7 +538,7 @@ function POSPage() {
             {emailMsg && <p className={emailMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 6, fontSize: '0.8rem' }}>{emailMsg}</p>}
           </div>
           <div className="receipt-actions no-print">
-            <button onClick={() => generateReceiptPDF(receipt)}>📄 Download PDF</button>
+            <button onClick={() => generateReceiptPDF({ ...receipt, branchName: user?.branch?.name || "" })}>📄 Download PDF</button>
             <button onClick={() => window.print()}>🖨️ Print</button>
             <button onClick={() => { setReceipt(null); setReceiptEmail(""); setEmailMsg(""); }}>🛒 New Sale</button>
           </div>
@@ -462,6 +568,37 @@ function POSPage() {
           />
           <small className="pos-search-hint">Point scanner here • Press Enter to add</small>
         </div>
+
+        {/* Category Filter */}
+        {categories.length > 1 && (
+          <div className="pos-category-filter">
+            <button
+              className={`category-chip ${!selectedCategory ? 'active' : ''}`}
+              onClick={() => setSelectedCategory("")}
+            >All</button>
+            {categories.map(cat => (
+              <button
+                key={cat}
+                className={`category-chip ${selectedCategory === cat ? 'active' : ''}`}
+                onClick={() => setSelectedCategory(selectedCategory === cat ? "" : cat)}
+              >{cat}</button>
+            ))}
+          </div>
+        )}
+
+        <div className="pos-product-count">
+          {selectedCategory && (
+            <span className="muted">
+              Showing {filtered.length} of {products.filter(p => p.category === selectedCategory).length} {selectedCategory} products
+              {search && ` matching "${search}"`}
+              <button className="category-clear" onClick={() => { setSelectedCategory(""); setSearch(""); }}>✕ Clear filter</button>
+            </span>
+          )}
+          {!selectedCategory && search && (
+            <span className="muted">{filtered.length} product{filtered.length !== 1 ? 's' : ''} found</span>
+          )}
+        </div>
+
         <div className="product-grid">
           {filtered.map(p => (
             <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
@@ -477,12 +614,24 @@ function POSPage() {
               <div className="product-card-price">₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
             </div>
           ))}
-          {!filtered.length && <p className="muted">No products found.</p>}
+          {!filtered.length && (
+            <div className="pos-empty-state">
+              <p>No products found</p>
+              {(selectedCategory || search) && (
+                <button className="btn secondary" onClick={() => { setSelectedCategory(""); setSearch(""); }}>Clear filters</button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="pos-cart">
-        <h2>🛒 Cart ({cart.length})</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2>🛒 Cart ({cart.length})</h2>
+          {cart.length > 0 && (
+            <button className="btn-sm danger" onClick={() => { if (confirm('Clear all items from cart?')) setCart([]); }} title="Clear cart (Esc)">🗑️ Clear <kbd style={{ fontSize: '0.65rem', opacity: 0.7, marginLeft: 4 }}>Esc</kbd></button>
+          )}
+        </div>
         {error && <div className="error-msg">{error}</div>}
 
         <label>Customer
@@ -545,7 +694,7 @@ function POSPage() {
 // PRODUCTS (Phase 3)
 // ═══════════════════════════════════════════════════════════════════
 function ProductsPage() {
-  const { fetchProducts, createProduct, updateProduct, deleteProduct, uploadProductImage, user } = useAuth();
+  const { fetchProducts, createProduct, updateProduct, deleteProduct, uploadProductImage, checkProductDuplicate, user } = useAuth();
   const [products, setProducts] = useState([]);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -553,6 +702,7 @@ function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [dupWarnings, setDupWarnings] = useState({ barcode: null, name: null });
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
 
   const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "");
@@ -566,12 +716,36 @@ function ProductsPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Debounced duplicate check
+  const checkDuplicate = useCallback(async (field, value) => {
+    if (!value || value.length < 2) { setDupWarnings(prev => ({ ...prev, [field]: null })); return; }
+    try {
+      const result = await checkProductDuplicate(field, value, editProduct?.id);
+      setDupWarnings(prev => ({ ...prev, [field]: result.exists ? result : null }));
+    } catch { setDupWarnings(prev => ({ ...prev, [field]: null })); }
+  }, [checkProductDuplicate, editProduct]);
+
+  // Debounce timer refs
+  const barcodeTimerRef = useRef(null);
+  const nameTimerRef = useRef(null);
+
+  function handleFieldChange(field, value) {
+    setForm(prev => ({ ...prev, [field]: value }));
+    // Clear previous timer
+    const timerRef = field === "barcode" ? barcodeTimerRef : nameTimerRef;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    // Debounce duplicate check (500ms)
+    timerRef.current = setTimeout(() => checkDuplicate(field, value), 500);
+  }
+
   function startEdit(p) {
-    setEditProduct(p); setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "" });
+    setEditProduct(p);
+    setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "" });
+    setDupWarnings({ barcode: null, name: null });
     setImageFile(null); setImagePreview(p.image_url ? `${API_BASE}${p.image_url}` : null);
     setShowForm(true);
   }
-  function startNew() { setEditProduct(null); setForm(formDefault); setImageFile(null); setImagePreview(null); setShowForm(true); }
+  function startNew() { setEditProduct(null); setForm(formDefault); setDupWarnings({ barcode: null, name: null }); setImageFile(null); setImagePreview(null); setShowForm(true); }
 
   function handleImageChange(e) {
     const file = e.target.files[0];
@@ -616,9 +790,20 @@ function ProductsPage() {
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>{editProduct ? "Edit Product" : "New Product"}</h2>
             <form onSubmit={handleSubmit} className="form-grid">
-              <label>Barcode<input value={form.barcode} onChange={e => setForm({ ...form, barcode: e.target.value })} required /></label>
-              <label>Name<input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></label>
-              <label>Category<input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} required /></label>
+              <label>Barcode
+                <input value={form.barcode} onChange={e => handleFieldChange("barcode", e.target.value)} required style={dupWarnings.barcode ? { borderColor: 'var(--danger)' } : {}} />
+                {dupWarnings.barcode && <small style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>⚠ {dupWarnings.barcode.match?.name ? `Exists: ${dupWarnings.barcode.match.name}` : 'Barcode already exists'}</small>}
+              </label>
+              <label>Name
+                <input value={form.name} onChange={e => handleFieldChange("name", e.target.value)} required style={dupWarnings.name ? { borderColor: 'var(--danger)' } : {}} />
+                {dupWarnings.name && <small style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>⚠ {dupWarnings.name.match?.barcode ? `Exists (barcode: ${dupWarnings.name.match.barcode})` : 'Name already exists'}</small>}
+              </label>
+              <label>Category
+                <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} required list="category-list" />
+                <datalist id="category-list">
+                  {[...new Set(products.map(p => p.category))].map(c => <option key={c} value={c} />)}
+                </datalist>
+              </label>
               <label>Price (₦)<input type="number" step="0.01" min="0" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} required /></label>
               <label>Cost Price (₦)<input type="number" step="0.01" min="0" value={form.costPrice} onChange={e => setForm({ ...form, costPrice: e.target.value })} /></label>
               <label>Stock<input type="number" min="0" value={form.stock} onChange={e => setForm({ ...form, stock: e.target.value })} /></label>
@@ -908,6 +1093,7 @@ function SalesPage() {
                     total: detail.total,
                     amountPaid: detail.amount_paid,
                     change_amount: detail.change_amount,
+                    branchName: detail.branch_name || user?.branch?.name || "",
                   };
                   generateReceiptPDF(receipt);
                 }}>📄 Download PDF</button>
@@ -1098,11 +1284,16 @@ function ProcurementPage() {
   async function handleSubmit(e) {
     e.preventDefault();
     try {
+      const validItems = form.items.filter(i => i.productId && i.quantity && i.unitCost !== "" && i.unitCost != null);
+      if (!validItems.length) {
+        alert("Please add at least one item with a product, quantity, and unit cost.");
+        return;
+      }
       await createPurchaseOrder({
         supplierId: Number(form.supplierId),
         notes: form.notes,
         expectedDate: form.expectedDate || null,
-        items: form.items.filter(i => i.productId && i.quantity).map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity), unitCost: Number(i.unitCost) })),
+        items: validItems.map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity), unitCost: Number(i.unitCost) })),
       });
       setShowForm(false); load();
     } catch (err) { alert(err.message); }
@@ -1532,7 +1723,7 @@ function CustomerDisplayPage() {
       </form>
       {error && <div className="error-msg" style={{ marginTop: 12 }}>{error}</div>}
       {sale && (
-        <div className="receipt" style={{ maxWidth: 500, marginTop: 20, background: 'white', padding: 24, borderRadius: 12 }}>
+        <div className="receipt" style={{ maxWidth: 500, marginTop: 20, padding: 24, borderRadius: 12 }}>
           <h2 style={{ textAlign: 'center' }}>RHoSAM Supermarket</h2>
           <p className="muted" style={{ textAlign: 'center' }}>Receipt: {sale.receipt_number}</p>
           <p className="muted" style={{ textAlign: 'center' }}>Cashier: {sale.cashier_name}</p>
@@ -1644,7 +1835,7 @@ function SupplierPortalPage() {
 // DAILY REPORTS & EMAIL (Phase 15)
 // ═══════════════════════════════════════════════════════════════════
 function ReportsPage() {
-  const { fetchDailyReport, emailDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales } = useAuth();
+  const { fetchDailyReport, emailDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales, fetchBranches, user } = useAuth();
   const [tab, setTab] = useState("daily");
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
@@ -1653,6 +1844,10 @@ function ReportsPage() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // Branch filter (admin only)
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
   // Email
   const [emailTo, setEmailTo] = useState("");
   const [sending, setSending] = useState(false);
@@ -1660,21 +1855,41 @@ function ReportsPage() {
 
   const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
 
+  // Load branches for admin
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
+
   const load = useCallback(async () => {
     setLoading(true); setSendMsg("");
     try {
+      const bid = selectedBranch || undefined;
       let result;
       switch (tab) {
-        case "daily": result = await fetchDailyReport(date); break;
-        case "monthly": result = await fetchMonthlyReport(year); break;
-        case "products": result = await fetchProductSales(dateFrom && dateTo ? { from: dateFrom, to: dateTo } : null); break;
+        case "daily": result = await fetchDailyReport(date, bid); break;
+        case "monthly": result = await fetchMonthlyReport(year, bid); break;
+        case "products": {
+          const params = {};
+          if (dateFrom) params.from = dateFrom;
+          if (dateTo) params.to = dateTo;
+          if (bid) params.branchId = bid;
+          result = await fetchProductSales(Object.keys(params).length ? params : null);
+          break;
+        }
         case "lowstock": result = await fetchLowStockReport(); break;
-        case "cashiers": result = await fetchCashierSales(dateFrom && dateTo ? { from: dateFrom, to: dateTo } : null); break;
+        case "cashiers": {
+          const params = {};
+          if (dateFrom) params.from = dateFrom;
+          if (dateTo) params.to = dateTo;
+          if (bid) params.branchId = bid;
+          result = await fetchCashierSales(Object.keys(params).length ? params : null);
+          break;
+        }
       }
       setData(result);
     } catch { setData(null); }
     finally { setLoading(false); }
-  }, [tab, date, year, dateFrom, dateTo, fetchDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales]);
+  }, [tab, date, year, dateFrom, dateTo, selectedBranch, fetchDailyReport, fetchMonthlyReport, fetchProductSales, fetchLowStockReport, fetchCashierSales]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1691,6 +1906,29 @@ function ReportsPage() {
 
   return (
     <div className="page-panel">
+      {/* Branch selector (Admin) / indicator (Manager/Cashier) */}
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => setSelectedBranch(e.target.value)}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Reports across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Reports are filtered to your branch.
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="tabs">
         <button className={tab === "daily" ? "active" : ""} onClick={() => setTab("daily")}>Daily Sales</button>
@@ -1724,6 +1962,7 @@ function ReportsPage() {
           {/* ═══ DAILY SALES ═══ */}
           {tab === "daily" && data.summary && (
             <>
+              {data.branchName && <h3 style={{ marginBottom: 8, color: 'var(--primary)' }}>🏢 {data.branchName}</h3>}
               <div className="summary-grid">
                 <div className="summary-card accent"><span>Transactions</span><strong>{data.summary.totalTransactions}</strong></div>
                 <div className="summary-card"><span>Revenue</span><strong>{fmt(data.summary.totalRevenue)}</strong></div>
@@ -1760,6 +1999,7 @@ function ReportsPage() {
           {/* ═══ MONTHLY SALES ═══ */}
           {tab === "monthly" && data.data && (
             <>
+              {data.branchName && <h3 style={{ marginBottom: 8, color: 'var(--primary)' }}>🏢 {data.branchName}</h3>}
               <div className="summary-grid">
                 <div className="summary-card accent"><span>Total Revenue</span><strong>{fmt(data.data.reduce((s, m) => s + m.revenue, 0))}</strong></div>
                 <div className="summary-card"><span>Total Transactions</span><strong>{data.data.reduce((s, m) => s + m.transactions, 0)}</strong></div>
@@ -1853,18 +2093,33 @@ function ReportsPage() {
 // USER MANAGEMENT (Phase 8)
 // ═══════════════════════════════════════════════════════════════════
 function UsersPage() {
-  const { fetchUsers, createUser, updateUser, deleteUser, downloadBackup, user } = useAuth();
+  const { fetchUsers, createUser, updateUser, deleteUser, downloadBackup, user, fetchBranches } = useAuth();
   const [users, setUsers] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", password: "", role: "CASHIER" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "CASHIER", branchId: "" });
+  const [editUser, setEditUser] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", password: "", role: "", branchId: "" });
 
-  const load = useCallback(async () => { try { setUsers(await fetchUsers()); } catch { } finally { setLoading(false); } }, [fetchUsers]);
+  const load = useCallback(async () => {
+    try {
+      const [u, b] = await Promise.all([fetchUsers(), fetchBranches()]);
+      setUsers(u); setBranches(b);
+    } catch { }
+    finally { setLoading(false); }
+  }, [fetchUsers, fetchBranches]);
   useEffect(() => { load(); }, [load]);
 
   async function handleCreate(e) {
     e.preventDefault();
-    try { await createUser(form); setShowForm(false); setForm({ name: "", email: "", password: "", role: "CASHIER" }); load(); }
+    try {
+      const payload = { ...form, branchId: form.branchId ? Number(form.branchId) : null };
+      await createUser(payload);
+      setShowForm(false);
+      setForm({ name: "", email: "", password: "", role: "CASHIER", branchId: "" });
+      load();
+    }
     catch (err) { alert(err.message); }
   }
 
@@ -1881,6 +2136,38 @@ function UsersPage() {
   async function changeRole(u, role) {
     try { await updateUser(u.id, { role }); load(); }
     catch (err) { alert(err.message); }
+  }
+
+  async function changeBranch(u, branchId) {
+    try { await updateUser(u.id, { branchId: branchId ? Number(branchId) : null }); load(); }
+    catch (err) { alert(err.message); }
+  }
+
+  function startEdit(u) {
+    setEditUser(u);
+    setEditForm({
+      name: u.name,
+      email: u.email,
+      password: "",
+      role: u.role,
+      branchId: u.branch_id || "",
+    });
+  }
+
+  async function handleEdit(e) {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: editForm.name,
+        email: editForm.email,
+        role: editForm.role,
+        branchId: editForm.branchId ? Number(editForm.branchId) : null,
+      };
+      if (editForm.password) payload.password = editForm.password;
+      await updateUser(editUser.id, payload);
+      setEditUser(null);
+      load();
+    } catch (err) { alert(err.message); }
   }
 
   async function handleDelete(u) {
@@ -1907,6 +2194,12 @@ function UsersPage() {
               <label>Role<select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}>
                 <option value="CASHIER">CASHIER</option><option value="MANAGER">MANAGER</option><option value="ADMIN">ADMIN</option>
               </select></label>
+              <label>Branch
+                <select value={form.branchId} onChange={e => setForm({ ...form, branchId: e.target.value })}>
+                  <option value="">No Branch (All)</option>
+                  {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
               <div className="form-actions">
                 <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
                 <button type="submit" className="btn primary">Create User</button>
@@ -1916,10 +2209,38 @@ function UsersPage() {
         </div>
       )}
 
+      {editUser && (
+        <div className="modal-overlay" onClick={() => setEditUser(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Edit User: {editUser.name}</h2>
+            <form onSubmit={handleEdit} className="form-grid">
+              <label>Name<input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} required /></label>
+              <label>Email<input type="email" value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} required /></label>
+              <label>New Password <small className="muted" style={{ fontWeight: 400 }}>(leave blank to keep current)</small>
+                <input type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="••••••••" minLength={8} />
+              </label>
+              <label>Role<select value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })}>
+                <option value="CASHIER">CASHIER</option><option value="MANAGER">MANAGER</option><option value="ADMIN">ADMIN</option>
+              </select></label>
+              <label>Branch
+                <select value={editForm.branchId} onChange={e => setEditForm({ ...editForm, branchId: e.target.value })}>
+                  <option value="">No Branch (All)</option>
+                  {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setEditUser(null)}>Cancel</button>
+                <button type="submit" className="btn primary">Save Changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {loading ? <p className="loading">Loading…</p> : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Failed Attempts</th><th>Locked Until</th><th>Last Login</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Branch</th><th>Status</th><th>Failed Attempts</th><th>Locked Until</th><th>Last Login</th><th>Actions</th></tr></thead>
             <tbody>{users.map(u => (
               <tr key={u.id}>
                 <td>{u.name} {u.id === user?.id && <span className="you-badge">You</span>}</td>
@@ -1929,16 +2250,23 @@ function UsersPage() {
                     <option value="CASHIER">CASHIER</option><option value="MANAGER">MANAGER</option><option value="ADMIN">ADMIN</option>
                   </select>
                 </td>
+                <td>
+                  <select value={u.branch_id || ""} onChange={e => changeBranch(u, e.target.value)} disabled={u.id === user?.id}>
+                    <option value="">No Branch</option>
+                    {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </td>
                 <td><span className={`status-badge ${u.is_active ? "active" : "inactive"}`}>{u.is_active ? "Active" : "Inactive"}</span></td>
                 <td className={u.failed_login_attempts >= 3 ? "low-stock" : ""}>{u.failed_login_attempts}</td>
                 <td>{u.locked_until ? new Date(u.locked_until).toLocaleString() : "—"}</td>
                 <td>{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "Never"}</td>
                 <td className="actions-cell">
+                  <button className="btn-sm" onClick={() => startEdit(u)}>Edit</button>
                   {u.id !== user?.id && (
                     <>
                       <button className="btn-sm" onClick={() => toggleActive(u)}>{u.is_active ? "Deactivate" : "Activate"}</button>
                       {u.locked_until && <button className="btn-sm warning" onClick={() => unlockUser(u)}>Unlock</button>}
-                      {u.id !== user?.id && <button className="btn-sm danger" onClick={() => handleDelete(u)}>Delete</button>}
+                      <button className="btn-sm danger" onClick={() => handleDelete(u)}>Delete</button>
                     </>
                   )}
                 </td>
@@ -2206,6 +2534,299 @@ function BranchesPage() {
             ))}</tbody>
           </table>
           {!branches.length && <p className="muted">No branches yet.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INTER-BRANCH MESSAGING
+// ═══════════════════════════════════════════════════════════════════
+function MessagesPage() {
+  const { fetchMessages, sendMessage, markMessageRead, deleteMessage, fetchBranches, user } = useAuth();
+  const [messages, setMessages] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [box, setBox] = useState("inbox");
+  const [showCompose, setShowCompose] = useState(false);
+  const [selectedMsg, setSelectedMsg] = useState(null);
+  const [form, setForm] = useState({ toBranchId: "", subject: "", body: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [m, b] = await Promise.all([fetchMessages(box), fetchBranches()]);
+      setMessages(m); setBranches(b);
+    } catch { }
+    finally { setLoading(false); }
+  }, [fetchMessages, fetchBranches, box]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSend(e) {
+    e.preventDefault();
+    try {
+      await sendMessage({ toBranchId: Number(form.toBranchId), subject: form.subject, body: form.body });
+      setShowCompose(false);
+      setForm({ toBranchId: "", subject: "", body: "" });
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleRead(msg) {
+    setSelectedMsg(msg);
+    if (!msg.is_read && box === "inbox") {
+      try { await markMessageRead(msg.id); load(); } catch { }
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm("Delete this message?")) return;
+    try { await deleteMessage(id); setSelectedMsg(null); load(); } catch (err) { alert(err.message); }
+  }
+
+  const unreadCount = messages.filter(m => !m.is_read && box === "inbox").length;
+  const otherBranches = branches.filter(b => b.id !== user?.branchId);
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header" style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" onClick={() => { setShowCompose(true); setSelectedMsg(null); }}>✉️ Compose</button>
+        <button className="btn secondary" onClick={load}>🔄 Refresh</button>
+      </div>
+
+      <div className="tabs">
+        <button className={box === "inbox" ? "active" : ""} onClick={() => { setBox("inbox"); setSelectedMsg(null); }}>
+          📥 Inbox {unreadCount > 0 && <span style={{ background: 'var(--danger)', color: 'white', borderRadius: 999, padding: '2px 8px', fontSize: '0.75rem', marginLeft: 4 }}>{unreadCount}</span>}
+        </button>
+        <button className={box === "sent" ? "active" : ""} onClick={() => { setBox("sent"); setSelectedMsg(null); }}>📤 Sent</button>
+      </div>
+
+      {showCompose && (
+        <div className="modal-overlay" onClick={() => setShowCompose(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>✉️ Compose Message</h2>
+            <form onSubmit={handleSend} className="form-grid">
+              <label>To Branch
+                <select value={form.toBranchId} onChange={e => setForm({ ...form, toBranchId: e.target.value })} required>
+                  <option value="">Select branch…</option>
+                  {otherBranches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <label>Subject<input value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} required maxLength={200} /></label>
+              <label>Message<textarea value={form.body} onChange={e => setForm({ ...form, body: e.target.value })} rows={5} required /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowCompose(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Send</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedMsg && (
+        <div className="modal-overlay" onClick={() => setSelectedMsg(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>{selectedMsg.subject}</h2>
+              <button className="btn-close" onClick={() => setSelectedMsg(null)}>✕</button>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <p className="muted"><strong>From:</strong> {selectedMsg.from_branch_name} ({selectedMsg.from_user_name})</p>
+              <p className="muted"><strong>To:</strong> {selectedMsg.to_branch_name}</p>
+              <p className="muted"><strong>Date:</strong> {new Date(selectedMsg.created_at).toLocaleString()}</p>
+            </div>
+            <div style={{ whiteSpace: 'pre-wrap', padding: 16, background: 'var(--surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+              {selectedMsg.body}
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <button className="btn danger" onClick={() => handleDelete(selectedMsg.id)}>🗑️ Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>From</th><th>To</th><th>Subject</th><th>Date</th><th>Status</th></tr></thead>
+            <tbody>{messages.map(m => (
+              <tr key={m.id} onClick={() => handleRead(m)} style={{ cursor: 'pointer', fontWeight: !m.is_read && box === "inbox" ? 700 : 400 }}>
+                <td>{m.from_branch_name}</td>
+                <td>{m.to_branch_name}</td>
+                <td>{m.subject}</td>
+                <td>{new Date(m.created_at).toLocaleDateString()}</td>
+                <td>{!m.is_read && box === "inbox" ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}>● Unread</span> : <span className="muted">Read</span>}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!messages.length && <p className="muted">No messages {box === "inbox" ? "received" : "sent"}.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INTER-BRANCH STOCK TRANSFERS
+// ═══════════════════════════════════════════════════════════════════
+function StockTransfersPage() {
+  const { fetchStockTransfers, createStockTransfer, updateTransferStatus, fetchBranches, fetchProducts, user } = useAuth();
+  const [transfers, setTransfers] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [box, setBox] = useState("incoming");
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ toBranchId: "", productId: "", quantity: "", notes: "" });
+  const [detail, setDetail] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [t, b, p] = await Promise.all([fetchStockTransfers(box), fetchBranches(), fetchProducts()]);
+      setTransfers(t); setBranches(b); setProducts(p);
+    } catch { }
+    finally { setLoading(false); }
+  }, [fetchStockTransfers, fetchBranches, fetchProducts, box]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleRequest(e) {
+    e.preventDefault();
+    try {
+      await createStockTransfer({
+        toBranchId: Number(form.toBranchId),
+        productId: Number(form.productId),
+        quantity: Number(form.quantity),
+        notes: form.notes,
+      });
+      setShowForm(false);
+      setForm({ toBranchId: "", productId: "", quantity: "", notes: "" });
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleAction(id, status, rejectionReason) {
+    try {
+      await updateTransferStatus(id, { status, rejectionReason });
+      setDetail(null);
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  const statusColor = { PENDING: "warning", APPROVED: "info", COMPLETED: "active", REJECTED: "inactive", CANCELLED: "inactive" };
+  const otherBranches = branches.filter(b => b.id !== user?.branchId);
+  const selectedProduct = products.find(p => p.id === Number(form.productId));
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header" style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" onClick={() => { setShowForm(true); setDetail(null); }}>📦 Request Transfer</button>
+        <button className="btn secondary" onClick={load}>🔄 Refresh</button>
+      </div>
+
+      <div className="tabs">
+        <button className={box === "incoming" ? "active" : ""} onClick={() => { setBox("incoming"); setDetail(null); }}>📥 Incoming ({transfers.length})</button>
+        <button className={box === "outgoing" ? "active" : ""} onClick={() => { setBox("outgoing"); setDetail(null); }}>📤 Outgoing</button>
+      </div>
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>📦 Request Stock Transfer</h2>
+            <form onSubmit={handleRequest} className="form-grid">
+              <label>To Branch
+                <select value={form.toBranchId} onChange={e => setForm({ ...form, toBranchId: e.target.value })} required>
+                  <option value="">Select branch to request from…</option>
+                  {otherBranches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <label>Product
+                <select value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} required>
+                  <option value="">Select product…</option>
+                  {products.filter(p => p.stock > 0).map(p => <option key={p.id} value={p.id}>{p.name} ({p.barcode}) — {p.stock} in stock</option>)}
+                </select>
+              </label>
+              <label>Quantity
+                <input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required />
+                {selectedProduct && <small className="muted">Available: {selectedProduct.stock}</small>}
+              </label>
+              <label>Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Reason for transfer…" /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Request</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {detail && (
+        <div className="modal-overlay" onClick={() => setDetail(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Transfer #{detail.id}</h2>
+              <button className="btn-close" onClick={() => setDetail(null)}>✕</button>
+            </div>
+            <div className="sale-detail">
+              <p><strong>Product:</strong> {detail.product_name} ({detail.barcode})</p>
+              <p><strong>From:</strong> {detail.from_branch_name}</p>
+              <p><strong>To:</strong> {detail.to_branch_name}</p>
+              <p><strong>Quantity:</strong> {detail.quantity}</p>
+              <p><strong>Requested by:</strong> {detail.requested_by_name}</p>
+              <p><strong>Date:</strong> {new Date(detail.created_at).toLocaleString()}</p>
+              <p><strong>Status:</strong> <span className={`status-badge ${statusColor[detail.status]}`}>{detail.status}</span></p>
+              {detail.notes && <p><strong>Notes:</strong> {detail.notes}</p>}
+              {detail.rejection_reason && <p><strong>Rejection Reason:</strong> {detail.rejection_reason}</p>}
+
+              {/* Action buttons for incoming transfers (source branch approves) */}
+              {box === "incoming" && detail.status === "PENDING" && detail.from_branch_id === user?.branchId && (
+                <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+                  <button className="btn primary" onClick={() => handleAction(detail.id, "APPROVED")}>✅ Approve</button>
+                  <button className="btn danger" onClick={() => {
+                    const reason = prompt("Rejection reason:");
+                    if (reason !== null) handleAction(detail.id, "REJECTED", reason);
+                  }}>❌ Reject</button>
+                </div>
+              )}
+
+              {/* Complete button after approval */}
+              {box === "incoming" && detail.status === "APPROVED" && detail.from_branch_id === user?.branchId && (
+                <div style={{ marginTop: 16 }}>
+                  <button className="btn primary" onClick={() => handleAction(detail.id, "COMPLETED")}>📦 Mark as Completed (Stock Moved)</button>
+                </div>
+              )}
+
+              {/* Cancel button for pending transfers */}
+              {detail.status === "PENDING" && (
+                <div style={{ marginTop: 16 }}>
+                  <button className="btn danger" onClick={() => handleAction(detail.id, "CANCELLED")}>Cancel Request</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? <p className="loading">Loading…</p> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Product</th><th>{box === "incoming" ? "From" : "To"}</th><th>Qty</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>{transfers.map(t => (
+              <tr key={t.id}>
+                <td>{t.id}</td>
+                <td>{t.product_name}</td>
+                <td>{box === "incoming" ? t.from_branch_name : t.to_branch_name}</td>
+                <td>{t.quantity}</td>
+                <td><span className={`status-badge ${statusColor[t.status]}`}>{t.status}</span></td>
+                <td>{new Date(t.created_at).toLocaleDateString()}</td>
+                <td><button className="btn-sm" onClick={() => setDetail(t)}>View</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!transfers.length && <p className="muted">No {box} transfers.</p>}
         </div>
       )}
     </div>
@@ -2593,14 +3214,13 @@ function MfaSetupPage() {
                 </div>
               </>
             ) : (
-              <div style={{ width: 240, height: 240, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', borderRadius: 12 }}>
+              <div style={{ width: 240, height: 240, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--border)', borderRadius: 12 }}>
                 <div className="spinner" />
               </div>
             )}
           </div>
           <details style={{ marginTop: 12 }}>
-            <summary className="muted" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>Can't scan? Enter secret manually</summary>
-            <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', margin: '8px 0' }}>
+            <summary className="muted" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>Can't scan? Enter secret manually</summary>              <div style={{ background: 'var(--border)', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', margin: '8px 0' }}>
               {setupData.secret}
             </div>
           </details>
@@ -2614,7 +3234,7 @@ function MfaSetupPage() {
           {setupData.backupCodes?.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <p className="muted"><strong>Backup Codes (save these!):</strong></p>
-              <div style={{ background: '#f3f4f6', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+              <div style={{ background: 'var(--border)', padding: 12, borderRadius: 8, fontFamily: 'monospace', fontSize: '0.85rem' }}>
                 {setupData.backupCodes.map((c, i) => <div key={i}>{c}</div>)}
               </div>
               <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2717,6 +3337,11 @@ function MfaSetupPage() {
 // WI-FI QR CODE GENERATOR (Bonus Utility)
 // ═══════════════════════════════════════════════════════════════════
 function WifiQRPage() {
+  const { fetchBranches, user } = useAuth();
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState(() => {
+    return localStorage.getItem("rhosam_wifi_selected_branch") || String(user?.branchId || "");
+  });
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
   const [encryption, setEncryption] = useState("WPA");
@@ -2724,6 +3349,41 @@ function WifiQRPage() {
   const [qrDataUrl, setQrDataUrl] = useState(null);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const [error, setError] = useState("");
+
+  // Load branches on mount
+  useEffect(() => {
+    fetchBranches().then(setBranches).catch(() => {});
+  }, [fetchBranches]);
+
+  // Load settings when branch changes
+  useEffect(() => {
+    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+    setSsid(localStorage.getItem(`${prefix}ssid`) || "");
+    setPassword(localStorage.getItem(`${prefix}password`) || "");
+    setEncryption(localStorage.getItem(`${prefix}encryption`) || "WPA");
+    setHidden(localStorage.getItem(`${prefix}hidden`) === "true");
+  }, [selectedBranch]);
+
+  // Save selected branch
+  useEffect(() => { localStorage.setItem("rhosam_wifi_selected_branch", selectedBranch); }, [selectedBranch]);
+
+  // Save Wi-Fi settings to localStorage whenever they change (branch-scoped)
+  useEffect(() => {
+    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+    localStorage.setItem(`${prefix}ssid`, ssid);
+  }, [ssid, selectedBranch]);
+  useEffect(() => {
+    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+    localStorage.setItem(`${prefix}password`, password);
+  }, [password, selectedBranch]);
+  useEffect(() => {
+    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+    localStorage.setItem(`${prefix}encryption`, encryption);
+  }, [encryption, selectedBranch]);
+  useEffect(() => {
+    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+    localStorage.setItem(`${prefix}hidden`, String(hidden));
+  }, [hidden, selectedBranch]);
 
   // Watch for dark mode changes
   useEffect(() => {
@@ -2773,6 +3433,14 @@ function WifiQRPage() {
         <p className="muted" style={{ marginBottom: 16 }}>Generate a QR code that customers or staff can scan to connect to your Wi-Fi network instantly.</p>
 
         <div className="form-grid">
+          {branches.length > 1 && (
+            <label>Branch
+              <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
+                <option value="">General (All Branches)</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </label>
+          )}
           <label>Network Name (SSID)
             <input type="text" value={ssid} onChange={e => setSsid(e.target.value)} placeholder="e.g. RHoSAM-Guest-WiFi" required />
           </label>
@@ -2803,13 +3471,23 @@ function WifiQRPage() {
               <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'center' }}>
                 <button className="btn primary" onClick={handleDownload}>📥 Download QR</button>
                 <button className="btn secondary" onClick={() => window.print()}>🖨️ Print</button>
+                <button className="btn-sm danger" onClick={() => {
+                  if (confirm('Clear saved Wi-Fi settings for this branch?')) {
+                    const prefix = selectedBranch ? `rhosam_wifi_${selectedBranch}_` : "rhosam_wifi_";
+                    localStorage.removeItem(`${prefix}ssid`);
+                    localStorage.removeItem(`${prefix}password`);
+                    localStorage.removeItem(`${prefix}encryption`);
+                    localStorage.removeItem(`${prefix}hidden`);
+                    setSsid(""); setPassword(""); setEncryption("WPA"); setHidden(false);
+                  }
+                }}>🗑️ Clear Saved</button>
               </div>
               <div style={{ marginTop: 12 }}>
                 <p className="muted" style={{ fontSize: '0.8rem' }}>Scan this code with any phone camera to connect automatically</p>
               </div>
             </>
           ) : (
-            <div style={{ width: 280, height: 280, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', borderRadius: 12, border: '1px dashed var(--border)' }}>
+            <div style={{ width: 280, height: 280, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--border)', borderRadius: 12, border: '1px dashed var(--border)' }}>
               <p className="muted" style={{ textAlign: 'center', padding: 20 }}>Enter a network name above to generate the QR code</p>
             </div>
           )}
@@ -2863,6 +3541,8 @@ export default function App() {
           <Route path="/display" element={<CustomerDisplayPage />} />
           <Route path="/supplierportal" element={<SupplierPortalPage />} />
           <Route path="/branches" element={<BranchesPage />} />
+          <Route path="/messages" element={<MessagesPage />} />
+          <Route path="/transfers" element={<StockTransfersPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/loginhistory" element={<LoginHistoryPage />} />

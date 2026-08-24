@@ -9,6 +9,7 @@ const path = require("path");
 const fs = require("fs");
 const { v2: cloudinary } = require("cloudinary");
 require("dotenv").config();
+const helmet = require("helmet");
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
@@ -20,7 +21,6 @@ if (useCloudinary) {
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET,
   });
-  console.log("Cloudinary configured for image uploads");
 }
 
 // ── File Upload Setup (fallback to local) ───────────────────────
@@ -63,7 +63,44 @@ if (!secret) {
 }
 
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: "2mb" }));
+
+// Simple in-memory rate limiter (Express 5 compatible)
+const rateLimits = {};
+function makeRateLimiter(windowMs, max) {
+  return (req, res, next) => {
+    const ip = req.ip || req.connection?.remoteAddress || "unknown";
+    const key = `${req.path}:${ip}`;
+    const now = Date.now();
+    if (!rateLimits[key] || now - rateLimits[key].start > windowMs) {
+      rateLimits[key] = { start: now, count: 0 };
+    }
+    rateLimits[key].count++;
+    if (rateLimits[key].count > max) {
+      return res.status(429).json({ message: "Too many requests. Please try again later." });
+    }
+    next();
+  };
+}
+app.use("/api/auth/login", makeRateLimiter(15 * 60 * 1000, 50));
+app.use("/api/auth/forgot-password", makeRateLimiter(15 * 60 * 1000, 20));
+
+// ── Cache headers for static resources ─────────────────────────
+app.use((req, res, next) => {
+  // Static assets get aggressive caching
+  if (req.path.startsWith("/uploads")) {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  } else if (req.method === "GET" && !req.path.startsWith("/api/")) {
+    res.setHeader("Cache-Control", "public, max-age=3600");
+  }
+  // API responses: no-cache by default (fresh data each time)
+  if (req.path.startsWith("/api/") && req.method === "GET") {
+    res.setHeader("Cache-Control", "no-store, must-revalidate");
+    res.setHeader("X-Response-Time", Date.now().toString());
+  }
+  next();
+});
 
 // ── Middleware ────────────────────────────────────────────────────
 const auth = (req, res, next) => {
@@ -129,14 +166,32 @@ app.post("/api/auth/login", async (req, res, next) => {
     }
     await pool.query("UPDATE users SET failed_login_attempts=0,locked_until=NULL,last_login_at=NOW() WHERE id=$1", [u.id]);
     await audit(pool, u.id, "LOGIN", "USER", u.id, {}, req);
-    const token = jwt.sign({ id: u.id, name: u.name, email: u.email, role: u.role }, secret, { expiresIn: "8h" });
+    // Load user's branch info
+    let branchInfo = null;
+    if (u.branch_id) {
+      const { rows: branchRows } = await pool.query("SELECT id, name FROM branches WHERE id=$1 AND is_active=TRUE", [u.branch_id]);
+      branchInfo = branchRows[0] || null;
+    }
+    const token = jwt.sign({ id: u.id, name: u.name, email: u.email, role: u.role, branchId: u.branch_id || null }, secret, { expiresIn: "8h" });
     // Check password expiry
     const passwordExpired = u.password_expires_at && new Date(u.password_expires_at) <= new Date();
-    res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role }, passwordExpired });
+    res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role, branchId: u.branch_id || null, branch: branchInfo }, passwordExpired });
   } catch (e) { next(e); }
 });
 
-app.get("/api/auth/me", auth, (q, r) => r.json({ user: q.user }));
+app.get("/api/auth/me", auth, async (req, res) => {
+  try {
+    // Load branch info if user has a branch_id
+    let branch = null;
+    if (req.user.branchId) {
+      const { rows } = await pool.query("SELECT id, name FROM branches WHERE id=$1 AND is_active=TRUE", [req.user.branchId]);
+      branch = rows[0] || null;
+    }
+    res.json({ user: { ...req.user, branch } });
+  } catch (e) {
+    res.json({ user: req.user });
+  }
+});
 
 app.post("/api/auth/change-password", auth, async (req, res, next) => {
   try {
@@ -218,9 +273,25 @@ app.post("/api/auth/mfa/setup", auth, async (req, res, next) => {
     const crypto = require("crypto");
     const secret = crypto.randomBytes(20).toString("hex");
     await pool.query("UPDATE users SET mfa_secret=$1 WHERE id=$2", [secret, req.user.id]);
+
+    // Convert hex secret to Base32 for the otpauth URL (authenticator apps require Base32)
+    const hexToBase32 = (hex) => {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      let bits = "";
+      for (let i = 0; i < hex.length; i++) {
+        bits += parseInt(hex[i], 16).toString(2).padStart(4, "0");
+      }
+      let base32 = "";
+      for (let i = 0; i + 5 <= bits.length; i += 5) {
+        base32 += alphabet[parseInt(bits.slice(i, i + 5), 2)];
+      }
+      return base32;
+    };
+    const base32Secret = hexToBase32(secret);
+
     // Generate TOTP URI for authenticator apps
     const issuer = "RHoSAM";
-    const otpauthUrl = `otpauth://totp/${issuer}:${req.user.email}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+    const otpauthUrl = `otpauth://totp/${issuer}:${req.user.email}?secret=${base32Secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
     // Generate 8 backup codes
     const backupCodes = [];
     for (let i = 0; i < 8; i++) {
@@ -230,7 +301,7 @@ app.post("/api/auth/mfa/setup", auth, async (req, res, next) => {
       backupCodes.push(code);
     }
     await audit(pool, req.user.id, "MFA_SETUP", "USER", req.user.id, {}, req);
-    res.json({ secret, otpauthUrl, backupCodes, message: "Scan the QR code with your authenticator app, then verify with a code to activate." });
+    res.json({ secret: base32Secret, otpauthUrl, backupCodes, message: "Scan the QR code with your authenticator app, then verify with a code to activate." });
   } catch (e) { next(e); }
 });
 
@@ -467,23 +538,25 @@ app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
 app.get("/api/users", auth, allow("ADMIN"), async (_q, r, n) => {
   try {
     r.json((await pool.query(
-      `SELECT id,name,email,role,is_active,failed_login_attempts,locked_until,last_login_at,created_at
-       FROM users ORDER BY name`
+      `SELECT u.id,u.name,u.email,u.role,u.is_active,u.failed_login_attempts,u.locked_until,u.last_login_at,u.created_at,
+              u.branch_id, b.name AS branch_name
+       FROM users u LEFT JOIN branches b ON b.id = u.branch_id
+       ORDER BY u.name`
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, branchId } = req.body;
     if (!name || !email || String(password).length < 8 || !["ADMIN", "MANAGER", "CASHIER"].includes(role))
       return res.status(400).json({ message: "Name, valid email, role and password (min 8 chars) required." });
     const hash = await bcrypt.hash(password, saltRounds);
     const { rows } = await pool.query(
-      "INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,name,email,role,is_active",
-      [name, String(email).trim().toLowerCase(), hash, role]
+      "INSERT INTO users(name,email,password_hash,role,branch_id) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,is_active,branch_id",
+      [name, String(email).trim().toLowerCase(), hash, role, branchId || null]
     );
-    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { email: rows[0].email, role }, req);
+    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { name: rows[0].name, email: rows[0].email, role, branchId }, req);
     res.status(201).json(rows[0]);
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Email already exists." }) : next(e); }
 });
@@ -491,30 +564,69 @@ app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
 app.patch("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { role, isActive, unlock } = req.body;
+    const { name, email, password, role, isActive, unlock, branchId } = req.body;
     if (id === req.user.id && isActive === false)
       return res.status(400).json({ message: "You cannot deactivate your own account." });
+
+    // Build dynamic update query
+    const updates = [];
+    const params = [];
+    let paramIdx = 1;
+
+    if (name !== undefined) { updates.push(`name=$${paramIdx++}`); params.push(name); }
+    if (email !== undefined) {
+      const trimmed = String(email).trim().toLowerCase();
+      if (!trimmed) return res.status(400).json({ message: "Email cannot be empty." });
+      updates.push(`email=$${paramIdx++}`); params.push(trimmed);
+    }
+    if (password !== undefined) {
+      if (String(password).length < 8)
+        return res.status(400).json({ message: "Password must be at least 8 characters." });
+      const hash = await bcrypt.hash(password, saltRounds);
+      updates.push(`password_hash=$${paramIdx++}`);
+      updates.push(`password_changed_at=NOW()`);
+      updates.push(`password_expires_at=NOW()+INTERVAL '90 days'`);
+      params.push(hash);
+    }
+    if (role !== undefined) { updates.push(`role=$${paramIdx++}`); params.push(role); }
+    if (isActive !== undefined) {
+      updates.push(`is_active=$${paramIdx++}`); params.push(isActive);
+    }
+    if (unlock) {
+      updates.push(`failed_login_attempts=0`);
+      updates.push(`locked_until=NULL`);
+    }
+    if (branchId !== undefined) {
+      updates.push(`branch_id=$${paramIdx++}`);
+      params.push(branchId || null);
+    }
+
+    if (!updates.length) return res.status(400).json({ message: "No fields to update." });
+
+    updates.push(`updated_at=NOW()`);
+    params.push(id);
+
     const { rows } = await pool.query(
-      `UPDATE users SET role=COALESCE($1,role),is_active=COALESCE($2,is_active),
-       failed_login_attempts=CASE WHEN $3 THEN 0 ELSE failed_login_attempts END,
-       locked_until=CASE WHEN $3 THEN NULL ELSE locked_until END,
-       updated_at=NOW() WHERE id=$4
-       RETURNING id,name,email,role,is_active,locked_until`,
-      [role ?? null, isActive, Boolean(unlock), id]
+      `UPDATE users SET ${updates.join(",")} WHERE id=$${paramIdx}
+       RETURNING id,name,email,role,is_active,locked_until,branch_id`,
+      params
     );
     if (!rows[0]) return res.status(404).json({ message: "User not found." });
-    await audit(pool, req.user.id, "UPDATE", "USER", id, req.body, req);
+    await audit(pool, req.user.id, "UPDATE", "USER", id, { ...req.body, password: password ? "[REDACTED]" : undefined }, req);
     res.json(rows[0]);
-  } catch (e) { next(e); }
+  } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Email already exists." }) : next(e); }
 });
 
 app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (id === req.user.id) return res.status(400).json({ message: "Cannot delete your own account." });
-    const { rowCount } = await pool.query("DELETE FROM users WHERE id=$1", [id]);
-    if (rowCount === 0) return res.status(404).json({ message: "User not found." });
-    await audit(pool, req.user.id, "DELETE", "USER", id, {}, req);
+    // Fetch user details before deletion for audit log
+    const { rows: userRows } = await pool.query("SELECT name, email, role FROM users WHERE id=$1", [id]);
+    if (!userRows[0]) return res.status(404).json({ message: "User not found." });
+    const deletedUser = userRows[0];
+    await pool.query("DELETE FROM users WHERE id=$1", [id]);
+    await audit(pool, req.user.id, "DELETE", "USER", id, { name: deletedUser.name, email: deletedUser.email, role: deletedUser.role }, req);
     res.json({ message: "User deleted." });
   } catch (e) { next(e); }
 });
@@ -522,6 +634,32 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 3: PRODUCTS & INVENTORY
 // ═══════════════════════════════════════════════════════════════════
+
+// Check for duplicate product fields (real-time validation)
+app.get("/api/products/check-duplicate", auth, async (req, res, next) => {
+  try {
+    const { field, value, excludeId } = req.query;
+    if (!field || !value) return res.json({ exists: false });
+
+    let sql, params;
+    const excludeClause = excludeId ? " AND id != $3" : "";
+
+    if (field === "barcode") {
+      sql = `SELECT id, name FROM products WHERE barcode = $1${excludeClause}`;
+      params = [value];
+      if (excludeId) params.push(Number(excludeId));
+    } else if (field === "name") {
+      sql = `SELECT id, barcode FROM products WHERE LOWER(name) = LOWER($1)${excludeClause}`;
+      params = [value];
+      if (excludeId) params.push(Number(excludeId));
+    } else {
+      return res.json({ exists: false });
+    }
+
+    const { rows } = await pool.query(sql, params);
+    res.json({ exists: rows.length > 0, match: rows[0] || null });
+  } catch (e) { next(e); }
+});
 
 app.get("/api/products", auth, async (q, r, n) => {
   try {
@@ -534,7 +672,7 @@ app.get("/api/products", auth, async (q, r, n) => {
     }
     sql += " ORDER BY name";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -542,21 +680,81 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
     const { barcode, name, category, price, costPrice = 0, stock = 0, reorderLevel = 5, unit = "PCS", description = "" } = req.body;
     if (!barcode || !name || !category || Number(price) < 0 || Number(stock) < 0)
       return res.status(400).json({ message: "Invalid product details." });
+
+    // Check for duplicate barcode
+    const { rows: dupBarcode } = await pool.query(
+      "SELECT id, name FROM products WHERE barcode = $1", [barcode]
+    );
+    if (dupBarcode[0]) {
+      return res.status(409).json({
+        message: `Barcode "${barcode}" already exists for product "${dupBarcode[0].name}".`,
+        field: "barcode",
+        existingProduct: dupBarcode[0]
+      });
+    }
+
+    // Check for duplicate name (case-insensitive)
+    const { rows: dupName } = await pool.query(
+      "SELECT id, barcode FROM products WHERE LOWER(name) = LOWER($1)", [name]
+    );
+    if (dupName[0]) {
+      return res.status(409).json({
+        message: `Product name "${name}" already exists (barcode: ${dupName[0].barcode}).`,
+        field: "name",
+        existingProduct: dupName[0]
+      });
+    }
+
+    // Check for duplicate category (warn, don't block)
+    const { rows: existingCategory } = await pool.query(
+      "SELECT id FROM products WHERE LOWER(category) = LOWER($1) LIMIT 1", [category]
+    );
+    const categoryExists = existingCategory.length > 0;
+
     const { rows } = await pool.query(
       `INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,description,image_url)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null]
     );
-    await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name }, req);
-    res.status(201).json(rows[0]);
-  } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Barcode already exists." }) : next(e); }
+    await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name, category }, req);
+    const warnings = [];
+    if (categoryExists) warnings.push(`Category "${category}" already has other products.`);
+    res.status(201).json({ ...rows[0], warnings });
+  } catch (e) { next(e); }
 });
 
 app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive } = req.body;
+
+    // Check for duplicate barcode (excluding current product)
+    if (barcode) {
+      const { rows: dupBarcode } = await pool.query(
+        "SELECT id, name FROM products WHERE barcode = $1 AND id != $2", [barcode, id]
+      );
+      if (dupBarcode[0]) {
+        return res.status(409).json({
+          message: `Barcode "${barcode}" already exists for product "${dupBarcode[0].name}".`,
+          field: "barcode"
+        });
+      }
+    }
+
+    // Check for duplicate name (excluding current product)
+    if (name) {
+      const { rows: dupName } = await pool.query(
+        "SELECT id, barcode FROM products WHERE LOWER(name) = LOWER($1) AND id != $2", [name, id]
+      );
+      if (dupName[0]) {
+        return res.status(409).json({
+          message: `Product name "${name}" already exists (barcode: ${dupName[0].barcode}).`,
+          field: "name"
+        });
+      }
+    }
+
     const { rows } = await pool.query(
       `UPDATE products SET
         barcode=COALESCE($1,barcode), name=COALESCE($2,name), category=COALESCE($3,category),
@@ -571,7 +769,7 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
     await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body, req);
     res.json(rows[0]);
-  } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Barcode already exists." }) : next(e); }
+  } catch (e) { next(e); }
 });
 
 app.delete("/api/products/:id", auth, allow("ADMIN"), async (req, res, next) => {
@@ -653,7 +851,7 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
     if (productId) { sql += " WHERE im.product_id = $1"; params.push(Number(productId)); }
     sql += " ORDER BY im.created_at DESC LIMIT 200";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/products/low-stock", auth, async (_q, r, n) => {
@@ -661,7 +859,7 @@ app.get("/api/products/low-stock", auth, async (_q, r, n) => {
     r.json((await pool.query(
       "SELECT id,barcode,name,category,stock,reorder_level,price::float FROM products WHERE stock <= reorder_level ORDER BY stock ASC"
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -674,19 +872,21 @@ app.get("/api/sales", auth, async (req, res, next) => {
     let where = [];
     let params = [];
     let paramIdx = 1;
+    // Cashiers only see their own sales; MANAGERs/ADMINs see branch-wide sales
     if (req.user.role === "CASHIER") { where.push(`s.cashier_id = $${paramIdx++}`); params.push(req.user.id); }
+    else if (req.user.role === "MANAGER" && req.user.branchId) { where.push(`s.branch_id = $${paramIdx++}`); params.push(req.user.branchId); }
+    // ADMIN sees all branches (no branch filter)
     if (from) { where.push(`s.created_at >= $${paramIdx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${paramIdx++}`); params.push(to); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
     const sql = `SELECT s.id,s.receipt_number,s.customer_name,s.payment_method,s.subtotal::float,s.discount::float,s.tax::float,
-              s.total::float,s.amount_paid::float,s.status,s.created_at,u.name AS cashier_name,
+              s.total::float,s.amount_paid::float,s.status,s.created_at,s.branch_id,b.name AS branch_name,u.name AS cashier_name,
               COALESCE(SUM(si.quantity),0)::int AS item_count
        FROM sales s JOIN users u ON u.id = s.cashier_id
+       LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN sale_items si ON si.sale_id = s.id ${w}
-       GROUP BY s.id,u.name ORDER BY s.created_at DESC LIMIT 200`;
-    console.log("[SALES DEBUG] sql:", sql.substring(0, 120), "params:", params);
+       GROUP BY s.id,u.name,b.name ORDER BY s.created_at DESC LIMIT 200`;
     const result = await pool.query(sql, params);
-    console.log("[SALES DEBUG] rows:", result.rows.length);
     res.json(result.rows);
   } catch (e) { console.error("[SALES ERROR]", e.message, e.code); next(e); }
 });
@@ -740,10 +940,12 @@ app.post("/api/sales", auth, async (req, res, next) => {
     const change = Math.max(0, paid - total);
     const receiptNumber = `RHS-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
+    // Use the logged-in user's branch_id for the sale
+    const saleBranchId = req.user.branchId || null;
     const { rows } = await client.query(
-      `INSERT INTO sales(receipt_number,customer_name,customer_id,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,created_at`,
-      [receiptNumber, customerName, customerId || null, paymentMethod, subtotal, discount, tax, total, paid, change, req.user.id]
+      `INSERT INTO sales(receipt_number,customer_name,customer_id,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id,branch_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,created_at`,
+      [receiptNumber, customerName, customerId || null, paymentMethod, subtotal, discount, tax, total, paid, change, req.user.id, saleBranchId]
     );
     const sale = rows[0];
 
@@ -827,18 +1029,41 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
 // PHASE 9: DASHBOARD / BI
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/dashboard/stats", auth, async (_q, r, n) => {
+app.get("/api/dashboard/stats", auth, async (req, r, n) => {
   try {
+    // Branch-scoped: ADMIN can pick a branch via ?branchId=X; others see their own branch
+    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+    let branchFilter, userBranchFilter;
+    if (adminBranchId) {
+      branchFilter = ` AND s.branch_id = ${adminBranchId}`;
+      userBranchFilter = ` AND u.branch_id = ${adminBranchId}`;
+    } else if (req.user.role === "ADMIN") {
+      branchFilter = "";
+      userBranchFilter = "";
+    } else if (req.user.branchId) {
+      branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
+      userBranchFilter = ` AND u.branch_id = ${req.user.branchId}`;
+    } else {
+      branchFilter = ` AND s.cashier_id = ${req.user.id}`;
+      userBranchFilter = ` AND u.id = ${req.user.id}`;
+    }
+    // When viewing a specific branch, scope products to those sold at that branch
+    const productFilter = adminBranchId
+      ? ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = ${adminBranchId})`
+      : (req.user.role !== 'ADMIN' && req.user.branchId)
+        ? ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = ${req.user.branchId})`
+        : '';
+    const lowStockFilter = productFilter; // same logic: if branch-scoped, show only that branch's low-stock products
     const [totalProducts, totalSales, totalRevenue, lowStock, todaySales, todayRevenue, totalUsers, recentSales] = await Promise.all([
-      pool.query("SELECT COUNT(*)::int AS count FROM products WHERE is_active = TRUE"),
-      pool.query("SELECT COUNT(*)::int AS count FROM sales"),
-      pool.query("SELECT COALESCE(SUM(total),0)::float AS total FROM sales"),
-      pool.query("SELECT COUNT(*)::int AS count FROM products WHERE stock <= reorder_level AND is_active = TRUE"),
-      pool.query("SELECT COUNT(*)::int AS count FROM sales WHERE created_at::date = CURRENT_DATE"),
-      pool.query("SELECT COALESCE(SUM(total),0)::float AS total FROM sales WHERE created_at::date = CURRENT_DATE"),
-      pool.query("SELECT COUNT(*)::int AS count FROM users WHERE is_active = TRUE"),
-      pool.query(`SELECT date_trunc('day',created_at)::date AS day, COUNT(*)::int AS count, COALESCE(SUM(total),0)::float AS revenue
-                  FROM sales WHERE created_at >= NOW() - INTERVAL '30 days'
+      pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.is_active = TRUE${productFilter}`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE 1=1${branchFilter}`),
+      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE 1=1${branchFilter}`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE${lowStockFilter}`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
+      pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM users u WHERE u.is_active = TRUE${userBranchFilter}`),
+      pool.query(`SELECT date_trunc('day',s.created_at)::date AS day, COUNT(*)::int AS count, COALESCE(SUM(s.total),0)::float AS revenue
+                  FROM sales s WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
                   GROUP BY 1 ORDER BY 1`)
     ]);
     r.json({
@@ -851,29 +1076,94 @@ app.get("/api/dashboard/stats", auth, async (_q, r, n) => {
       totalUsers: totalUsers.rows[0].count,
       salesChart: recentSales.rows
     });
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
-app.get("/api/dashboard/top-products", auth, async (_q, r, n) => {
+app.get("/api/dashboard/top-products", auth, async (req, r, n) => {
   try {
+    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+    let branchFilter;
+    if (adminBranchId) branchFilter = ` AND s.branch_id = ${adminBranchId}`;
+    else if (req.user.role === "ADMIN") branchFilter = "";
+    else if (req.user.branchId) branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
+    else branchFilter = ` AND s.cashier_id = ${req.user.id}`;
     r.json((await pool.query(
       `SELECT si.product_name, SUM(si.quantity)::int AS total_qty, SUM(si.line_total)::float AS total_revenue
        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
        GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
-app.get("/api/dashboard/category-sales", auth, async (_q, r, n) => {
+app.get("/api/dashboard/category-sales", auth, async (req, r, n) => {
   try {
+    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+    let branchFilter;
+    if (adminBranchId) branchFilter = ` AND s.branch_id = ${adminBranchId}`;
+    else if (req.user.role === "ADMIN") branchFilter = "";
+    else if (req.user.branchId) branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
+    else branchFilter = ` AND s.cashier_id = ${req.user.id}`;
     r.json((await pool.query(
       `SELECT p.category, SUM(si.line_total)::float AS revenue, SUM(si.quantity)::int AS qty
        FROM sale_items si JOIN products p ON p.id = si.product_id JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${branchFilter}
        GROUP BY p.category ORDER BY revenue DESC`
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// BRANCH SUMMARY — Admin overview of all branches
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT b.id, b.name,
+              COUNT(DISTINCT s.id)::int AS total_sales,
+              COALESCE(SUM(s.total),0)::float AS total_revenue,
+              COUNT(DISTINCT s.cashier_id)::int AS active_cashiers,
+              COUNT(DISTINCT s.created_at::date)::int AS active_days,
+              COALESCE(SUM(CASE WHEN s.created_at::date = CURRENT_DATE THEN s.total ELSE 0 END),0)::float AS today_revenue,
+              COUNT(DISTINCT CASE WHEN s.created_at::date = CURRENT_DATE THEN s.id END)::int AS today_sales
+       FROM branches b
+       LEFT JOIN sales s ON s.branch_id = b.id
+       WHERE b.is_active = TRUE
+       GROUP BY b.id, b.name
+       ORDER BY total_revenue DESC`
+    );
+    // Low stock per branch: products sold at that branch that are below reorder level
+    const branchIds = result.rows.map(r => r.id);
+    let lowStockMap = {};
+    if (branchIds.length) {
+      const { rows: stockRows } = await pool.query(
+        `SELECT s.branch_id, COUNT(DISTINCT p.id)::int AS low_stock_count
+         FROM products p
+         JOIN sale_items si ON si.product_id = p.id
+         JOIN sales s ON s.id = si.sale_id
+         WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
+         GROUP BY s.branch_id`
+      );
+      stockRows.forEach(r => { lowStockMap[r.branch_id] = r.low_stock_count; });
+    }
+    const enriched = result.rows.map(r => ({
+      ...r,
+      low_stock: lowStockMap[r.id] || 0,
+    }));
+
+    // Compute TOTAL row across all branches
+    const totals = enriched.reduce((acc, r) => ({
+      total_sales: acc.total_sales + (r.total_sales || 0),
+      total_revenue: acc.total_revenue + (r.total_revenue || 0),
+      today_revenue: acc.today_revenue + (r.today_revenue || 0),
+      today_sales: acc.today_sales + (r.today_sales || 0),
+      active_cashiers: acc.active_cashiers + (r.active_cashiers || 0),
+      low_stock: acc.low_stock + (r.low_stock || 0),
+    }), { total_sales: 0, total_revenue: 0, today_revenue: 0, today_sales: 0, active_cashiers: 0, low_stock: 0 });
+
+    res.json({ branches: enriched, totals });
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -925,12 +1215,19 @@ app.delete("/api/suppliers/:id", auth, allow("ADMIN"), async (req, res, next) =>
 // Purchase Orders
 app.get("/api/purchase-orders", auth, async (_q, r, n) => {
   try {
+    let whereClause = "";
+    const params = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      whereClause = " WHERE po.branch_id = $1";
+      params.push(req.user.branchId);
+    }
     r.json((await pool.query(
       `SELECT po.*, s.name AS supplier_name, u.name AS created_by_name
-       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id JOIN users u ON u.id = po.created_by
-       ORDER BY po.created_at DESC LIMIT 100`
+       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id JOIN users u ON u.id = po.created_by${whereClause}
+       ORDER BY po.created_at DESC LIMIT 100`,
+      params
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/purchase-orders/:id", auth, async (req, res, next) => {
@@ -954,14 +1251,25 @@ app.post("/api/purchase-orders", auth, allow("ADMIN", "MANAGER"), async (req, re
     if (!supplierId || !Array.isArray(items) || !items.length)
       return res.status(400).json({ message: "Supplier and items required." });
 
+    // Validate each item has a valid product, quantity, and unit cost
+    for (const item of items) {
+      if (!item.productId || !Number.isInteger(Number(item.productId)) || Number(item.productId) < 1)
+        return res.status(400).json({ message: "Each item must have a valid product." });
+      if (!item.quantity || !Number.isInteger(Number(item.quantity)) || Number(item.quantity) < 1)
+        return res.status(400).json({ message: "Each item must have a valid quantity (min 1)." });
+      const cost = Number(item.unitCost);
+      if (!Number.isFinite(cost) || cost < 0)
+        return res.status(400).json({ message: "Each item must have a valid unit cost (≥ 0)." });
+    }
+
     await client.query("BEGIN");
     let total = 0;
     const poNumber = `PO-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
     const { rows: poRows } = await client.query(
-      `INSERT INTO purchase_orders(po_number,supplier_id,notes,created_by,expected_date)
-       VALUES($1,$2,$3,$4,$5) RETURNING id`,
-      [poNumber, supplierId, notes || "", req.user.id, expectedDate || null]
+      `INSERT INTO purchase_orders(po_number,supplier_id,notes,created_by,expected_date,branch_id)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [poNumber, supplierId, notes || "", req.user.id, expectedDate || null, req.user.branchId || null]
     );
     const poId = poRows[0].id;
 
@@ -1069,10 +1377,17 @@ app.put("/api/customers/:id", auth, async (req, res, next) => {
 
 app.get("/api/expenses", auth, async (_q, r, n) => {
   try {
+    let whereClause = "";
+    const params = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      whereClause = " WHERE e.branch_id = $1";
+      params.push(req.user.branchId);
+    }
     r.json((await pool.query(
-      `SELECT e.*, u.name AS approved_by_name FROM expenses e LEFT JOIN users u ON u.id = e.approved_by ORDER BY e.created_at DESC LIMIT 200`
+      `SELECT e.*, u.name AS approved_by_name FROM expenses e LEFT JOIN users u ON u.id = e.approved_by${whereClause} ORDER BY e.created_at DESC LIMIT 200`,
+      params
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -1081,9 +1396,9 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
     if (!category || !amount || Number(amount) <= 0)
       return res.status(400).json({ message: "Category and positive amount required." });
     const { rows } = await pool.query(
-      `INSERT INTO expenses(category,description,amount,payment_method,reference,approved_by)
-       VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [category, description || "", amount, paymentMethod || "Cash", reference || "", req.user.id]
+      `INSERT INTO expenses(category,description,amount,payment_method,reference,approved_by,branch_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [category, description || "", amount, paymentMethod || "Cash", reference || "", req.user.id, req.user.branchId || null]
     );
     await audit(pool, req.user.id, "CREATE", "EXPENSE", rows[0].id, { category, amount }, req);
     res.status(201).json(rows[0]);
@@ -1092,21 +1407,24 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 
 app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (_q, r, n) => {
   try {
+    // Branch-scoped for managers
+    const branchFilter = req.user.role === "ADMIN" ? ""
+      : req.user.branchId ? ` AND branch_id = ${req.user.branchId}` : "";
     const [salesRev, totalExpenses, todaySales] = await Promise.all([
-      pool.query("SELECT COALESCE(SUM(total),0)::float AS revenue FROM sales"),
-      pool.query("SELECT COALESCE(SUM(amount),0)::float AS total FROM expenses"),
+      pool.query(`SELECT COALESCE(SUM(total),0)::float AS revenue FROM sales WHERE 1=1${branchFilter}`),
+      pool.query(`SELECT COALESCE(SUM(amount),0)::float AS total FROM expenses WHERE 1=1${branchFilter}`),
       pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS revenue,
         COALESCE((SELECT SUM(p.cost_price * si.quantity) FROM sale_items si
           JOIN products p ON p.id = si.product_id
           JOIN sales s2 ON s2.id = si.sale_id
-          WHERE s2.created_at::date = CURRENT_DATE),0)::float AS cost
-        FROM sales s WHERE s.created_at::date = CURRENT_DATE`)
+          WHERE s2.created_at::date = CURRENT_DATE${branchFilter.replace(/branch_id/g, 's2.branch_id')}),0)::float AS cost
+        FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter.replace(/branch_id/g, 's.branch_id')}`)
     ]);
     const revenue = salesRev.rows[0].revenue;
     const expenses = totalExpenses.rows[0].total;
     const profit = revenue - expenses;
     r.json({ revenue, expenses, profit, todayRevenue: todaySales.rows[0].revenue, todayCost: todaySales.rows[0].cost });
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1120,7 +1438,7 @@ app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
       `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT $1`, [limit]
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) => {
@@ -1161,29 +1479,43 @@ app.get("/api/cash-drawer", auth, async (_q, r, n) => {
        LEFT JOIN users uc ON uc.id = cd.closed_by
        ORDER BY cd.opened_at DESC LIMIT 50`
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
-app.get("/api/cash-drawer/active", auth, async (_q, r, n) => {
+app.get("/api/cash-drawer/active", auth, async (req, r, n) => {
   try {
+    // Branch-scoped: filter active drawer by user's branch
+    let whereClause = "cd.status = 'OPEN'";
+    const params = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      whereClause += " AND cd.branch_id = $1";
+      params.push(req.user.branchId);
+    }
     const { rows } = await pool.query(
       `SELECT cd.*, uo.name AS opened_by_name
        FROM cash_drawer cd LEFT JOIN users uo ON uo.id = cd.opened_by
-       WHERE cd.status = 'OPEN' ORDER BY cd.opened_at DESC LIMIT 1`
+       WHERE ${whereClause} ORDER BY cd.opened_at DESC LIMIT 1`, params
     );
     r.json(rows[0] || null);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
   try {
     const { openingBalance = 0, drawerName = "Main Drawer" } = req.body;
-    const existing = await pool.query("SELECT id FROM cash_drawer WHERE status = 'OPEN' LIMIT 1");
+    // Branch-scoped: only check for open drawer in same branch
+    let existingQuery = "SELECT id FROM cash_drawer WHERE status = 'OPEN'";
+    const existingParams = [];
+    if (req.user.role !== "ADMIN" && req.user.branchId) {
+      existingQuery += " AND branch_id = $1";
+      existingParams.push(req.user.branchId);
+    }
+    const existing = await pool.query(existingQuery, existingParams);
     if (existing.rows[0]) return res.status(409).json({ message: "A drawer is already open. Close it first." });
     const { rows } = await pool.query(
-      `INSERT INTO cash_drawer(drawer_name, opening_balance, current_balance, opened_by)
-       VALUES($1, $2, $2, $3) RETURNING *`,
-      [drawerName, Number(openingBalance), req.user.id]
+      `INSERT INTO cash_drawer(drawer_name, opening_balance, current_balance, opened_by, branch_id)
+       VALUES($1, $2, $2, $3, $4) RETURNING *`,
+      [drawerName, Number(openingBalance), req.user.id, req.user.branchId || null]
     );
     await audit(pool, req.user.id, "OPEN_DRAWER", "CASH_DRAWER", rows[0].id, { openingBalance, drawerName }, req);
     res.status(201).json(rows[0]);
@@ -1252,7 +1584,270 @@ app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => 
     if (rowCount === 0) return res.status(404).json({ message: "Branch not found." });
     await audit(pool, req.user.id, "DELETE", "BRANCH", req.params.id, {}, req);
     res.json({ message: "Branch deleted." });
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// INTER-BRANCH MESSAGING
+// ═══════════════════════════════════════════════════════════════════
+
+// Get messages for current user's branch (inbox)
+app.get("/api/messages", auth, async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    if (!branchId) return res.json([]);
+    const box = req.query.box || "inbox"; // inbox or sent
+    let sql, params;
+    if (box === "sent") {
+      sql = `SELECT m.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
+                    fu.name AS from_user_name
+             FROM messages m
+             JOIN branches fb ON fb.id = m.from_branch_id
+             JOIN branches tb ON tb.id = m.to_branch_id
+             JOIN users fu ON fu.id = m.from_user_id
+             WHERE m.from_branch_id = $1
+             ORDER BY m.created_at DESC LIMIT 100`;
+      params = [branchId];
+    } else {
+      sql = `SELECT m.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
+                    fu.name AS from_user_name
+             FROM messages m
+             JOIN branches fb ON fb.id = m.from_branch_id
+             JOIN branches tb ON tb.id = m.to_branch_id
+             JOIN users fu ON fu.id = m.from_user_id
+             WHERE m.to_branch_id = $1
+             ORDER BY m.created_at DESC LIMIT 100`;
+      params = [branchId];
+    }
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { console.error("[MESSAGES]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+// Get unread message count
+app.get("/api/messages/unread", auth, async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    if (!branchId) return res.json({ count: 0 });
+    const { rows } = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM messages WHERE to_branch_id = $1 AND is_read = FALSE", [branchId]
+    );
+    res.json({ count: rows[0].count });
+  } catch (e) { next(e); }
+});
+
+// Send a message
+app.post("/api/messages", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { toBranchId, subject, body } = req.body;
+    const fromBranchId = req.user.branchId;
+    if (!fromBranchId) return res.status(400).json({ message: "You must be assigned to a branch to send messages." });
+    if (!toBranchId || !subject || !body)
+      return res.status(400).json({ message: "To branch, subject and body are required." });
+    if (Number(toBranchId) === fromBranchId)
+      return res.status(400).json({ message: "Cannot send a message to your own branch." });
+    const { rows } = await pool.query(
+      `INSERT INTO messages(from_branch_id, to_branch_id, from_user_id, subject, body)
+       VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [fromBranchId, Number(toBranchId), req.user.id, subject, body]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Mark message as read
+app.patch("/api/messages/:id/read", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const branchId = req.user.branchId;
+    const { rows } = await pool.query(
+      `UPDATE messages SET is_read = TRUE, read_at = NOW()
+       WHERE id = $1 AND to_branch_id = $2 RETURNING *`,
+      [id, branchId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Message not found." });
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Delete a message
+app.delete("/api/messages/:id", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const branchId = req.user.branchId;
+    // Can delete if you sent it or received it
+    const { rowCount } = await pool.query(
+      "DELETE FROM messages WHERE id = $1 AND (from_branch_id = $2 OR to_branch_id = $2)",
+      [id, branchId]
+    );
+    if (rowCount === 0) return res.status(404).json({ message: "Message not found." });
+    res.json({ message: "Message deleted." });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// INTER-BRANCH STOCK TRANSFERS
+// ═══════════════════════════════════════════════════════════════════
+
+// List transfers (sent or received by this branch)
+app.get("/api/stock-transfers", auth, async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    if (!branchId) return res.json([]);
+    const box = req.query.box || "incoming"; // incoming or outgoing
+    let sql, params;
+    if (box === "outgoing") {
+      sql = `SELECT st.*, p.name AS product_name, p.barcode,
+                    fb.name AS from_branch_name, tb.name AS to_branch_name,
+                    ru.name AS requested_by_name, au.name AS approved_by_name
+             FROM stock_transfers st
+             JOIN products p ON p.id = st.product_id
+             JOIN branches fb ON fb.id = st.from_branch_id
+             JOIN branches tb ON tb.id = st.to_branch_id
+             JOIN users ru ON ru.id = st.requested_by
+             LEFT JOIN users au ON au.id = st.approved_by
+             WHERE st.from_branch_id = $1
+             ORDER BY st.created_at DESC LIMIT 100`;
+      params = [branchId];
+    } else {
+      sql = `SELECT st.*, p.name AS product_name, p.barcode,
+                    fb.name AS from_branch_name, tb.name AS to_branch_name,
+                    ru.name AS requested_by_name, au.name AS approved_by_name
+             FROM stock_transfers st
+             JOIN products p ON p.id = st.product_id
+             JOIN branches fb ON fb.id = st.from_branch_id
+             JOIN branches tb ON tb.id = st.to_branch_id
+             JOIN users ru ON ru.id = st.requested_by
+             LEFT JOIN users au ON au.id = st.approved_by
+             WHERE st.to_branch_id = $1
+             ORDER BY st.created_at DESC LIMIT 100`;
+      params = [branchId];
+    }
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { console.error("[TRANSFERS]", e.message); res.status(500).json({ message: e.message }); }
+});
+
+// Request a stock transfer (ask another branch to send stock)
+app.post("/api/stock-transfers", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { toBranchId, productId, quantity, notes } = req.body;
+    const fromBranchId = req.user.branchId;
+    if (!fromBranchId) return res.status(400).json({ message: "You must be assigned to a branch to request transfers." });
+    if (!toBranchId || !productId || !quantity)
+      return res.status(400).json({ message: "To branch, product and quantity are required." });
+    if (Number(toBranchId) === fromBranchId)
+      return res.status(400).json({ message: "Cannot transfer to your own branch." });
+    // Check source branch has enough stock
+    const { rows: stockRows } = await pool.query("SELECT stock FROM products WHERE id=$1", [productId]);
+    if (!stockRows[0]) return res.status(404).json({ message: "Product not found." });
+    const { rows } = await pool.query(
+      `INSERT INTO stock_transfers(from_branch_id, to_branch_id, product_id, quantity, requested_by, notes)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [fromBranchId, Number(toBranchId), productId, Number(quantity), req.user.id, notes || ""]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Update transfer status (approve/reject/complete)
+app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const { status, rejectionReason } = req.body;
+    if (!["APPROVED", "REJECTED", "COMPLETED", "CANCELLED"].includes(status))
+      return res.status(400).json({ message: "Invalid status." });
+
+    const branchId = req.user.branchId;
+    await client.query("BEGIN");
+
+    // Get the transfer
+    const { rows: existing } = await client.query(
+      "SELECT * FROM stock_transfers WHERE id=$1", [id]
+    );
+    if (!existing[0]) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(404).json({ message: "Transfer not found." });
+    }
+    const transfer = existing[0];
+
+    // Only the source branch (from_branch) can approve/complete
+    // Only the requesting branch (to_branch) can cancel
+    if ((status === "APPROVED" || status === "COMPLETED") && transfer.from_branch_id !== branchId) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(403).json({ message: "Only the source branch can approve/complete transfers." });
+    }
+    if (status === "CANCELLED" && transfer.to_branch_id !== branchId && transfer.from_branch_id !== branchId) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(403).json({ message: "Only involved branches can cancel transfers." });
+    }
+
+    // Validate status transition
+    const validTransitions = {
+      PENDING: ["APPROVED", "REJECTED", "CANCELLED"],
+      APPROVED: ["COMPLETED", "CANCELLED"],
+    };
+    if (validTransitions[transfer.status] && !validTransitions[transfer.status].includes(status)) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(400).json({ message: `Cannot transition from ${transfer.status} to ${status}.` });
+    }
+    if (transfer.status === "REJECTED" || transfer.status === "COMPLETED" || transfer.status === "CANCELLED") {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(400).json({ message: `Cannot change status from ${transfer.status}.` });
+    }
+
+    // Update status
+    let updateSQL, updateParams;
+    if (status === "REJECTED") {
+      updateSQL = `UPDATE stock_transfers SET status=$1, rejection_reason=$2, approved_by=$3, updated_at=NOW() WHERE id=$4 RETURNING *`;
+      updateParams = [status, rejectionReason || "", req.user.id, id];
+    } else if (status === "COMPLETED") {
+      updateSQL = `UPDATE stock_transfers SET status=$1, approved_by=$2, completed_at=NOW(), updated_at=NOW() WHERE id=$3 RETURNING *`;
+      updateParams = [status, req.user.id, id];
+    } else {
+      updateSQL = `UPDATE stock_transfers SET status=$1, approved_by=$2, updated_at=NOW() WHERE id=$3 RETURNING *`;
+      updateParams = [status, req.user.id, id];
+    }
+    const { rows } = await client.query(updateSQL, updateParams);
+
+    // On COMPLETED: deduct stock from source, add stock to destination
+    if (status === "COMPLETED") {
+      const qty = Number(transfer.quantity);
+      // Deduct from source branch (we can't do per-branch stock since products are shared,
+      // but we track the movement for audit)
+      await client.query(
+        "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND stock >= $1",
+        [qty, transfer.product_id]
+      );
+      // Record inventory movement for source
+      await client.query(
+        "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'TRANSFER_OUT',$2,$3,$4,$5)",
+        [transfer.product_id, -qty, `TRANSFER-${id}`, req.user.id, `Transfer to branch ${transfer.to_branch_id}`]
+      );
+      // Add stock to destination
+      await client.query(
+        "UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2",
+        [qty, transfer.product_id]
+      );
+      // Record inventory movement for destination
+      await client.query(
+        "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'TRANSFER_IN',$2,$3,$4,$5)",
+        [transfer.product_id, qty, `TRANSFER-${id}`, req.user.id, `Transfer from branch ${transfer.from_branch_id}`]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json(rows[0]);
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(e);
+  } finally { client.release(); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1262,7 +1857,7 @@ app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => 
 app.get("/api/categories", auth, async (_q, r, n) => {
   try {
     r.json((await pool.query("SELECT DISTINCT category FROM products ORDER BY category")).rows.map(r => r.category));
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1273,18 +1868,31 @@ app.get("/api/categories", auth, async (_q, r, n) => {
 app.get("/api/reports/monthly", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     const year = Number(req.query.year) || new Date().getFullYear();
+    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+    let branchFilter;
+    if (adminBranchId) branchFilter = ` AND branch_id = ${adminBranchId}`;
+    else if (req.user.role === "ADMIN") branchFilter = "";
+    else if (req.user.branchId) branchFilter = ` AND branch_id = ${req.user.branchId}`;
+    else branchFilter = "";
     const result = await pool.query(
       `SELECT EXTRACT(MONTH FROM created_at)::int AS month,
               COUNT(*)::int AS transactions,
               COALESCE(SUM(total),0)::float AS revenue,
               COALESCE(SUM(discount),0)::float AS discounts,
               COALESCE(SUM(tax),0)::float AS taxes
-       FROM sales WHERE EXTRACT(YEAR FROM created_at) = $1
+       FROM sales WHERE EXTRACT(YEAR FROM created_at) = $1${branchFilter}
        GROUP BY 1 ORDER BY 1`, [year]
     );
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const data = result.rows.map(r => ({ month: months[r.month - 1], ...r }));
-    res.json({ year, data });
+    // Look up branch name
+    let branchName = null;
+    const targetBranchId = adminBranchId || req.user.branchId;
+    if (targetBranchId) {
+      const { rows: bRows } = await pool.query("SELECT name FROM branches WHERE id=$1", [targetBranchId]);
+      branchName = bRows[0]?.name || null;
+    }
+    res.json({ year, data, branchName });
   } catch (e) { next(e); }
 });
 
@@ -1295,6 +1903,14 @@ app.get("/api/reports/product-sales", auth, allow("ADMIN", "MANAGER"), async (re
     let where = [];
     let params = [];
     let idx = 1;
+    // Branch-scoped: ADMIN can pick a branch
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(req.user.branchId);
+    }
     if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
@@ -1322,7 +1938,7 @@ app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (_q, r,
        FROM products WHERE stock <= reorder_level AND is_active = TRUE
        ORDER BY stock ASC`
     )).rows);
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // Cashier Sales Report
@@ -1332,6 +1948,14 @@ app.get("/api/reports/cashier-sales", auth, allow("ADMIN", "MANAGER"), async (re
     let where = [];
     let params = [];
     let idx = 1;
+    // Branch-scoped: ADMIN can pick a branch
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(req.user.branchId);
+    }
     if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
@@ -1358,31 +1982,48 @@ app.get("/api/reports/daily", auth, allow("ADMIN", "MANAGER"), async (req, res, 
     const startDate = `${date}T00:00:00`;
     const endDate = `${date}T23:59:59`;
 
+    // Branch-scoped: ADMIN can pick a branch via ?branchId=X
+    const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
+    let branchFilter, expenseBranchFilter;
+    if (adminBranchId) {
+      branchFilter = ` AND s.branch_id = ${adminBranchId}`;
+      expenseBranchFilter = ` AND e.branch_id = ${adminBranchId}`;
+    } else if (req.user.role === "ADMIN") {
+      branchFilter = "";
+      expenseBranchFilter = "";
+    } else if (req.user.branchId) {
+      branchFilter = ` AND s.branch_id = ${req.user.branchId}`;
+      expenseBranchFilter = ` AND e.branch_id = ${req.user.branchId}`;
+    } else {
+      branchFilter = "";
+      expenseBranchFilter = "";
+    }
+
     const [salesResult, itemsResult, expensesResult, topProducts] = await Promise.all([
       pool.query(
         `SELECT COUNT(*)::int AS total_transactions,
-                COALESCE(SUM(total),0)::float AS total_revenue,
-                COALESCE(SUM(subtotal),0)::float AS subtotal,
-                COALESCE(SUM(discount),0)::float AS total_discount,
-                COALESCE(SUM(tax),0)::float AS total_tax,
-                COALESCE(SUM(amount_paid),0)::float AS total_paid,
-                COALESCE(SUM(change_amount),0)::float AS total_change
-         FROM sales WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+                COALESCE(SUM(s.total),0)::float AS total_revenue,
+                COALESCE(SUM(s.subtotal),0)::float AS subtotal,
+                COALESCE(SUM(s.discount),0)::float AS total_discount,
+                COALESCE(SUM(s.tax),0)::float AS total_tax,
+                COALESCE(SUM(s.amount_paid),0)::float AS total_paid,
+                COALESCE(SUM(s.change_amount),0)::float AS total_change
+         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${branchFilter}`, [startDate, endDate]
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2
+         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
          GROUP BY si.product_name ORDER BY revenue DESC`, [startDate, endDate]
       ),
       pool.query(
-        `SELECT COALESCE(SUM(amount),0)::float AS total_expenses
-         FROM expenses WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+        `SELECT COALESCE(SUM(e.amount),0)::float AS total_expenses
+         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expenseBranchFilter}`, [startDate, endDate]
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2
+         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
          GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10`, [startDate, endDate]
       )
     ]);
@@ -1391,8 +2032,16 @@ app.get("/api/reports/daily", auth, allow("ADMIN", "MANAGER"), async (req, res, 
     const expenses = expensesResult.rows[0].total_expenses;
     const revenue = sales.total_revenue;
 
+    // Look up branch name for the response
+    let branchName = null;
+    if (req.user.branchId) {
+      const { rows: bRows } = await pool.query("SELECT name FROM branches WHERE id=$1", [req.user.branchId]);
+      branchName = bRows[0]?.name || null;
+    }
+
     res.json({
       date,
+      branchName,
       summary: {
         totalTransactions: sales.total_transactions,
         totalRevenue: revenue,
@@ -1421,23 +2070,29 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
     const startDate = `${reportDate}T00:00:00`;
     const endDate = `${reportDate}T23:59:59`;
 
+    // Branch-scoped: MANAGERs see only their branch
+    const branchFilter = req.user.role === "ADMIN" ? ""
+      : req.user.branchId ? ` AND s.branch_id = ${req.user.branchId}` : "";
+    const expenseBranchFilter = req.user.role === "ADMIN" ? ""
+      : req.user.branchId ? ` AND e.branch_id = ${req.user.branchId}` : "";
+
     const [salesResult, itemsResult, expensesResult] = await Promise.all([
       pool.query(
         `SELECT COUNT(*)::int AS total_transactions,
-                COALESCE(SUM(total),0)::float AS total_revenue,
-                COALESCE(SUM(discount),0)::float AS total_discount,
-                COALESCE(SUM(tax),0)::float AS total_tax
-         FROM sales WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+                COALESCE(SUM(s.total),0)::float AS total_revenue,
+                COALESCE(SUM(s.discount),0)::float AS total_discount,
+                COALESCE(SUM(s.tax),0)::float AS total_tax
+         FROM sales s WHERE s.created_at BETWEEN $1 AND $2${branchFilter}`, [startDate, endDate]
       ),
       pool.query(
         `SELECT si.product_name, SUM(si.quantity)::int AS qty, SUM(si.line_total)::float AS revenue
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-         WHERE s.created_at BETWEEN $1 AND $2
+         WHERE s.created_at BETWEEN $1 AND $2${branchFilter}
          GROUP BY si.product_name ORDER BY revenue DESC LIMIT 15`, [startDate, endDate]
       ),
       pool.query(
-        `SELECT COALESCE(SUM(amount),0)::float AS total_expenses
-         FROM expenses WHERE created_at BETWEEN $1 AND $2`, [startDate, endDate]
+        `SELECT COALESCE(SUM(e.amount),0)::float AS total_expenses
+         FROM expenses e WHERE e.created_at BETWEEN $1 AND $2${expenseBranchFilter}`, [startDate, endDate]
       )
     ]);
 
@@ -1458,11 +2113,18 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
       </tr>`
     ).join("");
 
+    // Look up branch name for the email header
+    let branchName = "";
+    if (req.user.branchId) {
+      const { rows: bRows } = await pool.query("SELECT name FROM branches WHERE id=$1", [req.user.branchId]);
+      branchName = bRows[0]?.name || "";
+    }
+
     const html = `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
       <div style="background:#16a34a;color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center">
         <h1 style="margin:0;font-size:22px">🛍 RHoSAM Daily Sales Report</h1>
-        <p style="margin:5px 0 0;opacity:0.9">${reportDate}</p>
+        <p style="margin:5px 0 0;opacity:0.9">${reportDate}${branchName ? ` — ${branchName}` : ""}</p>
       </div>
 
       <div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb">
@@ -1502,7 +2164,7 @@ app.post("/api/reports/daily/email", auth, allow("ADMIN", "MANAGER"), async (req
     const { data, error } = await resend.emails.send({
       from: "RHoSAM Reports <onboarding@resend.dev>",
       to: recipientEmail,
-      subject: `RHoSAM Daily Report — ${reportDate} — Revenue: ${fmt(revenue)}`,
+      subject: `RHoSAM Daily Report${branchName ? ` — ${branchName}` : ""} — ${reportDate} — Revenue: ${fmt(revenue)}`,
       html,
     });
 
@@ -1739,7 +2401,7 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
       categoryBreakdown: categoryBreakdown.rows,
       alerts: recentAlerts.rows,
     });
-  } catch (e) { console.error("[EXECUTIVE]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════

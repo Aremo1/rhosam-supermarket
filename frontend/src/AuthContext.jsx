@@ -63,6 +63,7 @@ export function AuthProvider({ children }) {
     user, loading, login, logout, request,
     // Convenience wrappers
     fetchProducts: (q) => request(`/products${q ? `?search=${encodeURIComponent(q)}` : ""}`),
+    checkProductDuplicate: (field, value, excludeId) => request(`/products/check-duplicate?field=${field}&value=${encodeURIComponent(value)}${excludeId ? `&excludeId=${excludeId}` : ""}`),
     createProduct: (data) => request("/products", { method: "POST", body: JSON.stringify(data) }),
     updateProduct: (id, data) => request(`/products/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     deleteProduct: (id) => request(`/products/${id}`, { method: "DELETE" }),
@@ -85,9 +86,10 @@ export function AuthProvider({ children }) {
     disableMfa: (password) => request("/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) }),
     emailMfaBackup: (data) => request("/auth/mfa/email-backup", { method: "POST", body: JSON.stringify(data) }),
     getMfaStatus: () => request("/auth/mfa/status"),
-    fetchDashboard: () => request("/dashboard/stats"),
-    fetchTopProducts: () => request("/dashboard/top-products"),
-    fetchCategorySales: () => request("/dashboard/category-sales"),
+    fetchDashboard: (branchId) => request(`/dashboard/stats${branchId ? `?branchId=${branchId}` : ""}`),
+    fetchTopProducts: (branchId) => request(`/dashboard/top-products${branchId ? `?branchId=${branchId}` : ""}`),
+    fetchCategorySales: (branchId) => request(`/dashboard/category-sales${branchId ? `?branchId=${branchId}` : ""}`),
+    fetchBranchSummary: () => request("/dashboard/branch-summary"),
     fetchSuppliers: () => request("/suppliers"),
     createSupplier: (data) => request("/suppliers", { method: "POST", body: JSON.stringify(data) }),
     updateSupplier: (id, data) => request(`/suppliers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
@@ -109,13 +111,33 @@ export function AuthProvider({ children }) {
     createBranch: (data) => request("/branches", { method: "POST", body: JSON.stringify(data) }),
     updateBranch: (id, data) => request(`/branches/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     deleteBranch: (id) => request(`/branches/${id}`, { method: "DELETE" }),
+    // Inter-branch messaging
+    fetchMessages: (box) => request(`/messages${box ? `?box=${box}` : ""}`),
+    getUnreadCount: () => request("/messages/unread"),
+    sendMessage: (data) => request("/messages", { method: "POST", body: JSON.stringify(data) }),
+    markMessageRead: (id) => request(`/messages/${id}/read`, { method: "PATCH" }),
+    deleteMessage: (id) => request(`/messages/${id}`, { method: "DELETE" }),
+    // Inter-branch stock transfers
+    fetchStockTransfers: (box) => request(`/stock-transfers${box ? `?box=${box}` : ""}`),
+    createStockTransfer: (data) => request("/stock-transfers", { method: "POST", body: JSON.stringify(data) }),
+    updateTransferStatus: (id, data) => request(`/stock-transfers/${id}/status`, { method: "PATCH", body: JSON.stringify(data) }),
     fetchCashDrawers: () => request("/cash-drawer"),
     getActiveDrawer: () => request("/cash-drawer/active"),
     openDrawer: (data) => request("/cash-drawer/open", { method: "POST", body: JSON.stringify(data) }),
     closeDrawer: (data) => request("/cash-drawer/close", { method: "POST", body: JSON.stringify(data) }),
-    fetchDailyReport: (date) => request(`/reports/daily${date ? `?date=${date}` : ""}`),
+    fetchDailyReport: (date, branchId) => {
+      const params = new URLSearchParams();
+      if (date) params.set('date', date);
+      if (branchId) params.set('branchId', branchId);
+      return request(`/reports/daily?${params.toString()}`);
+    },
     emailDailyReport: (data) => request("/reports/daily/email", { method: "POST", body: JSON.stringify(data) }),
-    fetchMonthlyReport: (year) => request(`/reports/monthly?year=${year || new Date().getFullYear()}`),
+    fetchMonthlyReport: (year, branchId) => {
+      const params = new URLSearchParams();
+      params.set('year', year || new Date().getFullYear());
+      if (branchId) params.set('branchId', branchId);
+      return request(`/reports/monthly?${params.toString()}`);
+    },
     fetchProductSales: (params) => request(`/reports/product-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
     fetchLowStockReport: () => request("/reports/low-stock"),
     fetchCashierSales: (params) => request(`/reports/cashier-sales${params ? `?${new URLSearchParams(params)}` : ""}`),
