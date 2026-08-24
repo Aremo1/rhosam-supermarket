@@ -378,7 +378,7 @@ function POSPage() {
     scanTimeoutRef.current = setTimeout(() => setScanFeedback(null), 1500);
   }, [playBeep]);
 
-  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); }, [fetchProducts, fetchCustomers]);
+  useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); }, [fetchProducts, fetchCustomers, user]);
 
   // Auto-focus search on mount and after cart changes
   useEffect(() => { searchRef.current?.focus(); }, [cart, receipt]);
@@ -486,7 +486,7 @@ function POSPage() {
       setReceipt(result);
       setCart([]); setCustomerName("Walk-in Customer"); setCustomerId(null);
       setDiscount(0); setTax(0); setAmountPaid("");
-      fetchProducts().then(setProducts).catch(() => {});
+      fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {});
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
@@ -710,9 +710,9 @@ function ProductsPage() {
   const [form, setForm] = useState(formDefault);
 
   const load = useCallback(async () => {
-    try { setProducts(await fetchProducts(search)); } catch { }
+    try { setProducts(await fetchProducts(search, user?.branchId)); } catch { }
     finally { setLoading(false); }
-  }, [fetchProducts, search]);
+  }, [fetchProducts, search, user]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -862,7 +862,7 @@ function ProductsPage() {
 // INVENTORY (Phase 3)
 // ═══════════════════════════════════════════════════════════════════
 function InventoryPage() {
-  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements } = useAuth();
+  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements, user } = useAuth();
   const [tab, setTab] = useState("stock");
   const [products, setProducts] = useState([]);
   const [lowStock, setLowStock] = useState([]);
@@ -873,11 +873,11 @@ function InventoryPage() {
 
   const load = useCallback(async () => {
     try {
-      const [p, ls, mv] = await Promise.all([fetchProducts(), fetchLowStock(), fetchInventoryMovements()]);
+      const [p, ls, mv] = await Promise.all([fetchProducts(undefined, user?.branchId), fetchLowStock(), fetchInventoryMovements()]);
       setProducts(p); setLowStock(ls); setMovements(mv);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchProducts, fetchLowStock, fetchInventoryMovements]);
+  }, [fetchProducts, fetchLowStock, fetchInventoryMovements, user]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1259,7 +1259,7 @@ function SuppliersPage() {
 // PURCHASE ORDERS (Phase 10)
 // ═══════════════════════════════════════════════════════════════════
 function ProcurementPage() {
-  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts } = useAuth();
+  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts, user } = useAuth();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -1269,11 +1269,11 @@ function ProcurementPage() {
 
   const load = useCallback(async () => {
     try {
-      const [o, s, p] = await Promise.all([fetchPurchaseOrders(), fetchSuppliers(), fetchProducts()]);
+      const [o, s, p] = await Promise.all([fetchPurchaseOrders(), fetchSuppliers(), fetchProducts(undefined, user?.branchId)]);
       setOrders(o); setSuppliers(s); setProducts(p);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchPurchaseOrders, fetchSuppliers, fetchProducts]);
+  }, [fetchPurchaseOrders, fetchSuppliers, fetchProducts, user]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2685,11 +2685,11 @@ function StockTransfersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, b, p] = await Promise.all([fetchStockTransfers(box), fetchBranches(), fetchProducts()]);
+      const [t, b, p] = await Promise.all([fetchStockTransfers(box), fetchBranches(), fetchProducts(undefined, user?.branchId)]);
       setTransfers(t); setBranches(b); setProducts(p);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchStockTransfers, fetchBranches, fetchProducts, box]);
+  }, [fetchStockTransfers, fetchBranches, fetchProducts, box, user]);
 
   useEffect(() => { load(); }, [load]);
 

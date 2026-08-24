@@ -632,7 +632,7 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
     const { rows: userRows } = await pool.query("SELECT name, email, role FROM users WHERE id=$1", [id]);
     if (!userRows[0]) return res.status(404).json({ message: "User not found." });
     const deletedUser = userRows[0];
-    await pool.query("DELETE FROM users WHERE id=$1", [id]);
+    await pool.query("UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id=$1", [id]);
     await audit(pool, req.user.id, "DELETE", "USER", id, { name: deletedUser.name, email: deletedUser.email, role: deletedUser.role }, req);
     res.json({ message: "User deleted." });
   } catch (e) { next(e); }
@@ -671,13 +671,32 @@ app.get("/api/products/check-duplicate", auth, async (req, res, next) => {
 app.get("/api/products", auth, async (q, r, n) => {
   try {
     const search = q.query.search;
-    let sql = "SELECT id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active,created_at FROM products";
-    const params = [];
-    if (search) {
-      sql += " WHERE LOWER(name) LIKE $1 OR barcode LIKE $1 OR LOWER(category) LIKE $1";
-      params.push(`%${String(search).toLowerCase()}%`);
+    const branchId = q.query.branchId ? Number(q.query.branchId) : null;
+    // When a branch is selected, LEFT JOIN branch_inventory for per-branch stock
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.id, p.barcode, p.name, p.category, p.price::float, p.cost_price::float,
+               COALESCE(bi.quantity, 0)::int AS stock, COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+               p.unit, p.image_url, p.description, p.is_active, p.created_at
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1`;
+      params = [branchId];
+      if (search) {
+        sql += " WHERE LOWER(p.name) LIKE $2 OR p.barcode LIKE $2 OR LOWER(p.category) LIKE $2";
+        params.push(`%${String(search).toLowerCase()}%`);
+      }
+    } else {
+      sql = `SELECT p.id, p.barcode, p.name, p.category, p.price::float, p.cost_price::float,
+               p.stock::int AS stock, p.reorder_level::int AS reorder_level,
+               p.unit, p.image_url, p.description, p.is_active, p.created_at
+             FROM products p`;
+      params = [];
+      if (search) {
+        sql += " WHERE LOWER(p.name) LIKE $1 OR p.barcode LIKE $1 OR LOWER(p.category) LIKE $1";
+        params.push(`%${String(search).toLowerCase()}%`);
+      }
     }
-    sql += " ORDER BY name";
+    sql += " ORDER BY p.name";
     r.json((await pool.query(sql, params)).rows);
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
@@ -838,6 +857,13 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
     const qty = Number(quantity);
     const adj = type === "STOCK_OUT" ? -Math.abs(qty) : Math.abs(qty);
     await pool.query("UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2", [adj, id]);
+    // Also update branch_inventory if user is assigned to a branch
+    if (req.user.branchId) {
+      await pool.query(
+        "UPDATE branch_inventory SET quantity = quantity + $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        [adj, req.user.branchId, id]
+      );
+    }
     await pool.query(
       "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,$2,$3,$4,$5,$6)",
       [id, type, adj, `ADJ-${Date.now()}`, req.user.id, notes || ""]
@@ -861,11 +887,24 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
-app.get("/api/products/low-stock", auth, async (_q, r, n) => {
+app.get("/api/products/low-stock", auth, async (req, r, n) => {
   try {
-    r.json((await pool.query(
-      "SELECT id,barcode,name,category,stock,reorder_level,price::float FROM products WHERE stock <= reorder_level ORDER BY stock ASC"
-    )).rows);
+    const branchId = req.user.branchId;
+    if (branchId) {
+      // Branch-aware: show low stock products for this specific branch
+      r.json((await pool.query(
+        `SELECT p.id, p.barcode, p.name, p.category, COALESCE(bi.quantity, 0)::int AS stock,
+                COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level, p.price::float
+         FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) <= COALESCE(bi.reorder_level, p.reorder_level)
+         ORDER BY COALESCE(bi.quantity, 0) ASC`, [branchId]
+      )).rows);
+    } else {
+      r.json((await pool.query(
+        "SELECT id,barcode,name,category,stock,reorder_level,price::float FROM products WHERE stock <= reorder_level AND is_active = TRUE ORDER BY stock ASC"
+      )).rows);
+    }
   } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
 });
 
@@ -923,6 +962,7 @@ app.post("/api/sales", auth, async (req, res, next) => {
     let subtotal = 0;
     const details = [];
 
+    const saleBranchId = req.user.branchId || null;
     for (const x of items) {
       const productId = Number(x.productId);
       const quantity = Number(x.quantity);
@@ -930,11 +970,26 @@ app.post("/api/sales", auth, async (req, res, next) => {
       if (!Number.isInteger(productId) || !Number.isInteger(quantity) || quantity < 1)
         throw Object.assign(new Error("Invalid sale item."), { status: 400 });
 
+      // Check branch_inventory first, fall back to global products.stock
+      let availableStock = null;
+      if (saleBranchId) {
+        const { rows: biRows } = await client.query(
+          "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2 FOR UPDATE",
+          [saleBranchId, productId]
+        );
+        availableStock = biRows[0] ? biRows[0].quantity : null;
+      }
+      // Fall back to global stock if no branch_inventory row exists
       const { rows } = await client.query("SELECT id,name,price::float,stock FROM products WHERE id=$1 FOR UPDATE", [productId]);
       const product = rows[0];
       if (!product) throw Object.assign(new Error("Product not found."), { status: 404 });
-      if (product.stock < quantity)
-        throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}`), { status: 409 });
+      if (availableStock !== null) {
+        if (availableStock < quantity)
+          throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${availableStock}`), { status: 409 });
+      } else {
+        if (product.stock < quantity)
+          throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}`), { status: 409 });
+      }
 
       const lineTotal = Number(product.price) * quantity - itemDiscount;
       subtotal += lineTotal;
@@ -947,8 +1002,6 @@ app.post("/api/sales", auth, async (req, res, next) => {
     const change = Math.max(0, paid - total);
     const receiptNumber = `RHS-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
-    // Use the logged-in user's branch_id for the sale
-    const saleBranchId = req.user.branchId || null;
     const { rows } = await client.query(
       `INSERT INTO sales(receipt_number,customer_name,customer_id,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id,branch_id)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,created_at`,
@@ -961,7 +1014,15 @@ app.post("/api/sales", auth, async (req, res, next) => {
         "INSERT INTO sale_items(sale_id,product_id,product_name,unit_price,quantity,discount,line_total) VALUES($1,$2,$3,$4,$5,$6,$7)",
         [sale.id, item.productId, item.name, item.price, item.quantity, item.discount, item.lineTotal]
       );
+      // Deduct from global stock
       await client.query("UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2", [item.quantity, item.productId]);
+      // Deduct from branch_inventory if branch is assigned
+      if (saleBranchId) {
+        await client.query(
+          "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+          [item.quantity, saleBranchId, item.productId]
+        );
+      }
       await client.query(
         "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id) VALUES($1,'SALE',$2,$3,$4)",
         [item.productId, -item.quantity, receiptNumber, req.user.id]
@@ -1021,6 +1082,13 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
       [saleId, productId, qty, reason || "", refundAmount, req.user.id]
     );
     await client.query("UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2", [qty, productId]);
+    // Restore branch_inventory if user is assigned to a branch
+    if (req.user.branchId) {
+      await client.query(
+        "UPDATE branch_inventory SET quantity = quantity + $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        [qty, req.user.branchId, productId]
+      );
+    }
     await client.query(
       "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'RETURN',$2,$3,$4,$5)",
       [productId, qty, `RET-${saleId}`, req.user.id, reason || ""]
@@ -1060,12 +1128,24 @@ app.get("/api/dashboard/stats", auth, async (req, r, n) => {
       : (req.user.role !== 'ADMIN' && req.user.branchId)
         ? ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = ${req.user.branchId})`
         : '';
-    const lowStockFilter = productFilter; // same logic: if branch-scoped, show only that branch's low-stock products
+    // Build a branch-aware low-stock query
+    let lowStockQuery;
+    const targetBranchId = adminBranchId || req.user.branchId;
+    if (targetBranchId) {
+      lowStockQuery = pool.query(
+        `SELECT COUNT(*)::int AS count FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) <= COALESCE(bi.reorder_level, p.reorder_level)`,
+        [targetBranchId]
+      );
+    } else {
+      lowStockQuery = pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE`);
+    }
     const [totalProducts, totalSales, totalRevenue, lowStock, todaySales, todayRevenue, totalUsers, recentSales] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.is_active = TRUE${productFilter}`),
       pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE 1=1${branchFilter}`),
       pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE 1=1${branchFilter}`),
-      pool.query(`SELECT COUNT(*)::int AS count FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE${lowStockFilter}`),
+      lowStockQuery,
       pool.query(`SELECT COUNT(*)::int AS count FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
       pool.query(`SELECT COALESCE(SUM(s.total),0)::float AS total FROM sales s WHERE s.created_at::date = CURRENT_DATE${branchFilter}`),
       pool.query(`SELECT COUNT(*)::int AS count FROM users u WHERE u.is_active = TRUE${userBranchFilter}`),
@@ -1140,17 +1220,16 @@ app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, 
        GROUP BY b.id, b.name
        ORDER BY total_revenue DESC`
     );
-    // Low stock per branch: products sold at that branch that are below reorder level
+    // Low stock per branch using branch_inventory
     const branchIds = result.rows.map(r => r.id);
     let lowStockMap = {};
     if (branchIds.length) {
       const { rows: stockRows } = await pool.query(
-        `SELECT s.branch_id, COUNT(DISTINCT p.id)::int AS low_stock_count
-         FROM products p
-         JOIN sale_items si ON si.product_id = p.id
-         JOIN sales s ON s.id = si.sale_id
-         WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
-         GROUP BY s.branch_id`
+        `SELECT bi.branch_id, COUNT(DISTINCT p.id)::int AS low_stock_count
+         FROM branch_inventory bi
+         JOIN products p ON p.id = bi.product_id
+         WHERE bi.quantity <= bi.reorder_level AND p.is_active = TRUE
+         GROUP BY bi.branch_id`
       );
       stockRows.forEach(r => { lowStockMap[r.branch_id] = r.low_stock_count; });
     }
@@ -1327,9 +1406,23 @@ app.patch("/api/purchase-orders/:id/status", auth, allow("ADMIN", "MANAGER"), as
     if (status === "RECEIVED") {
       // Auto-receive stock
       const { rows: items } = await client.query("SELECT * FROM purchase_order_items WHERE po_id=$1", [id]);
+      // Determine which branch to add stock to (from PO or user's branch)
+      const po = rows[0];
+      const targetBranchId = po.branch_id || req.user.branchId || null;
       for (const item of items) {
         const qty = Number(item.quantity);
+        // Add to global stock
         await client.query("UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2", [qty, item.product_id]);
+        // Add to branch_inventory if branch is known
+        if (targetBranchId) {
+          await client.query(
+            `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+             VALUES($1, $2, $3, (SELECT reorder_level FROM products WHERE id = $2))
+             ON CONFLICT (branch_id, product_id)
+             DO UPDATE SET quantity = branch_inventory.quantity + $3, updated_at = NOW()`,
+            [targetBranchId, item.product_id, qty]
+          );
+        }
         await client.query(
           "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id) VALUES($1,'PURCHASE',$2,$3,$4)",
           [item.product_id, qty, rows[0].po_number, req.user.id]
@@ -1845,21 +1938,33 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
     // On COMPLETED: deduct stock from source, add stock to destination
     if (status === "COMPLETED") {
       const qty = Number(transfer.quantity);
-      // Deduct from source branch (we can't do per-branch stock since products are shared,
-      // but we track the movement for audit)
+      // Deduct from global stock
       await client.query(
         "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND stock >= $1",
         [qty, transfer.product_id]
+      );
+      // Deduct from source branch_inventory
+      await client.query(
+        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        [qty, transfer.from_branch_id, transfer.product_id]
       );
       // Record inventory movement for source
       await client.query(
         "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'TRANSFER_OUT',$2,$3,$4,$5)",
         [transfer.product_id, -qty, `TRANSFER-${id}`, req.user.id, `Transfer to branch ${transfer.to_branch_id}`]
       );
-      // Add stock to destination
+      // Add stock to global products
       await client.query(
         "UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2",
         [qty, transfer.product_id]
+      );
+      // Add to destination branch_inventory (upsert)
+      await client.query(
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($1, $2, $3, (SELECT reorder_level FROM products WHERE id = $2))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = branch_inventory.quantity + $3, updated_at = NOW()`,
+        [transfer.to_branch_id, transfer.product_id, qty]
       );
       // Record inventory movement for destination
       await client.query(

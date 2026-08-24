@@ -62,7 +62,7 @@ export function AuthProvider({ children }) {
   const value = useMemo(() => ({
     user, loading, login, logout, request,
     // Convenience wrappers
-    fetchProducts: (q) => request(`/products${q ? `?search=${encodeURIComponent(q)}` : ""}`),
+    fetchProducts: (q, branchId) => request(`/products${(q || branchId) ? `?${new URLSearchParams({ ...(q ? { search: q } : {}), ...(branchId ? { branchId } : {}) })}` : ""}`),
     checkProductDuplicate: (field, value, excludeId) => request(`/products/check-duplicate?field=${field}&value=${encodeURIComponent(value)}${excludeId ? `&excludeId=${excludeId}` : ""}`),
     createProduct: (data) => request("/products", { method: "POST", body: JSON.stringify(data) }),
     updateProduct: (id, data) => request(`/products/${id}`, { method: "PUT", body: JSON.stringify(data) }),
