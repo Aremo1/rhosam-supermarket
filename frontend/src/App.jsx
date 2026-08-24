@@ -281,6 +281,36 @@ function DashboardPage() {
         </div>
       )}
 
+      {/* Sales by Branch — Horizontal Bar Chart (Admin only, when viewing all branches) */}
+      {isAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (() => {
+        const maxRevenue = Math.max(...branchSummary.branches.map(b => b.total_revenue || 1));
+        const branchColors = ['#16a34a', '#0ea5e9', '#8b5cf6', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#84cc16'];
+        return (
+          <div className="panel">
+            <h2>📊 Sales Revenue by Branch</h2>
+            <div style={{ display: 'grid', gap: 14 }}>
+              {branchSummary.branches.map((b, i) => {
+                const pct = maxRevenue > 0 ? ((b.total_revenue || 0) / maxRevenue) * 100 : 0;
+                const color = branchColors[i % branchColors.length];
+                return (
+                  <div key={b.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 120px', gap: 12, alignItems: 'center', cursor: 'pointer' }}
+                    onClick={() => setSelectedBranch(String(b.id))}>
+                    <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+                    <div style={{ height: 28, background: 'var(--border)', borderRadius: 14, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${Math.max(pct, 2)}%`, background: color, borderRadius: 14, transition: 'width 0.5s', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+                        {pct > 15 && <span style={{ color: '#fff', fontSize: '0.75rem', fontWeight: 700 }}>{Math.round(pct)}%</span>}
+                      </div>
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text)' }}>{fmt(b.total_revenue)}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <p style={{ marginTop: 12, fontSize: '0.8rem', color: 'var(--muted)' }}>💡 Click a branch to filter the dashboard to that branch.</p>
+          </div>
+        );
+      })()}
+
       {/* Sales Trend Chart (CSS bars) */}
       <div className="panel">
         <h2>Sales Trend (Last 30 Days)</h2>
@@ -301,7 +331,7 @@ function DashboardPage() {
 
       <div className="grid-2">
         <div className="panel">
-          <h2>Top Products (30 Days)</h2>
+          <h2>Top Products (30 Days){selectedBranch && selectedBranchName ? ` — ${selectedBranchName}` : ''}</h2>
           <table><thead><tr><th>Product</th><th>Qty Sold</th><th>Revenue</th></tr></thead>
             <tbody>{topProducts.map((p, i) => (
               <tr key={i}><td>{p.product_name}</td><td>{p.total_qty}</td><td>{fmt(p.total_revenue)}</td></tr>
@@ -311,7 +341,7 @@ function DashboardPage() {
         </div>
 
         <div className="panel">
-          <h2>Sales by Category</h2>
+          <h2>Sales by Category{selectedBranch && selectedBranchName ? ` — ${selectedBranchName}` : ''}</h2>
           <div className="category-chart">
             {catSales.map((c, i) => {
               const maxRev = Math.max(...catSales.map(x => x.revenue || 1));
