@@ -2059,6 +2059,30 @@ app.delete("/api/categories/:name", auth, allow("ADMIN"), async (req, res, next)
   } catch (e) { next(e); }
 });
 
+app.put("/api/categories/:name", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const oldName = decodeURIComponent(req.params.name);
+    const { name: newName } = req.body;
+    if (!newName || !String(newName).trim()) return res.status(400).json({ message: "New category name required." });
+    const trimmed = String(newName).trim();
+    if (trimmed.toLowerCase() === oldName.toLowerCase())
+      return res.json({ message: `Category name unchanged.` });
+    // Check if new name already exists
+    const { rows: existing } = await pool.query(
+      "SELECT DISTINCT category FROM products WHERE LOWER(category) = LOWER($1)", [trimmed]
+    );
+    if (existing.length > 0)
+      return res.status(409).json({ message: `Category "${existing[0].category}" already exists.` });
+    // Rename all products in this category
+    const { rowCount } = await pool.query(
+      "UPDATE products SET category = $1, updated_at = NOW() WHERE LOWER(category) = LOWER($2)",
+      [trimmed, oldName]
+    );
+    await audit(pool, req.user.id, "UPDATE", "CATEGORY", null, { from: oldName, to: trimmed, affected: rowCount }, req);
+    res.json({ message: `Category renamed from "${oldName}" to "${trimmed}" (${rowCount} product(s) updated).`, affected: rowCount });
+  } catch (e) { next(e); }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 15: COMPREHENSIVE REPORTS
 // ═══════════════════════════════════════════════════════════════════

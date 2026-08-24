@@ -2500,17 +2500,26 @@ function CashDrawerPage() {
 // CATEGORIES
 // ═══════════════════════════════════════════════════════════════════
 function CategoriesPage() {
-  const { fetchCategories, createCategory, deleteCategory, user } = useAuth();
+  const { fetchCategories, createCategory, updateCategory, deleteCategory, user } = useAuth();
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newCat, setNewCat] = useState("");
+  const [editCat, setEditCat] = useState(null);
+  const [editName, setEditName] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
+  const isAdminOnly = user?.role === "ADMIN";
 
   const load = useCallback(async () => {
-    try { setCategories(await fetchCategories()); } catch { }
+    try {
+      const result = await fetchCategories();
+      setCategories(Array.isArray(result) ? result : []);
+    } catch (err) {
+      setCategories([]);
+      if (err.message && !err.message.includes('404')) setError(err.message);
+    }
     finally { setLoading(false); }
   }, [fetchCategories]);
 
@@ -2524,6 +2533,19 @@ function CategoriesPage() {
       await createCategory({ name: newCat.trim() });
       setSuccess(`Category "${newCat.trim()}" created!`);
       setNewCat("");
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleEdit(e) {
+    e.preventDefault();
+    if (!editName.trim() || !editCat) return;
+    setBusy(true); setError(""); setSuccess("");
+    try {
+      await updateCategory(editCat, { name: editName.trim() });
+      setSuccess(`Category renamed to "${editName.trim()}"!`);
+      setEditCat(null); setEditName("");
       load();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
@@ -2572,23 +2594,38 @@ function CategoriesPage() {
               <thead>
                 <tr>
                   <th>Category Name</th>
-                  <th>Products</th>
                   {isAdmin && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {categories.map(cat => (
                   <tr key={cat}>
-                    <td><strong style={{ fontSize: '0.95rem' }}>{cat}</strong></td>
-                    <td><span className="status-badge info">{cat}</span></td>
-                    {isAdmin && (
-                      <td>
-                        <button
-                          className="btn-sm danger"
-                          onClick={() => handleDelete(cat)}
-                          disabled={busy}
-                        >Delete</button>
+                    {editCat === cat ? (
+                      <td colSpan={isAdmin ? 2 : 1}>
+                        <form onSubmit={handleEdit} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <input
+                            type="text"
+                            value={editName}
+                            onChange={e => setEditName(e.target.value)}
+                            className="search-input"
+                            style={{ flex: 1, maxWidth: 300, padding: '6px 10px', fontSize: '0.88rem' }}
+                            required
+                            autoFocus
+                          />
+                          <button type="submit" className="btn primary" style={{ padding: '6px 14px', fontSize: '0.82rem' }} disabled={busy || !editName.trim()}>Save</button>
+                          <button type="button" className="btn secondary" style={{ padding: '6px 14px', fontSize: '0.82rem' }} onClick={() => { setEditCat(null); setEditName(""); }}>Cancel</button>
+                        </form>
                       </td>
+                    ) : (
+                      <>
+                        <td><strong style={{ fontSize: '0.95rem' }}>{cat}</strong></td>
+                        {isAdmin && (
+                          <td style={{ display: 'flex', gap: 6 }}>
+                            {isAdminOnly && <button className="btn-sm" onClick={() => { setEditCat(cat); setEditName(cat); setError(""); setSuccess(""); }}>Edit</button>}
+                            <button className="btn-sm danger" onClick={() => handleDelete(cat)} disabled={busy}>Delete</button>
+                          </td>
+                        )}
+                      </>
                     )}
                   </tr>
                 ))}

@@ -108,6 +108,7 @@ export function AuthProvider({ children }) {
     fetchLoginHistory: (params) => request(`/audit-logs/login-history${params ? `?${new URLSearchParams(params)}` : ""}`),
     fetchCategories: () => request("/categories"),
     createCategory: (data) => request("/categories", { method: "POST", body: JSON.stringify(data) }),
+    updateCategory: (oldName, data) => request(`/categories/${encodeURIComponent(oldName)}`, { method: "PUT", body: JSON.stringify(data) }),
     deleteCategory: (name) => request(`/categories/${encodeURIComponent(name)}`, { method: "DELETE" }),
     fetchBranches: () => request("/branches"),
     createBranch: (data) => request("/branches", { method: "POST", body: JSON.stringify(data) }),
