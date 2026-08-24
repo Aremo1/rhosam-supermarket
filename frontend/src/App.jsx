@@ -293,7 +293,7 @@ function DashboardPage() {
                 const pct = maxRevenue > 0 ? ((b.total_revenue || 0) / maxRevenue) * 100 : 0;
                 const color = branchColors[i % branchColors.length];
                 return (
-                  <div key={b.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 120px', gap: 12, alignItems: 'center', cursor: 'pointer' }}
+                  <div key={b.id} className="branch-chart-row"
                     onClick={() => setSelectedBranch(String(b.id))}>
                     <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
                     <div style={{ height: 28, background: 'var(--border)', borderRadius: 14, overflow: 'hidden' }}>
