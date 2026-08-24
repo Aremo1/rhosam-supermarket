@@ -1088,8 +1088,9 @@ function SalesPage() {
               <p><strong>Date:</strong> {new Date(detail.created_at).toLocaleString()}</p>
               <p><strong>Customer:</strong> {detail.customer_name}</p>
               <p><strong>Cashier:</strong> {detail.cashier_name}</p>
+              {detail.branch_name && <p><strong>Branch:</strong> {detail.branch_name}</p>}
               <p><strong>Payment:</strong> {detail.payment_method}</p>
-              <table><thead><tr><th>Product</th><th>Price</th><th>Qty</th><th>Discount</th><th>Total</th><th></th></tr></thead>
+              <table><thead><tr><th>Product</th><th>Price</th><th>Qty</th><th>Discount</th><th>Total</th>{["ADMIN", "MANAGER"].includes(user?.role) && <th>Action</th>}</tr></thead>
                 <tbody>{detail.items?.map((item, i) => (
                   <tr key={i}>
                     <td>{item.product_name}</td>

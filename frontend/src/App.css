@@ -312,6 +312,11 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .dark .modal { background: #1e293b; border-color: #334155; }
 .dark .modal h2 { color: #f1f5f9; }
 .modal.wide { max-width: 720px; }
+.sale-detail table { width: 100%; margin: 12px 0; }
+.sale-detail table th { font-size: 0.75rem; }
+.sale-detail table td { font-size: 0.85rem; padding: 8px 10px; }
+.sale-totals { text-align: right; }
+.sale-totals p { margin: 4px 0; font-size: 0.9rem; }
 .modal h2 { margin-bottom: 18px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 
@@ -678,6 +683,11 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
   .auth-card { padding: 28px 24px; gap: 14px; }
   .auth-card h1 { font-size: 1.2rem; }
   .modal { padding: 22px; margin: 12px; max-width: 100%; }
+  .modal.wide { max-width: 100%; }
+  .sale-detail table { font-size: 0.78rem; }
+  .sale-detail table th { padding: 6px 6px; font-size: 0.68rem; }
+  .sale-detail table td { padding: 6px 6px; font-size: 0.78rem; }
+  .sale-detail p { font-size: 0.85rem; }
   .receipt { padding: 24px; max-width: 100%; }
   .receipt h2 { font-size: 1.05rem; }
   .receipt-actions { flex-direction: column; }
@@ -724,6 +734,16 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
   .panel-header { flex-direction: column; align-items: stretch; }
   .filters { flex-direction: column; align-items: stretch; }
   .filters label { min-width: auto; }
+  .modal { margin: 8px; padding: 18px; }
+  .modal.wide { max-width: 100%; padding: 14px; }
+  .modal h2 { font-size: 0.95rem; }
+  .sale-detail table { display: block; overflow-x: auto; }
+  .sale-detail table th, .sale-detail table td { padding: 5px 6px; font-size: 0.72rem; white-space: nowrap; }
+  .sale-detail p { font-size: 0.82rem; }
+  .po-items { gap: 6px; }
+  .po-item-row select, .po-item-row input { padding: 6px 8px; font-size: 0.8rem; }
+  .receipt-actions { flex-direction: column; }
+  .receipt-actions button { width: 100%; }
 }
 
 /* ── Branch Revenue Chart ────────────────────────────────────── */
