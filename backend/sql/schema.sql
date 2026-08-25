@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS mfa_backup_codes (
 
 CREATE INDEX IF NOT EXISTS idx_mfa_backup_codes_user ON mfa_backup_codes(user_id);
 
+-- ── Phase 14: Multi-Branch (must be before sales, cash_drawer, etc.) ──
+CREATE TABLE IF NOT EXISTS branches (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  address TEXT,
+  phone VARCHAR(30),
+  manager_id INTEGER REFERENCES users(id),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── Phase 3: Products & Inventory ────────────────────────────────
 CREATE TABLE IF NOT EXISTS products (
   id SERIAL PRIMARY KEY,
@@ -207,28 +218,17 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Phase 14: Multi-Branch ───────────────────────────────────────
-CREATE TABLE IF NOT EXISTS branches (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  address TEXT,
-  phone VARCHAR(30),
-  manager_id INTEGER REFERENCES users(id),
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 -- ── Payment Gateway Verification ────────────────────────────────
 CREATE TABLE IF NOT EXISTS payment_verifications (
   id SERIAL PRIMARY KEY,
   sale_id BIGINT NOT NULL REFERENCES sales(id),
-  gateway VARCHAR(30) NOT NULL DEFAULT 'INTERNAL',  -- PAYSTACK, FLUTTERWAVE, INTERNAL
-  reference VARCHAR(100) NOT NULL,                   -- Gateway transaction reference
-  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',     -- PENDING, VERIFIED, FAILED
+  gateway VARCHAR(30) NOT NULL DEFAULT 'INTERNAL',
+  reference VARCHAR(100) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
   amount NUMERIC(14,2) NOT NULL,
   card_last4 VARCHAR(4),
   auth_code VARCHAR(50),
-  gateway_response JSONB DEFAULT '{}',               -- Raw gateway response
+  gateway_response JSONB DEFAULT '{}',
   verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

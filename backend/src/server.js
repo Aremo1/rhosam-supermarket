@@ -4714,5 +4714,17 @@ const { runMigrations } = require("./run-migrations");
 app.listen(port, async () => {
   console.log(`RHoSAM API running on http://localhost:${port}`);
   try { await runMigrations(pool); } catch (e) { console.error("[MIGRATIONS] Error:", e.message); }
+  // Bootstrap default admin if no users exist
+  try {
+    const { rows } = await pool.query("SELECT COUNT(*)::int AS cnt FROM users");
+    if (rows[0].cnt === 0) {
+      const hash = await bcrypt.hash("admin123", saltRounds);
+      await pool.query(
+        "INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",
+        ["Admin", "admin@rhosam.com", hash, "ADMIN"]
+      );
+      console.log("[BOOTSTRAP] ✅ Created default admin: admin@rhosam.com / admin123 — CHANGE THIS PASSWORD!");
+    }
+  } catch (e) { console.error("[BOOTSTRAP] Error:", e.message); }
   await loadPaymentSettings();
 });
