@@ -41,8 +41,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - rhosam-net
 
-  # ── Frontend SPA ────────────────────────────────────────────────
+  # ── Frontend SPA (proxies /api to backend) ──────────────────────
   frontend:
     build:
       context: ./frontend
@@ -51,11 +53,17 @@ services:
     ports:
       - "3001:3001"
     environment:
-      VITE_API_URL: http://backend:5000/api
+      API_TARGET: http://backend:5000
       PORT: 3001
       NODE_ENV: production
     depends_on:
       - backend
+    networks:
+      - rhosam-net
+
+networks:
+  rhosam-net:
+    driver: bridge
 
 volumes:
   pgdata:
