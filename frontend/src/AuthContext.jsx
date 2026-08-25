@@ -1,7 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 const AuthContext = createContext(null);
-const API = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/$/, "");
+function resolveApiUrl(val) {
+  if (!val) return "http://localhost:5000/api";
+  // If it's just a hostname (no protocol), prepend https:// and append /api
+  if (!/^https?:\/\//.test(val)) return `https://${val}/api`;
+  return val;
+}
+const API = resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/$/, "");
 
 async function parse(r) {
   const t = await r.text();

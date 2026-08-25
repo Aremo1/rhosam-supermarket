@@ -6,6 +6,12 @@ import { generateReceiptPDF } from "./generateReceiptPDF";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import "./App.css";
 
+function resolveApiUrl(val) {
+  if (!val) return "http://localhost:5000/api";
+  if (!/^https?:\/\//.test(val)) return `https://${val}/api`;
+  return val;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
@@ -787,7 +793,7 @@ function POSPage() {
         <div className="product-grid">
           {filtered.map(p => (
             <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
-              {p.image_url && <img src={`${(import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "")}${p.image_url}`} alt={p.name} className="product-card-image" />}
+              {p.image_url && <img src={`${resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/api$/, "")}${p.image_url}`} alt={p.name} className="product-card-image" />}
               <div className="product-card-body">
                 <div className="product-card-header">
                   <strong>{p.name}</strong>
@@ -912,7 +918,7 @@ function ProductsPage() {
   const [dupWarnings, setDupWarnings] = useState({ barcode: null, name: null });
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
 
-  const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "");
+  const API_BASE = resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/api$/, "");
   const formDefault = { barcode: "", name: "", category: "", price: "", costPrice: "", stock: "", reorderLevel: "5", unit: "PCS", description: "", expiryDate: "", batchNumber: "" };
   const [form, setForm] = useState(formDefault);
 

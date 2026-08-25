@@ -49,7 +49,7 @@ services:
       - key: VITE_API_URL
         fromService:
           name: rhosam-backend
-          property: url
+          property: host
           type: web
 
 # ── Database ──────────────────────────────────────────────────────

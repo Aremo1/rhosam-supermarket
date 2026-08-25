@@ -6,7 +6,8 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, "dist");
 const PORT = process.env.PORT || 3001;
-const API_TARGET = process.env.API_TARGET || process.env.VITE_API_URL || "http://localhost:5000";
+const RAW_TARGET = process.env.API_TARGET || process.env.VITE_API_URL || "http://localhost:5000";
+const API_TARGET = /^https?:\/\//.test(RAW_TARGET) ? RAW_TARGET : `https://${RAW_TARGET}`;
 const API_BASE = API_TARGET.replace(/\/api$/, "");
 
 const MIME = {
