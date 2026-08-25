@@ -334,7 +334,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .filters input, .filters select { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; }
 
 /* ── POS ────────────────────────────────────────────────────── */
-.pos-layout { display: grid; grid-template-columns: 1fr 440px; gap: 20px; height: calc(100vh - 130px); position: relative; }
+.pos-layout { display: grid; grid-template-columns: 1fr 560px; gap: 20px; height: calc(100vh - 130px); position: relative; }
 .pos-products { overflow-y: auto; }
 .pos-search-wrapper { position: relative; margin-bottom: 14px; }
 .pos-search { width: 100%; padding: 14px 18px; border: 2px solid var(--border); border-radius: var(--radius); font-size: 1.05rem; font-weight: 500; background: var(--card-bg, white); color: var(--text); outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
@@ -469,14 +469,14 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 }
 .dark .pos-cart { background: #1e293b; }
 .pos-cart h2 { font-size: 1.05rem; margin: 0; font-weight: 700; color: var(--text); }
-.cart-list { display: grid; gap: 8px; max-height: 420px; overflow-y: auto; }
+.cart-list { display: grid; gap: 8px; max-height: 520px; overflow-y: auto; }
 .empty-cart {
   border: 2px dashed var(--border); border-radius: var(--radius);
   padding: 32px; text-align: center; color: var(--muted); font-weight: 500;
 }
 .cart-item {
   display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--card-bg, white);
 }
 .dark .cart-item { background: #0f172a; }
@@ -726,7 +726,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
   .category-tag { font-size: 0.62rem; padding: 2px 6px; }
   .stock-tag { font-size: 0.68rem; }
   .pos-cart { padding: 12px; }
-  .cart-list { max-height: 250px; }
+  .cart-list { max-height: 350px; }
   .empty-cart { padding: 20px; font-size: 0.85rem; }
   .checkout-btn { padding: 12px; font-size: 0.9rem; }
   .error-msg { font-size: 0.82rem; padding: 8px 12px; }
