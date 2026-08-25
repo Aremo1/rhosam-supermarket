@@ -1871,13 +1871,18 @@ function SuppliersPage() {
 // PURCHASE ORDERS (Phase 10)
 // ═══════════════════════════════════════════════════════════════════
 function ProcurementPage() {
-  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts, user } = useAuth();
+  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts, getPOPayments, createPOPayment, user } = useAuth();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [suppliers, setSuppliers] = useState([]);
   const [products, setProducts] = useState([]);
   const [form, setForm] = useState({ supplierId: "", notes: "", expectedDate: "", items: [{ productId: "", quantity: "", unitCost: "" }] });
+  // Payment modal
+  const [payModal, setPayModal] = useState(null);
+  const [payForm, setPayForm] = useState({ amount: "", paymentMethod: "Cash", reference: "", notes: "" });
+  const [payDetail, setPayDetail] = useState(null);
+  const [payMsg, setPayMsg] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -1915,6 +1920,34 @@ function ProcurementPage() {
     try { await updatePOStatus(id, status); load(); } catch (err) { alert(err.message); }
   }
 
+  async function openPayModal(po) {
+    setPayMsg("");
+    setPayForm({ amount: "", paymentMethod: "Cash", reference: "", notes: "" });
+    try {
+      const detail = await getPOPayments(po.id);
+      setPayDetail(detail);
+    } catch { setPayDetail({ ...po, total_paid: 0, balance: Number(po.total), payments: [] }); }
+    setPayModal(po);
+  }
+
+  async function handleMakePayment(e) {
+    e.preventDefault(); setPayMsg("");
+    try {
+      await createPOPayment(payModal.id, {
+        amount: Number(payForm.amount),
+        paymentMethod: payForm.paymentMethod,
+        reference: payForm.reference || undefined,
+        notes: payForm.notes || undefined,
+      });
+      setPayMsg("Payment recorded!");
+      const detail = await getPOPayments(payModal.id);
+      setPayDetail(detail);
+      setPayForm({ amount: "", paymentMethod: "Cash", reference: "", notes: "" });
+      load();
+    } catch (err) { setPayMsg("Error: " + err.message); }
+  }
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
   const statusColor = { PENDING: "warning", APPROVED: "info", RECEIVED: "active", CANCELLED: "inactive" };
 
   return (
@@ -1972,12 +2005,90 @@ function ProcurementPage() {
                 <td>
                   {o.status === "PENDING" && <button className="btn-sm" onClick={() => handleStatus(o.id, "APPROVED")}>Approve</button>}
                   {o.status === "APPROVED" && <button className="btn-sm" onClick={() => handleStatus(o.id, "RECEIVED")}>Receive</button>}
+                  {Number(o.total) > 0 && <button className="btn-sm" style={{ background: 'var(--primary-dark)', color: '#fff' }} onClick={() => openPayModal(o)}>₦ Pay</button>}
                   {(o.status === "PENDING" || o.status === "APPROVED") && <button className="btn-sm danger" onClick={() => handleStatus(o.id, "CANCELLED")}>Cancel</button>}
                 </td>
               </tr>
             ))}</tbody>
           </table>
           {!orders.length && <p className="muted">No purchase orders yet.</p>}
+        </div>
+      )}
+
+      {/* ── PAYMENT MODAL ── */}
+      {payModal && (
+        <div className="modal-overlay" onClick={() => setPayModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+            <h2>💰 Pay Supplier — {payDetail?.supplier_name || payModal.supplier_name}</h2>
+            <p className="muted" style={{ marginBottom: 12 }}>PO #{payDetail?.po_number || payModal.po_number}</p>
+
+            {/* Payment summary */}
+            {payDetail && (
+              <div className="summary-grid" style={{ marginBottom: 16 }}>
+                <div className="summary-card"><span>PO Total</span><strong>{fmt(payDetail.total)}</strong></div>
+                <div className="summary-card"><span>Paid</span><strong style={{ color: 'var(--success)' }}>{fmt(payDetail.total_paid)}</strong></div>
+                <div className="summary-card"><span>Balance</span><strong style={{ color: payDetail.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>{fmt(payDetail.balance)}</strong></div>
+              </div>
+            )}
+
+            {/* Previous payments */}
+            {payDetail?.payments?.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <h3 style={{ fontSize: '0.9rem', marginBottom: 8 }}>Previous Payments</h3>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Reference</th><th>By</th></tr></thead>
+                    <tbody>{payDetail.payments.map(p => (
+                      <tr key={p.id}>
+                        <td>{new Date(p.created_at).toLocaleDateString()}</td>
+                        <td><strong>{fmt(p.amount)}</strong></td>
+                        <td>{p.payment_method}</td>
+                        <td>{p.reference || '—'}</td>
+                        <td>{p.paid_by_name || '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Make payment form */}
+            {payDetail && payDetail.balance > 0 && (
+              <form onSubmit={handleMakePayment} className="form-grid">
+                <label>Amount (₦)
+                  <input type="number" min="1" step="0.01" max={payDetail.balance} value={payForm.amount} onChange={e => setPayForm({ ...payForm, amount: e.target.value })} required placeholder={`Max: ${fmt(payDetail.balance)}`} style={{ fontSize: '1.1rem', fontWeight: 700 }} />
+                </label>
+                <label>Payment Method
+                  <select value={payForm.paymentMethod} onChange={e => setPayForm({ ...payForm, paymentMethod: e.target.value })}>
+                    <option value="Cash">💵 Cash</option>
+                    <option value="Transfer">🏦 Bank Transfer</option>
+                    <option value="POS">💳 POS</option>
+                    <option value="Card">💳 Card</option>
+                    <option value="Bank">🏦 Bank</option>
+                  </select>
+                </label>
+                <label>Reference (optional)
+                  <input value={payForm.reference} onChange={e => setPayForm({ ...payForm, reference: e.target.value })} placeholder="e.g. Transfer ref, receipt #" />
+                </label>
+                <label>Notes (optional)
+                  <input value={payForm.notes} onChange={e => setPayForm({ ...payForm, notes: e.target.value })} placeholder="Payment notes" />
+                </label>
+                {payMsg && <div className={payMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ gridColumn: '1 / -1' }}>{payMsg}</div>}
+                <div className="form-actions">
+                  <button type="button" className="btn secondary" onClick={() => setPayModal(null)}>Close</button>
+                  <button type="submit" className="btn primary">💰 Record Payment</button>
+                </div>
+              </form>
+            )}
+
+            {payDetail && payDetail.balance <= 0 && (
+              <div style={{ textAlign: 'center', padding: 16, background: '#dcfce7', borderRadius: 8, color: '#166534', fontWeight: 600 }}>
+                ✅ This purchase order is fully paid!
+                {payMsg && <div className="muted" style={{ marginTop: 8 }}>{payMsg}</div>}
+                <button className="btn secondary" style={{ marginTop: 12 }} onClick={() => setPayModal(null)}>Close</button>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -1983,6 +1983,76 @@ app.patch("/api/purchase-orders/:id/status", auth, allow("ADMIN", "MANAGER"), as
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// PURCHASE ORDER PAYMENTS — vendor/supplier reconciliation
+app.get("/api/purchase-orders/:id/payments", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows: po } = await pool.query(
+      `SELECT po.*, s.name AS supplier_name,
+              COALESCE(pay.total_paid, 0) AS total_paid
+       FROM purchase_orders po
+       JOIN suppliers s ON s.id = po.supplier_id
+       LEFT JOIN (
+         SELECT po_id, SUM(amount) AS total_paid
+         FROM purchase_order_payments GROUP BY po_id
+       ) pay ON pay.po_id = po.id
+       WHERE po.id = $1`, [id]
+    );
+    if (!po[0]) return res.status(404).json({ message: "Purchase order not found." });
+    const { rows: payments } = await pool.query(
+      `SELECT pp.*, u.name AS paid_by_name
+       FROM purchase_order_payments pp
+       LEFT JOIN users u ON u.id = pp.paid_by
+       WHERE pp.po_id = $1 ORDER BY pp.created_at DESC`, [id]
+    );
+    const order = po[0];
+    res.json({
+      ...order,
+      total_paid: Number(order.total_paid),
+      balance: Number(order.total) - Number(order.total_paid),
+      payments,
+    });
+  } catch (e) { next(e); }
+});
+
+app.post("/api/purchase-orders/:id/payments", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const { amount, paymentMethod, reference, notes } = req.body;
+    if (!amount || Number(amount) <= 0)
+      return res.status(400).json({ message: "Valid payment amount required." });
+
+    await client.query("BEGIN");
+    const { rows: po } = await client.query(
+      `SELECT po.*, COALESCE(pay.total_paid, 0) AS total_paid
+       FROM purchase_orders po
+       LEFT JOIN (SELECT po_id, SUM(amount) AS total_paid FROM purchase_order_payments GROUP BY po_id) pay ON pay.po_id = po.id
+       WHERE po.id = $1`, [id]
+    );
+    if (!po[0]) { await client.query("ROLLBACK").catch(() => {}); client.release(); return res.status(404).json({ message: "Purchase order not found." }); }
+
+    const totalPaid = Number(po[0].total_paid);
+    const poTotal = Number(po[0].total);
+    const payAmount = Number(amount);
+
+    if (totalPaid + payAmount > poTotal + 0.01)
+      return res.status(400).json({ message: `Payment of \u20A6${payAmount.toLocaleString()} exceeds outstanding balance of \u20A6${(poTotal - totalPaid).toLocaleString()}.` });
+
+    const { rows } = await client.query(
+      `INSERT INTO purchase_order_payments(po_id, amount, payment_method, reference, notes, paid_by)
+       VALUES($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id, payAmount, paymentMethod || "Cash", reference || null, notes || null, req.user.id]
+    );
+
+    await audit(client, req.user.id, "CREATE", "PO_PAYMENT", id, { amount: payAmount, paymentMethod, reference }, req);
+    await client.query("COMMIT");
+    res.status(201).json({ payment: rows[0], message: "Payment recorded." });
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); next(e); }
+  finally { client.release(); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // PHASE 12: CUSTOMERS / CRM
 // ═══════════════════════════════════════════════════════════════════
 

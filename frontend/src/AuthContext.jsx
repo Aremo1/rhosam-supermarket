@@ -109,6 +109,8 @@ export function AuthProvider({ children }) {
     getPurchaseOrder: (id) => request(`/purchase-orders/${id}`),
     createPurchaseOrder: (data) => request("/purchase-orders", { method: "POST", body: JSON.stringify(data) }),
     updatePOStatus: (id, status) => request(`/purchase-orders/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
+    getPOPayments: (id) => request(`/purchase-orders/${id}/payments`),
+    createPOPayment: (id, data) => request(`/purchase-orders/${id}/payments`, { method: "POST", body: JSON.stringify(data) }),
     fetchCustomers: () => request("/customers"),
     createCustomer: (data) => request("/customers", { method: "POST", body: JSON.stringify(data) }),
     updateCustomer: (id, data) => request(`/customers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
