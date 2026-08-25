@@ -47,9 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_stock_alerts_read ON stock_alerts(is_read, is_dis
 CREATE INDEX IF NOT EXISTS idx_stock_alerts_branch ON stock_alerts(branch_id);
 CREATE INDEX IF NOT EXISTS idx_stock_alerts_created ON stock_alerts(created_at DESC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_rules_name_unique ON alert_rules(name);
+
 -- Insert default alert rules
 INSERT INTO alert_rules (name, alert_type, threshold_value, threshold_unit, notify_dashboard) VALUES
   ('Default Low Stock', 'LOW_STOCK', 5, 'UNITS', TRUE),
   ('Default Expiring Soon', 'EXPIRING_SOON', 30, 'DAYS', TRUE),
   ('Out of Stock Alert', 'OUT_OF_STOCK', 0, 'UNITS', TRUE)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (name) DO NOTHING;

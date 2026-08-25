@@ -1243,12 +1243,12 @@ app.get("/api/inventory/valuation", auth, async (req, res, next) => {
     // Compute summary
     const totalProducts = rows.length;
     const totalUnits = rows.reduce((s, r) => s + r.stock, 0);
-    const totalValue = rows.reduce((s, r) => s + (r.total_value || 0), 0);
+    const totalValue = rows.reduce((s, r) => s + Number(r.total_value || 0), 0);
     const byCategory = {};
     rows.forEach(r => {
       if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
       byCategory[r.category].units += r.stock;
-      byCategory[r.category].value += r.total_value || 0;
+      byCategory[r.category].value += Number(r.total_value || 0);
     });
     res.json({ products: rows, summary: { totalProducts, totalUnits, totalValue, byCategory } });
   } catch (e) { next(e); }
