@@ -1,6 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════
 // RHoSAM Supermarket — System Integration Testing (SIT)
 // Tests cross-module integration: POS ↔ Inventory ↔ Sales ↔ Audit
+// Covers: Products, POS, Returns, Stock Adjustments, Purchase Orders,
+//         Customer Loyalty, Cash Drawer, RBAC, Expiry Tracking,
+//         Inventory Audits, Stock Alerts, Notifications, Valuation
 // Idempotent — safe to run multiple times
 // ═══════════════════════════════════════════════════════════════════
 const API = process.env.TEST_API_URL || "http://localhost:5000/api";
@@ -311,6 +314,242 @@ await test("Verify login is logged in audit trail", async () => {
   const loginLog = data.find(l => l.action === "LOGIN" && l.email === `sit-cashier-${TS}@test.com`);
   return loginLog ? true : "LOGIN audit entry not found for cashier";
 });
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 8: Expiry Tracking
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 8: Expiry Tracking");
+
+const SIT_EXPIRY_BARCODE = `SIT-EXP-${TS}`;
+
+await test("Create product with expiry date in the past", async () => {
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const { status, data } = await req("POST", "/products", {
+    barcode: SIT_EXPIRY_BARCODE, name: `SIT Expiry Product ${TS}`, category: "SIT Testing",
+    price: 500, costPrice: 300, stock: 5, reorderLevel: 1,
+    expiryDate: yesterday, batchNumber: `BATCH-EXP-${TS}`
+  }, TOKEN);
+  if (status === 201 && data.id) { CREATED.sitExpiryProductId = data.id; return true; }
+  return `got ${status}: ${JSON.stringify(data)}`;
+});
+
+await test("Verify product has expiry_date and batch_number saved", async () => {
+  const { status, data } = await req("GET", "/products", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const p = data.find(x => x.id === CREATED.sitExpiryProductId);
+  if (!p) return "product not found";
+  if (!p.expiry_date) return "expiry_date not saved";
+  if (p.batch_number !== `BATCH-EXP-${TS}`) return `batch_number is ${p.batch_number}`;
+  return true;
+});
+
+await test("Query expiring products — should find our expired product", async () => {
+  const { status, data } = await req("GET", "/inventory/expiring?days=90", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const found = data.products?.find(p => p.id === CREATED.sitExpiryProductId);
+  return found ? true : "expired product not found in expiring list";
+});
+
+await test("Record expiry event for the product", async () => {
+  const { status } = await req("POST", "/inventory/expiry-event", {
+    productId: CREATED.sitExpiryProductId, eventType: "DISPOSED", quantity: 2, notes: "SIT test disposal"
+  }, TOKEN);
+  return status === 201 ? true : `got ${status}`;
+});
+
+await test("Verify expiry event was logged", async () => {
+  const { status, data } = await req("GET", "/inventory/expiry-events", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const event = data.find(e => e.product_id === CREATED.sitExpiryProductId && e.event_type === "DISPOSED");
+  return event ? true : "DISPOSED event not found in expiry events";
+});
+
+await test("Verify stock decreased after expiry disposal (from 5 to 3)", async () => {
+  const { status, data } = await req("GET", "/products", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const p = data.find(x => x.id === CREATED.sitExpiryProductId);
+  return p?.stock === 3 ? true : `stock is ${p?.stock}, expected 3`;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 9: Valuation Snapshots & Trend
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 9: Valuation Snapshots & Trend");
+
+await test("Capture valuation snapshot", async () => {
+  const { status, data } = await req("POST", "/inventory/snapshot", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.snapshot?.id) return "missing snapshot id";
+  if (data.summary?.totalValue === undefined) return "missing totalValue";
+  CREATED.snapshotId = data.snapshot.id;
+  return true;
+});
+
+await test("Verify snapshot appears in trend history", async () => {
+  const { status, data } = await req("GET", "/inventory/trend?days=7", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data.trend)) return "missing trend array";
+  const found = data.trend.find(t => t.id === CREATED.snapshotId);
+  return found ? true : "snapshot not found in trend";
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 10: Inventory Audit Cycle
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 10: Inventory Audit Cycle");
+
+await test("Create inventory audit", async () => {
+  const { status, data } = await req("POST", "/inventory-audits", {
+    title: `SIT Audit ${TS}`, notes: "SIT integration test audit"
+  }, TOKEN);
+  if (status === 201 && data.id) { CREATED.sitAuditId = data.id; return true; }
+  return `got ${status}: ${JSON.stringify(data)}`;
+});
+
+await test("Verify audit has items populated from products", async () => {
+  const { status, data } = await req("GET", `/inventory-audits/${CREATED.sitAuditId}`, null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.items || data.items.length === 0) return "audit has no items";
+  CREATED.sitAuditItemId = data.items[0].id;
+  return true;
+});
+
+await test("Start the audit", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.sitAuditId}/status`, { status: "IN_PROGRESS" }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("Record a count for an audit item", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.sitAuditId}/items/${CREATED.sitAuditItemId}`, {
+    countedQuantity: 10, notes: "SIT test count"
+  }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("Complete the audit", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.sitAuditId}/status`, { status: "COMPLETED" }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("Verify audit shows completion summary", async () => {
+  const { status, data } = await req("GET", `/inventory-audits/${CREATED.sitAuditId}`, null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (data.status !== "COMPLETED") return `status is ${data.status}`;
+  if (data.total_items === undefined) return "missing total_items";
+  return true;
+});
+
+await test("List audits shows our completed audit", async () => {
+  const { status, data } = await req("GET", "/inventory-audits", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const found = data.find(a => a.id === CREATED.sitAuditId);
+  return found ? true : "audit not found in list";
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 11: Stock Alerts
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 11: Stock Alerts");
+
+await test("List alert rules", async () => {
+  const { status, data } = await req("GET", "/alert-rules", null, TOKEN);
+  if (status === 200 && Array.isArray(data)) { CREATED.sitRuleId = data[0]?.id; return true; }
+  return `got ${status}`;
+});
+
+await test("Scan for stock alerts", async () => {
+  const { status, data } = await req("POST", "/stock-alerts/scan", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  return typeof data.generated === "number" ? true : `missing generated count`;
+});
+
+await test("Get active stock alerts", async () => {
+  const { status, data } = await req("GET", "/stock-alerts", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data.alerts)) return "missing alerts array";
+  if (typeof data.total !== "number") return "missing total count";
+  return true;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 12: Notification Preferences & Log
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 12: Notification Preferences & Log");
+
+await test("Get notification preferences", async () => {
+  const { status, data } = await req("GET", "/notifications/preferences", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data)) return "not an array";
+  // Should have at least LOW_STOCK default
+  const hasLowStock = data.some(p => p.event_type === "LOW_STOCK");
+  return hasLowStock ? true : "missing LOW_STOCK preference";
+});
+
+await test("Update notification preferences", async () => {
+  const { status } = await req("PUT", "/notifications/preferences", {
+    preferences: [
+      { event_type: "LOW_STOCK", email_enabled: true, sms_enabled: false },
+      { event_type: "OUT_OF_STOCK", email_enabled: false, sms_enabled: false }
+    ]
+  }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("Get notification log", async () => {
+  const { status, data } = await req("GET", "/notifications/log?limit=10", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data)) return "not an array";
+  return true;
+});
+
+await test("Get notification service status", async () => {
+  const { status, data } = await req("GET", "/notifications/status", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (typeof data.emailConfigured !== "boolean") return "missing emailConfigured";
+  if (typeof data.smsConfigured !== "boolean") return "missing smsConfigured";
+  return true;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATION TEST 13: CSV Export
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔗 Integration 13: CSV Export");
+
+await test("Export inventory as CSV", async () => {
+  const token = TOKEN;
+  const r = await fetch(`${API}/inventory/export`, { headers: { Authorization: `Bearer ${token}` } });
+  if (r.status !== 200) return `got ${r.status}`;
+  const text = await r.text();
+  const lines = text.split("\n").filter(l => l.trim());
+  if (lines.length < 2) return "CSV has no data rows";
+  const headers = lines[0].split(",");
+  if (!headers.includes("barcode") || !headers.includes("name")) return "missing expected CSV headers";
+  return true;
+});
+
+// ── CLEANUP ────────────────────────────────────────────────────
+console.log("\n🧹 Cleanup");
+
+// Helper: deactivate user by email
+async function cleanupUser(email, label) {
+  const { data: users } = await req("GET", "/users", null, TOKEN);
+  const user = Array.isArray(users) ? users.find(u => u.email === email) : null;
+  if (!user) { console.log(`  ⏭️  ${label} — not found`); return; }
+  const { status } = await req("DELETE", `/users/${user.id}`, null, TOKEN);
+  console.log(status === 200 ? `  ✅ ${label}` : `  ⚠️  ${label} got ${status}`);
+}
+
+await cleanupUser(`sit-cashier-${TS}@test.com`, "Deactivate SIT cashier");
+
+// Delete test products (soft-delete by deactivating)
+if (CREATED.sitProductId) {
+  const { status } = await req("PUT", `/products/${CREATED.sitProductId}`, { isActive: false }, TOKEN);
+  console.log(status === 200 ? "  ✅ Deactivated SIT product" : `  ⚠️  Product deactivation got ${status}`);
+}
+if (CREATED.sitExpiryProductId) {
+  const { status } = await req("PUT", `/products/${CREATED.sitExpiryProductId}`, { isActive: false }, TOKEN);
+  console.log(status === 200 ? "  ✅ Deactivated SIT expiry product" : `  ⚠️  Expiry product deactivation got ${status}`);
+}
 
 // ── SUMMARY ────────────────────────────────────────────────────
 console.log("\n══════════════════════════════════════════════════════════════");

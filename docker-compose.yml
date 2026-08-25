@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════════════════════
+# RHoSAM Supermarket POS — Docker Compose
+# Start the entire stack with: docker-compose up -d
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  # ── PostgreSQL Database ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rhosam
+      POSTGRES_PASSWORD: rhosam_secret
+      POSTGRES_DB: rhosam_supermarket
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./backend/sql/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rhosam -d rhosam_supermarket"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://rhosam:rhosam_secret@db:5432/rhosam_supermarket
+      JWT_SECRET: change-this-to-a-long-random-string-in-production
+      FRONTEND_URL: "*"
+      PORT: 5000
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── Frontend SPA ────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      VITE_API_URL: http://backend:5000/api
+      PORT: 3001
+      NODE_ENV: production
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

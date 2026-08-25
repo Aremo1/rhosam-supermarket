@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#f3f6f9"/>
+  <rect width="720" height="48" fill="#16a34a"/>
+  <text x="20" y="30" font-family="Arial" font-size="18" font-weight="700" fill="white">RHoSAM Supermarket POS</text>
+  <rect x="20" y="60" width="680" height="80" rx="8" fill="white" stroke="#e5e7eb"/>
+  <text x="40" y="105" font-family="Arial" font-size="14" fill="#6b7280">Point of Sale — Quick Checkout</text>
+  <rect x="20" y="160" width="330" height="200" rx="8" fill="white" stroke="#e5e7eb"/>
+  <rect x="370" y="160" width="330" height="200" rx="8" fill="white" stroke="#e5e7eb"/>
+  <text x="360" y="1250" font-family="Arial" font-size="12" fill="#9ca3af" text-anchor="middle">RHoSAM Supermarket POS — PWA Screenshot</text>
+</svg>

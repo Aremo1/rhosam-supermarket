@@ -1,0 +1,8 @@
+node_modules
+.env
+.env.*
+*.log
+uploads
+test-*.js
+create-admin-fixed.js
+verify-password.js

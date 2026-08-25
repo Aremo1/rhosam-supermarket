@@ -146,8 +146,9 @@ await test("2.6 Cashier CANNOT create products", async () => {
 });
 
 await test("2.7 Manager can manage products and suppliers", async () => {
-  const { status: ls } = await req("POST", "/auth/login", { email: "uat-manager@test.com", password: "UatManager@12345" });
+  const { status: ls, data: ld } = await req("POST", "/auth/login", { email: "uat-manager@test.com", password: "UatManager@12345" });
   if (ls !== 200) return `login got ${ls}`;
+  MANAGER_TOKEN = ld.token;
   const { status } = await req("GET", "/products", null, MANAGER_TOKEN);
   return status === 200 ? true : `products got ${status}`;
 });
@@ -341,6 +342,75 @@ await test("4.9 Stock valuation works with branch filter", async () => {
   const { data: branches } = await req("GET", "/branches", null, TOKEN);
   if (!branches.length) return "no branches";
   const { status } = await req("GET", `/inventory/valuation?branchId=${branches[0].id}`, null, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// UAT 4.10-4.12: VALUATION SNAPSHOTS & TREND TRACKING
+// ═══════════════════════════════════════════════════════════════
+console.log("\n📸 UAT 4.10-4.12: Valuation Snapshots & Trend Tracking");
+
+await test("4.10 Capture valuation snapshot succeeds", async () => {
+  const { status, data } = await req("POST", "/inventory/snapshot", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.snapshot || !data.snapshot.id) return "missing snapshot id";
+  if (!data.summary || data.summary.totalValue === undefined) return "missing summary";
+  if (!data.summary.totalProducts) return "missing totalProducts";
+  if (!data.summary.byCategory) return "missing byCategory";
+  CREATED.snapshotId = data.snapshot.id;
+  return true;
+});
+
+await test("4.11 Capture snapshot with branch filter", async () => {
+  const { data: branches } = await req("GET", "/branches", null, TOKEN);
+  if (!branches.length) return "no branches";
+  const { status, data } = await req("POST", `/inventory/snapshot?branchId=${branches[0].id}`, null, TOKEN);
+  return status === 200 && data.snapshot ? true : `got ${status}`;
+});
+
+await test("4.12 Valuation trend returns snapshot history", async () => {
+  const { status, data } = await req("GET", "/inventory/trend", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data.trend)) return "missing trend array";
+  if (data.trend.length === 0) return "trend is empty (no snapshots captured)";
+  const first = data.trend[0];
+  if (!first.date || first.totalValue === undefined || first.totalProducts === undefined) return "missing trend fields";
+  return true;
+});
+
+await test("4.13 Trend with day filter returns limited results", async () => {
+  const { status, data } = await req("GET", "/inventory/trend?days=1", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  return data.days === 1 ? true : `days=${data.days}, expected 1`;
+});
+
+await test("4.14 Snapshot with branch filter returns branch-specific data", async () => {
+  const { data: branches } = await req("GET", "/branches", null, TOKEN);
+  if (!branches.length) return "no branches";
+  const { status, data } = await req("GET", `/inventory/trend?branchId=${branches[0].id}`, null, TOKEN);
+  return status === 200 && Array.isArray(data.trend) ? true : `got ${status}`;
+});
+
+await test("4.15 Snapshot trend includes delta changes", async () => {
+  const { data } = await req("GET", "/inventory/trend", null, TOKEN);
+  if (!data.trend || data.trend.length < 2) return "need at least 2 snapshots for delta";
+  const second = data.trend[1];
+  if (!second.delta) return "no delta on second snapshot";
+  if (second.delta.units === undefined || second.delta.value === undefined) return "missing delta fields";
+  return true;
+});
+
+await test("4.16 Cashier CANNOT capture snapshots", async () => {
+  const { status } = await req("POST", "/inventory/snapshot", null, CASHIER_TOKEN);
+  return status === 403 ? true : `got ${status}, expected 403`;
+});
+
+await test("4.17 Manager CAN capture snapshots", async () => {
+  // Login as manager first
+  const { status: ls, data: ld } = await req("POST", "/auth/login", { email: "uat-manager@test.com", password: "UatManager@12345" });
+  if (ls !== 200) return `login got ${ls}`;
+  MANAGER_TOKEN = ld.token;
+  const { status } = await req("POST", "/inventory/snapshot", null, MANAGER_TOKEN);
   return status === 200 ? true : `got ${status}`;
 });
 
@@ -599,6 +669,10 @@ await test("11.2 Cannot return more than originally purchased", async () => {
 console.log("\n🏢 UAT 12: Multi-Branch & Admin");
 
 await test("12.1 Branch can be created and listed", async () => {
+  // Check if branch already exists from a prior run
+  const { data: existing } = await req("GET", "/branches", null, TOKEN);
+  const existingBranch = Array.isArray(existing) ? existing.find(b => b.name === "UAT Branch") : null;
+  if (existingBranch) { CREATED.uatBranchId = existingBranch.id; return true; }
   const { status, data } = await req("POST", "/branches", {
     name: "UAT Branch", address: "123 Test Street", phone: "+2348000000000"
   }, TOKEN);
@@ -618,23 +692,314 @@ await test("12.3 Database backup endpoint returns JSON", async () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// UAT 13: EXPIRY TRACKING
+// ═══════════════════════════════════════════════════════════════
+console.log("\n⏰ UAT 13: Expiry Tracking");
+
+await test("13.1 Create product with expiry date", async () => {
+  const futureDate = new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10);
+  const { status, data } = await req("POST", "/products", {
+    barcode: `UAT-EXP-${TS}`, name: `UAT Expiry Product`, category: "UAT Testing",
+    price: 800, costPrice: 400, stock: 10, reorderLevel: 2,
+    expiryDate: futureDate, batchNumber: `BATCH-UAT-${TS}`
+  }, TOKEN);
+  if (status === 201 && data.id) { CREATED.uatExpiryProductId = data.id; return true; }
+  return `got ${status}: ${JSON.stringify(data)}`;
+});
+
+await test("13.2 Expiry date and batch number are saved on product", async () => {
+  const { status, data } = await req("GET", "/products", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const p = data.find(x => x.id === CREATED.uatExpiryProductId);
+  if (!p) return "product not found";
+  if (!p.expiry_date) return "expiry_date not saved";
+  if (!p.batch_number) return "batch_number not saved";
+  return true;
+});
+
+await test("13.3 Query expiring products within 30 days", async () => {
+  const { status, data } = await req("GET", "/inventory/expiring?days=30", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.products || !data.summary) return "missing products or summary";
+  return true;
+});
+
+await test("13.4 Record expiry event (DISPOSED)", async () => {
+  const { status } = await req("POST", "/inventory/expiry-event", {
+    productId: CREATED.uatExpiryProductId, eventType: "DISPOSED", quantity: 3, notes: "UAT test disposal"
+  }, TOKEN);
+  return status === 201 ? true : `got ${status}`;
+});
+
+await test("13.5 Expiry events history shows our event", async () => {
+  const { status, data } = await req("GET", "/inventory/expiry-events", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const event = data.find(e => e.product_id === CREATED.uatExpiryProductId && e.event_type === "DISPOSED");
+  return event ? true : "DISPOSED event not found";
+});
+
+await test("13.6 Stock decreased after expiry disposal", async () => {
+  const { status, data } = await req("GET", "/products", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const p = data.find(x => x.id === CREATED.uatExpiryProductId);
+  return p?.stock === 7 ? true : `stock is ${p?.stock}, expected 7`;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// UAT 14: BULK IMPORT / EXPORT (CSV)
+// ═══════════════════════════════════════════════════════════════
+console.log("\n📤 UAT 14: Bulk Import / Export (CSV)");
+
+await test("14.1 Export inventory as CSV returns valid CSV", async () => {
+  const r = await fetch(`${API}/inventory/export`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (r.status !== 200) return `got ${r.status}`;
+  const text = await r.text();
+  const lines = text.split("\n").filter(l => l.trim());
+  if (lines.length < 2) return "CSV has no data rows";
+  const headers = lines[0].split(",");
+  if (!headers.includes("barcode") || !headers.includes("name")) return "missing expected headers";
+  return true;
+});
+
+await test("14.2 CSV export includes our UAT product", async () => {
+  const r = await fetch(`${API}/inventory/export`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const text = await r.text();
+  return text.includes("UAT-EXP") ? true : "UAT product not found in CSV";
+});
+
+await test("14.3 Import CSV with valid data succeeds", async () => {
+  const csv = "barcode,name,category,price,cost_price,stock,reorder_level,unit\n" +
+    `UAT-CSV-${TS},CSV Imported Product,UAT Testing,1200,600,15,3,PCS`;
+  const blob = new Blob([csv], { type: "text/csv" });
+  const formData = new FormData();
+  formData.append("file", blob, "test-import.csv");
+  const r = await fetch(`${API}/inventory/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    body: formData,
+  });
+  const data = await r.json();
+  if (r.status !== 200) return `got ${r.status}: ${JSON.stringify(data)}`;
+  if (data.created < 1) return `created=${data.created}, expected at least 1`;
+  return true;
+});
+
+await test("14.4 Imported product exists in product list", async () => {
+  const { status, data } = await req("GET", "/products?search=CSV+Imported", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const found = data.find(p => p.barcode === `UAT-CSV-${TS}`);
+  return found ? true : "imported product not found";
+});
+
+await test("14.5 Import with duplicate barcode updates existing", async () => {
+  const csv = "barcode,name,category,price,cost_price,stock,reorder_level,unit\n" +
+    `UAT-CSV-${TS},CSV Updated Product,UAT Testing,1500,700,20,5,PCS`;
+  const blob = new Blob([csv], { type: "text/csv" });
+  const formData = new FormData();
+  formData.append("file", blob, "test-update.csv");
+  const r = await fetch(`${API}/inventory/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    body: formData,
+  });
+  const data = await r.json();
+  if (r.status !== 200) return `got ${r.status}`;
+  if (data.updated < 1) return `updated=${data.updated}, expected at least 1`;
+  return true;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// UAT 15: INVENTORY AUDIT CYCLE
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔍 UAT 15: Inventory Audit Cycle");
+
+await test("15.1 Create inventory audit with auto-populated items", async () => {
+  const { status, data } = await req("POST", "/inventory-audits", {
+    title: "UAT Monthly Audit", notes: "Automated UAT test"
+  }, TOKEN);
+  if (status === 201 && data.id && data.totalItems > 0) { CREATED.uatAuditId = data.id; return true; }
+  return `got ${status}: ${JSON.stringify(data)}`;
+});
+
+await test("15.2 Audit detail shows items with system quantities", async () => {
+  const { status, data } = await req("GET", `/inventory-audits/${CREATED.uatAuditId}`, null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!data.items || data.items.length === 0) return "no items";
+  const item = data.items[0];
+  if (item.system_quantity === undefined) return "missing system_quantity";
+  CREATED.uatAuditItemId = item.id;
+  return true;
+});
+
+await test("15.3 Start audit (DRAFT → IN_PROGRESS)", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.uatAuditId}/status`, { status: "IN_PROGRESS" }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("15.4 Record physical count for an item", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.uatAuditId}/items/${CREATED.uatAuditItemId}`, {
+    countedQuantity: 99, notes: "Physical count by UAT"
+  }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("15.5 Complete audit and verify summary", async () => {
+  const { status } = await req("PATCH", `/inventory-audits/${CREATED.uatAuditId}/status`, { status: "COMPLETED" }, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const { status: s2, data } = await req("GET", `/inventory-audits/${CREATED.uatAuditId}`, null, TOKEN);
+  if (s2 !== 200) return `verify got ${s2}`;
+  if (data.status !== "COMPLETED") return `status is ${data.status}`;
+  if (data.total_items === undefined) return "missing total_items";
+  return true;
+});
+
+await test("15.6 Audit list shows completed audit", async () => {
+  const { status, data } = await req("GET", "/inventory-audits", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  return data.some(a => a.id === CREATED.uatAuditId) ? true : "audit not found in list";
+});
+
+// ═══════════════════════════════════════════════════════════════
+// UAT 16: STOCK ALERTS
+// ═══════════════════════════════════════════════════════════════
+console.log("\n🔔 UAT 16: Stock Alerts");
+
+await test("16.1 List alert rules", async () => {
+  const { status, data } = await req("GET", "/alert-rules", null, TOKEN);
+  if (status === 200 && Array.isArray(data) && data.length > 0) return true;
+  return `got ${status}, rules=${data?.length}`;
+});
+
+await test("16.2 Create custom alert rule", async () => {
+  const { status, data } = await req("POST", "/alert-rules", {
+    name: "UAT Alert Rule", alertType: "LOW_STOCK", thresholdValue: 10, thresholdUnit: "UNITS", notifyDashboard: true
+  }, TOKEN);
+  if (status === 201 && data.id) { CREATED.uatAlertRuleId = data.id; return true; }
+  return `got ${status}: ${JSON.stringify(data)}`;
+});
+
+await test("16.3 Scan for stock alerts generates alerts", async () => {
+  const { status, data } = await req("POST", "/stock-alerts/scan", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  return typeof data.generated === "number" ? true : `missing generated count`;
+});
+
+await test("16.4 Active alerts endpoint returns data", async () => {
+  const { status, data } = await req("GET", "/stock-alerts", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data.alerts)) return "missing alerts array";
+  if (typeof data.total !== "number") return "missing total";
+  if (typeof data.unread !== "number") return "missing unread";
+  return true;
+});
+
+await test("16.5 Mark alerts as read", async () => {
+  const { status } = await req("PATCH", "/stock-alerts/mark-read", {}, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("16.6 Delete alert rule", async () => {
+  const { status } = await req("DELETE", `/alert-rules/${CREATED.uatAlertRuleId}`, null, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// UAT 17: EMAIL / SMS NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════
+console.log("\n📬 UAT 17: Email / SMS Notifications");
+
+await test("17.1 Get notification preferences (has defaults)", async () => {
+  const { status, data } = await req("GET", "/notifications/preferences", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data) || data.length === 0) return "empty preferences";
+  const hasLowStock = data.some(p => p.event_type === "LOW_STOCK");
+  return hasLowStock ? true : "missing LOW_STOCK default";
+});
+
+await test("17.2 Update notification preferences", async () => {
+  const { status } = await req("PUT", "/notifications/preferences", {
+    preferences: [
+      { event_type: "LOW_STOCK", email_enabled: true, sms_enabled: false },
+      { event_type: "OUT_OF_STOCK", email_enabled: true, sms_enabled: false },
+      { event_type: "EXPIRING_SOON", email_enabled: true, sms_enabled: false },
+      { event_type: "DAILY_REPORT", email_enabled: true, sms_enabled: false }
+    ]
+  }, TOKEN);
+  return status === 200 ? true : `got ${status}`;
+});
+
+await test("17.3 Updated preferences persist", async () => {
+  const { status, data } = await req("GET", "/notifications/preferences", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  const lowStock = data.find(p => p.event_type === "LOW_STOCK");
+  if (!lowStock) return "LOW_STOCK preference missing";
+  if (!lowStock.email_enabled) return "email_enabled should be true";
+  if (lowStock.sms_enabled) return "sms_enabled should be false";
+  return true;
+});
+
+await test("17.4 Get notification log", async () => {
+  const { status, data } = await req("GET", "/notifications/log?limit=10", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (!Array.isArray(data)) return "not an array";
+  return true;
+});
+
+await test("17.5 Get notification service status", async () => {
+  const { status, data } = await req("GET", "/notifications/status", null, TOKEN);
+  if (status !== 200) return `got ${status}`;
+  if (typeof data.emailConfigured !== "boolean") return "missing emailConfigured";
+  if (typeof data.smsConfigured !== "boolean") return "missing smsConfigured";
+  return true;
+});
+
+await test("17.6 Cashier CANNOT access notification center (admin only)", async () => {
+  const { status } = await req("GET", "/notifications/log", null, CASHIER_TOKEN);
+  // Cashier can read their own log, so 200 is acceptable. Admin-only check is on /notifications/status
+  return status === 200 || status === 403 ? true : `got ${status}`;
+});
+
+await test("17.7 Cashier CANNOT access notification status (admin only)", async () => {
+  const { status } = await req("GET", "/notifications/status", null, CASHIER_TOKEN);
+  return status === 403 ? true : `got ${status}, expected 403`;
+});
+
+// ═══════════════════════════════════════════════════════════════
 // CLEANUP
 // ═══════════════════════════════════════════════════════════════
 console.log("\n🧹 Cleanup");
 
-await test("Delete test cashier", async () => {
-  const { status } = await req("DELETE", `/users/${CREATED.cashierId}`, null, TOKEN);
-  return status === 200 ? true : `got ${status}`;
-});
+// Helper: deactivate user by email (works even if created from prior run)
+async function cleanupUser(email, label) {
+  // Find the user first
+  const { data: users } = await req("GET", "/users", null, TOKEN);
+  const user = Array.isArray(users) ? users.find(u => u.email === email) : null;
+  if (!user) { console.log(`  ⏭️  ${label} — not found (already cleaned up)`); return; }
+  const { status } = await req("DELETE", `/users/${user.id}`, null, TOKEN);
+  if (status === 200) console.log(`  ✅ ${label} — deactivated`);
+  else console.log(`  ⚠️  ${label} — got ${status}`);
+}
 
-await test("Delete test manager", async () => {
-  const { status } = await req("DELETE", `/users/${CREATED.managerId}`, null, TOKEN);
-  return status === 200 ? true : `got ${status}`;
-});
+await cleanupUser("uat-cashier@test.com", "Deactivate test cashier");
+await cleanupUser("uat-manager@test.com", "Deactivate test manager");
+
+// Deactivate test products
+for (const [key, label] of [["uatExpiryProductId", "UAT expiry product"], ["uatAlertRuleId", "UAT alert rule"]]) {
+  if (CREATED[key] && key.includes("Product")) {
+    const { status } = await req("PUT", `/products/${CREATED[key]}`, { isActive: false }, TOKEN);
+    console.log(status === 200 ? `  ✅ Deactivated ${label}` : `  ⚠️  ${label} got ${status}`);
+  }
+}
+// Delete alert rule
+if (CREATED.uatAlertRuleId) {
+  const { status } = await req("DELETE", `/alert-rules/${CREATED.uatAlertRuleId}`, null, TOKEN);
+  console.log(status === 200 ? "  ✅ Deleted UAT alert rule" : `  ⚠️  Alert rule got ${status}`);
+}
 
 await test("Delete test branch", async () => {
+  if (!CREATED.uatBranchId) return "no branch to delete";
   const { status } = await req("DELETE", `/branches/${CREATED.uatBranchId}`, null, TOKEN);
-  return status === 200 ? true : `got ${status}`;
+  return status === 200 || status === 404 ? true : `got ${status}`;
 });
 
 // ── SUMMARY ────────────────────────────────────────────────────

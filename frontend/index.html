@@ -25,13 +25,38 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      // Register Service Worker
+      // Register Service Worker with update handling
       if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => {
-          navigator.serviceWorker.register("/sw.js").then(
-            (reg) => console.log("SW registered:", reg.scope),
-            (err) => console.log("SW registration failed:", err)
-          );
+        window.addEventListener("load", async () => {
+          try {
+            const reg = await navigator.serviceWorker.register("/sw.js");
+            console.log("[PWA] SW registered:", reg.scope);
+
+            // Check for updates periodically
+            reg.addEventListener("updatefound", () => {
+              const newWorker = reg.installing;
+              console.log("[PWA] New SW installing...");
+              newWorker.addEventListener("statechange", () => {
+                if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+                  // New content available — notify user
+                  if (window.confirm("New version available! Reload to update?")) {
+                    newWorker.postMessage({ type: "SKIP_WAITING" });
+                    window.location.reload();
+                  }
+                }
+              });
+            });
+
+            // Listen for sync complete messages
+            navigator.serviceWorker.addEventListener("message", (event) => {
+              if (event.data?.type === "SYNC_COMPLETE") {
+                console.log("[PWA] Background sync complete");
+                window.dispatchEvent(new CustomEvent("sw-sync-complete"));
+              }
+            });
+          } catch (err) {
+            console.log("[PWA] SW registration failed:", err);
+          }
         });
       }
     </script>

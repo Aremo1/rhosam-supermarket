@@ -1,6 +1,6 @@
 # 🛍️ RHoSAM Supermarket POS — Deployment Guide
 
-How to set up and run the system on any PC.
+How to set up and run the system on any PC or deploy to the cloud.
 
 ---
 
@@ -30,9 +30,20 @@ createdb rhosam_supermarket
 # Apply the schema
 psql -d rhosam_supermarket -f backend/sql/schema.sql
 
-# (Optional) Apply migrations for latest features
+# (Optional) Seed sample products
+psql -d rhosam_supermarket -f backend/sql/seed.sql
+
+# Apply migrations for latest features
+psql -d rhosam_supermarket -f backend/sql/migration-product-expiry.sql
+psql -d rhosam_supermarket -f backend/sql/migration-branch-scoping.sql
+psql -d rhosam_supermarket -f backend/sql/migration-branch-inventory.sql
+psql -d rhosam_supermarket -f backend/sql/migration-branch-comm.sql
+psql -d rhosam_supermarket -f backend/sql/migration-valuation-snapshots.sql
+psql -d rhosam_supermarket -f backend/sql/migration-inventory-audit.sql
+psql -d rhosam_supermarket -f backend/sql/migration-notifications.sql
+psql -d rhosam_supermarket -f backend/sql/migration-stock-alerts.sql
 psql -d rhosam_supermarket -f backend/sql/migration-payment-and-audit.sql
-psql -d rhosam_supermarket -f backend/sql/migration-auth-features.sql
+psql -d rhosam_supermarket -f backend/sql/migration-map-sales-to-head-office.sql
 ```
 
 ### Step 3: Configure Environment Variables
@@ -93,280 +104,132 @@ Log in with the admin credentials you created.
 
 ---
 
-## Option 2: Cloud Deployment (Production)
-
-### Render (Free Tier)
-
-1. **Push to GitHub:**
-   ```bash
-   git add .
-   git commit -m "Initial deploy"
-   git push origin main
-   ```
-
-2. **Go to [render.com](https://render.com)** and sign up
-
-3. **Create Blueprint:**
-   - Click "New" → "Blueprint"
-   - Connect your GitHub repo
-   - Select the `RHOSAM-SUPERMARKET` folder
-   - Render auto-detects `render.yaml` and creates:
-     - `rhosam-backend` (Node.js web service)
-     - `rhosam-frontend` (Node.js web service)
-     - `rhosam-db` (PostgreSQL database)
-
-4. **Set Environment Variables:**
-   - `DATABASE_URL` — auto-set from the database
-   - `JWT_SECRET` — click "Generate"
-   - `FRONTEND_URL` — set to `*` (allows all origins)
-
-5. **Deploy:**
-   - Click "Create Blueprint"
-   - Wait 2-3 minutes for build to complete
-
-6. **Create Admin User:**
-   ```bash
-   # SSH into the backend service or use Render Shell
-   ADMIN_EMAIL=admin@yourdomain.com \
-   ADMIN_PASSWORD=YourSecure@Pass123 \
-   ADMIN_NAME="Admin" \
-   node src/create-admin.js
-   ```
-
-7. **Open your app** at the Render URL (e.g., `https://rhosam-frontend.onrender.com`)
-
-### Vercel + Supabase (Alternative)
-
-**Backend → Supabase:**
-1. Create a Supabase project at https://supabase.com
-2. Run the schema in the SQL Editor
-3. Copy the connection string
-
-**Frontend → Vercel:**
-1. Connect GitHub repo at https://vercel.com
-2. Set `VITE_API_URL` to your backend URL
-3. Deploy
-
----
-
-## Option 3: Docker (One Command)
+## Option 2: Docker (One Command — Recommended for Production)
 
 ### Prerequisites
 
-- [Docker](https://docker.com) installed
+- [Docker](https://docker.com) installed (includes Docker Compose)
 
 ### Quick Start
 
 ```bash
 cd RHOSAM-SUPERMARKET
 
-# Build and start everything
+# Build and start everything (PostgreSQL + Backend + Frontend)
 docker-compose up -d
 
-# Create admin user
+# Check all services are running
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+```
+
+The app will be available at:
+- **Frontend:** http://localhost:3001
+- **Backend API:** http://localhost:5000/api
+
+### Create Admin User (First Time Only)
+
+```bash
 docker-compose exec backend node src/create-admin.js
 ```
 
-### Docker Compose File
+Follow the prompts to set name, email, and password.
 
-Create `docker-compose.yml` in the project root:
+### Common Docker Commands
 
-```yaml
-version: '3.8'
+```bash
+# Stop all services
+docker-compose down
 
-services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: rhosam
-      POSTGRES_PASSWORD: rhosam_secret
-      POSTGRES_DB: rhosam_supermarket
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+# Stop and remove all data (fresh start)
+docker-compose down -v
 
-  backend:
-    build: ./backend
-    ports:
-      - "5000:5000"
-    environment:
-      DATABASE_URL: postgresql://rhosam:rhosam_secret@db:5432/rhosam_supermarket
-      JWT_SECRET: change-this-to-a-random-string
-      FRONTEND_URL: http://localhost:5173
-      PORT: 5000
-    depends_on:
-      - db
+# Rebuild after code changes
+docker-compose up -d --build
 
-  frontend:
-    build: ./frontend
-    ports:
-      - "5173:5173"
-    environment:
-      VITE_API_URL: http://localhost:5000/api
+# View backend logs
+docker-compose logs -f backend
 
-volumes:
-  pgdata:
-```
+# Open a shell in the backend container
+docker-compose exec backend sh
 
-Create `backend/Dockerfile`:
-
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --production
-COPY . .
-EXPOSE 5000
-CMD ["node", "src/server.js"]
-```
-
-Create `frontend/Dockerfile`:
-
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-RUN npm install -g serve
-EXPOSE 5173
-CMD ["serve", "-s", "dist", "-l", "5173"]
+# Connect to the database
+docker-compose exec db psql -U rhosam -d rhosam_supermarket
 ```
 
 ---
 
-## Quick Reference: Useful Commands
+## Option 3: Render (Free Tier Cloud Deployment)
 
-### Backend
-
-```bash
-cd backend
-
-# Start development server
-npm run dev
-
-# Create admin user
-npm run create-admin
-
-# Run all tests
-node test-sit.js     # System Integration Tests (34 tests)
-node test-uat.js     # User Acceptance Tests (55 tests)
-node test-all-endpoints.js  # Endpoint tests (70+ tests)
-
-# Check syntax
-node -c src/server.js
-```
-
-### Frontend
+### Step 1: Push to GitHub
 
 ```bash
-cd frontend
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
-
-# Preview production build
-npm run preview
+git add .
+git commit -m "Deploy RHoSAM"
+git push origin main
 ```
 
-### Database
+### Step 2: Create Blueprint on Render
+
+1. Go to [render.com](https://render.com) and sign up
+2. Click **"New"** → **"Blueprint"**
+3. Connect your GitHub repo
+4. Render auto-detects `render.yaml` and creates:
+   - `rhosam-backend` (Node.js web service)
+   - `rhosam-frontend` (Node.js web service)
+   - `rhosam-db` (PostgreSQL database)
+
+### Step 3: Set Environment Variables
+
+On the Render dashboard:
+- `DATABASE_URL` — auto-set from the database (verify it's linked)
+- `JWT_SECRET` — click **"Generate"** for a random value
+- `FRONTEND_URL` — set to `*` (allows all origins)
+
+Optional (for email/images):
+- `RESEND_API_KEY` — from [resend.com](https://resend.com/api-keys)
+- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` — from [cloudinary.com](https://cloudinary.com/console)
+
+### Step 4: Deploy
+
+Click **"Create Blueprint"** and wait 2–3 minutes for the build to complete.
+
+### Step 5: Create Admin User
+
+Open the **Render Shell** on the backend service:
 
 ```bash
-# Connect to database
-psql -d rhosam_supermarket
-
-# Re-apply schema (safe — uses IF NOT EXISTS)
-psql -d rhosam_supermarket -f backend/sql/schema.sql
-
-# Apply migrations
-psql -d rhosam_supermarket -f backend/sql/migration-payment-and-audit.sql
-psql -d rhosam_supermarket -f backend/sql/migration-auth-features.sql
+ADMIN_EMAIL=admin@yourdomain.com \
+ADMIN_PASSWORD=YourSecure@Pass123 \
+ADMIN_NAME="Admin" \
+node src/create-admin.js
 ```
+
+### Step 6: Open Your App
+
+Navigate to your Render URL (e.g., `https://rhosam-frontend.onrender.com`).
 
 ---
 
-## Environment Variables Reference
+## Option 4: Vercel + Supabase (Alternative Cloud)
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
-| `JWT_SECRET` | ✅ | — | Secret for JWT signing (min 32 chars) |
-| `PORT` | ❌ | 5000 | Backend server port |
-| `FRONTEND_URL` | ❌ | http://localhost:5173 | CORS origin |
-| `MAX_LOGIN_ATTEMPTS` | ❌ | 5 | Lockout after N failures |
-| `LOCK_MINUTES` | ❌ | 15 | Lockout duration |
-| `RESEND_API_KEY` | ❌ | — | Email sending (get from resend.com) |
-| `CLOUDINARY_CLOUD_NAME` | ❌ | — | Image storage (get from cloudinary.com) |
-| `CLOUDINARY_API_KEY` | ❌ | — | Image storage |
-| `CLOUDINARY_API_SECRET` | ❌ | — | Image storage |
-| `VITE_API_URL` | ❌ | http://localhost:5000/api | Backend API URL (frontend only) |
+### Backend → Supabase:
+1. Create a project at https://supabase.com
+2. Run all SQL files in the SQL Editor (schema + migrations)
+3. Copy the PostgreSQL connection string
+
+### Frontend → Vercel:
+1. Connect GitHub repo at https://vercel.com
+2. Set environment variable `VITE_API_URL` to your backend URL
+3. Deploy
 
 ---
 
-## Troubleshooting
+## Network Access (Multiple PCs on Same Network)
 
-### "DATABASE_URL is missing"
-→ Make sure `backend/.env` exists and has the correct `DATABASE_URL`
-
-### "relation does not exist"
-→ Run the schema: `psql -d rhosam_supermarket -f backend/sql/schema.sql`
-
-### "column does not exist"
-→ Run the migrations:
-```bash
-psql -d rhosam_supermarket -f backend/sql/migration-payment-and-audit.sql
-psql -d rhosam_supermarket -f backend/sql/migration-auth-features.sql
-```
-
-### "ECONNREFUSED" or "Connection refused"
-→ Make sure PostgreSQL is running:
-```bash
-# Linux/Mac
-sudo service postgresql start
-
-# Windows
-net start postgresql-x64-16
-
-# Docker
-docker start rhosam-db
-```
-
-### Frontend shows "Failed to fetch"
-→ Make sure the backend is running on port 5000
-→ Check that `VITE_API_URL` matches your backend URL
-
-### Port already in use
-```bash
-# Find what's using port 5000
-lsof -i :5000        # Linux/Mac
-netstat -ano | findstr :5000  # Windows
-
-# Kill the process
-kill -9 <PID>
-```
-
----
-
-## Mobile Access
-
-The app is a **Progressive Web App (PWA)**. To install on mobile:
-
-1. Open the app URL in Chrome/Safari on your phone
-2. Tap **"Add to Home Screen"** or **"Install App"**
-3. The app appears as a native-like icon on your home screen
-4. Works offline with cached data
-
----
-
-## Network Access (Multiple PCs)
-
-To share the app across devices on the same network:
+To share the app across devices on the same LAN:
 
 1. Find your PC's IP address:
    ```bash
@@ -382,13 +245,125 @@ To share the app across devices on the same network:
    FRONTEND_URL=http://YOUR_IP:5173
    ```
 
-3. Start both servers:
-   ```bash
-   cd backend && npm run dev
-   cd frontend && npm run dev
-   ```
+3. Start both servers and access from any device at `http://YOUR_IP:5173`.
 
-4. Other devices can access at: `http://YOUR_IP:5173`
+---
+
+## Quick Reference: Useful Commands
+
+### Backend
+```bash
+cd backend
+npm run dev            # Start development server
+npm run create-admin   # Create admin user
+node -c src/server.js  # Check syntax
+```
+
+### Frontend
+```bash
+cd frontend
+npm run dev            # Start development server
+npm run build          # Build for production
+npm run preview        # Preview production build
+```
+
+### Database
+```bash
+psql -d rhosam_supermarket              # Connect
+psql -d rhosam_supermarket -f backend/sql/schema.sql  # Re-apply schema
+```
+
+---
+
+## Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
+| `JWT_SECRET` | ✅ | — | Secret for JWT signing (min 32 chars) |
+| `PORT` | ❌ | 5000 | Backend server port |
+| `FRONTEND_URL` | ❌ | http://localhost:5173 | CORS origin |
+| `MAX_LOGIN_ATTEMPTS` | ❌ | 5 | Lockout after N failures |
+| `LOCK_MINUTES` | ❌ | 15 | Lockout duration |
+| `RESEND_API_KEY` | ❌ | — | Email notifications (resend.com) |
+| `TELNYX_API_KEY` | ❌ | — | SMS notifications (telnyx.com) |
+| `CLOUDINARY_*` | ❌ | — | Product image storage (cloudinary.com) |
+| `PAYMENT_GATEWAY` | ❌ | INTERNAL | Payment gateway: PAYSTACK, FLUTTERWAVE, or INTERNAL (cash-only) |
+| `PAYSTACK_SECRET_KEY` | ❌ | — | Paystack secret key for payment verification |
+| `PAYSTACK_PUBLIC_KEY` | ❌ | — | Paystack public key (for frontend initialization) |
+| `FLUTTERWAVE_SECRET_KEY` | ❌ | — | Flutterwave secret key for payment verification |
+| `FLUTTERWAVE_PUBLIC_KEY` | ❌ | — | Flutterwave public key (for frontend initialization) |
+| `PAYMENT_WEBHOOK_SECRET` | ❌ | — | Webhook secret for verifying gateway callbacks |
+| `VITE_API_URL` | ❌ | http://localhost:5000/api | Backend API URL (frontend only) |
+
+---
+
+## Payment Gateway Setup (Paystack / Flutterwave)
+
+RHoSAM supports **Paystack** and **Flutterwave** for electronic payments (Card, Transfer, POS).
+
+### Paystack Setup
+
+1. Create an account at [paystack.com](https://paystack.com)
+2. Go to **Settings → API Keys** and copy your keys
+3. Add to `backend/.env`:
+   ```env
+   PAYMENT_GATEWAY=PAYSTACK
+   PAYSTACK_SECRET_KEY=sk_test_xxxxxxxx
+   PAYSTACK_PUBLIC_KEY=pk_test_xxxxxxxx
+   PAYMENT_WEBHOOK_SECRET=your_webhook_secret
+   ```
+4. In Paystack Dashboard, add webhook URL: `https://your-domain.com/api/webhooks/paystack`
+5. Events to subscribe to: `charge.success`
+
+### Flutterwave Setup
+
+1. Create an account at [flutterwave.com](https://flutterwave.com)
+2. Go to **Settings → API Keys** and copy your keys
+3. Add to `backend/.env`:
+   ```env
+   PAYMENT_GATEWAY=FLUTTERWAVE
+   FLUTTERWAVE_SECRET_KEY=FLWSECK-xxxxxxxx
+   FLUTTERWAVE_PUBLIC_KEY=FLWPUBK-xxxxxxxx
+   PAYMENT_WEBHOOK_SECRET=your_webhook_secret
+   ```
+4. In Flutterwave Dashboard, add webhook URL: `https://your-domain.com/api/webhooks/flutterwave`
+5. Events to subscribe to: `charge.completed`
+
+### How It Works
+
+1. **Cashier selects payment method** (Card/Transfer/POS) at the POS terminal
+2. **Sale is created** in the system first (stock deducted immediately)
+3. **Payment is initialized** with the configured gateway — a payment link is generated
+4. **Customer pays** via the gateway (card terminal, bank transfer, etc.)
+5. **Cashier enters the payment reference** and clicks Verify
+6. **Backend verifies** the transaction with the gateway API (amount must match)
+7. **Webhook confirms** the payment asynchronously as a backup
+
+For **Cash** payments, no gateway is needed — the sale is verified immediately.
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| "DATABASE_URL is missing" | Ensure `backend/.env` has the correct `DATABASE_URL` |
+| "relation does not exist" | Run `psql -d rhosam_supermarket -f backend/sql/schema.sql` |
+| "column does not exist" | Run the migration SQL files from `backend/sql/` |
+| "ECONNREFUSED" | Make sure PostgreSQL is running |
+| Frontend "Failed to fetch" | Check `VITE_API_URL` matches your backend URL |
+| Docker port conflict | Change ports in `docker-compose.yml` |
+| Render deploy fails | Check build logs; ensure `DATABASE_URL` is linked |
+
+---
+
+## Mobile Access (PWA)
+
+The app is a **Progressive Web App**. To install on mobile:
+1. Open the app URL in Chrome/Safari
+2. Tap **"Add to Home Screen"** or **"Install App"**
+3. Works offline with cached data
 
 ---
 

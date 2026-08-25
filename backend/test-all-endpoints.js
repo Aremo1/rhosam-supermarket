@@ -88,6 +88,10 @@ await test("GET /api/users → 200", async () => {
   return `got ${status}`;
 });
 await test("POST /api/users → 201 (create)", async () => {
+  // Check if user already exists from a prior run
+  const { data: existing } = await req("GET", "/users", null, TOKEN);
+  const existingUser = Array.isArray(existing) ? existing.find(u => u.email === "uat@test.com") : null;
+  if (existingUser) { CREATED.cashierId = existingUser.id; return true; }
   const { status, data } = await req("POST", "/users", { name: "UAT Cashier", email: "uat@test.com", password: "UatPass@12345", role: "CASHIER" }, TOKEN);
   if (status === 201 && data.id) { CREATED.cashierId = data.id; return true; }
   return `got ${status}: ${JSON.stringify(data)}`;
@@ -128,6 +132,10 @@ await test("GET /api/products?search=test → 200 (search)", async () => {
   return status === 200 ? true : `got ${status}`;
 });
 await test("POST /api/products → 201 (create)", async () => {
+  // Check if product already exists from a prior run
+  const { data: existing } = await req("GET", "/products?search=UATBAR1", null, TOKEN);
+  const existingProd = Array.isArray(existing) ? existing.find(p => p.barcode === "UATBAR1") : null;
+  if (existingProd) { CREATED.newProductId = existingProd.id; return true; }
   const { status, data } = await req("POST", "/products", { barcode: "UATBAR1", name: "UAT Product", category: "Testing", price: 500, stock: 20, reorderLevel: 5 }, TOKEN);
   if (status === 201 && data.id) { CREATED.newProductId = data.id; return true; }
   return `got ${status}: ${JSON.stringify(data)}`;

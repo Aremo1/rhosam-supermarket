@@ -13,6 +13,207 @@ const helmet = require("helmet");
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
+// ── Payment Gateway Setup (Paystack / Flutterwave) ─────────────
+const PAYMENT_GATEWAY = (process.env.PAYMENT_GATEWAY || "INTERNAL").toUpperCase();
+const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY || "";
+const paystackPublicKey = process.env.PAYSTACK_PUBLIC_KEY || "";
+const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY || "";
+const flutterwavePublicKey = process.env.FLUTTERWAVE_PUBLIC_KEY || "";
+const paymentWebhookSecret = process.env.PAYMENT_WEBHOOK_SECRET || "";
+
+// Paystack API helpers
+const paystack = {
+  async initializeTransaction({ email, amount, reference, metadata = {} }) {
+    const res = await fetch("https://api.paystack.co/transaction/initialize", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${paystackSecretKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, amount: Math.round(amount * 100), reference, currency: "NGN", metadata }),
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Paystack initialization failed");
+    return data.data; // { authorization_url, access_code, reference }
+  },
+  async verifyTransaction(reference) {
+    const res = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { Authorization: `Bearer ${paystackSecretKey}` },
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Paystack verification failed");
+    return data.data; // { status, amount, currency, reference, gateway_response, ... }
+  },
+  verifyWebhook(signature, body) {
+    if (!paymentWebhookSecret) return true; // skip if no secret configured
+    const crypto = require("crypto");
+    const hash = crypto.createHmac("sha512", paymentWebhookSecret).update(body).digest("hex");
+    return hash === signature;
+  },
+};
+
+// Flutterwave API helpers
+const flutterwave = {
+  async initializeTransaction({ email, amount, reference, redirectUrl }) {
+    const res = await fetch("https://api.flutterwave.com/v3/payments", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${flutterwaveSecretKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tx_ref: reference,
+        amount,
+        currency: "NGN",
+        redirect_url: redirectUrl || `${process.env.FRONTEND_URL || "http://localhost:5173"}/pos`,
+        customer: { email },
+        meta: { source: "rhosam_pos" },
+      }),
+    });
+    const data = await res.json();
+    if (data.status !== "success") throw new Error(data.message || "Flutterwave initialization failed");
+    return data.data; // { link, ... }
+  },
+  async verifyTransaction(transactionId) {
+    const res = await fetch(`https://api.flutterwave.com/v3/transactions/${transactionId}/verify`, {
+      headers: { Authorization: `Bearer ${flutterwaveSecretKey}` },
+    });
+    const data = await res.json();
+    if (data.status !== "success") throw new Error(data.message || "Flutterwave verification failed");
+    return data.data; // { status, amount, tx_ref, id, ... }
+  },
+  verifyWebhook(signature, body) {
+    if (!paymentWebhookSecret) return true;
+    const crypto = require("crypto");
+    const hash = crypto.createHmac("sha256", paymentWebhookSecret).update(body).digest("hex");
+    return hash === signature;
+  },
+};
+
+// Paystack Terminal API helpers
+const paystackTerminal = {
+  _getKey() {
+    return paymentSettingsCache.paystackSecretKey || paystackSecretKey;
+  },
+  async listTerminals() {
+    const res = await fetch("https://api.paystack.co/terminal", {
+      headers: { Authorization: `Bearer ${this._getKey()}` },
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to list terminals");
+    return data.data || [];
+  },
+  async getTerminal(terminalId) {
+    const res = await fetch(`https://api.paystack.co/terminal/${terminalId}`, {
+      headers: { Authorization: `Bearer ${this._getKey()}` },
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to fetch terminal");
+    return data.data;
+  },
+  async checkPresence(terminalId) {
+    const res = await fetch(`https://api.paystack.co/terminal/${terminalId}/presence`, {
+      headers: { Authorization: `Bearer ${this._getKey()}` },
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to check terminal presence");
+    return data.data; // { online, available }
+  },
+  async commissionDevice(serialNumber) {
+    const res = await fetch("https://api.paystack.co/terminal/commission_device", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this._getKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ serial_number: serialNumber }),
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to commission device");
+    return data;
+  },
+  async decommissionDevice(serialNumber) {
+    const res = await fetch("https://api.paystack.co/terminal/decommission_device", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this._getKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ serial_number: serialNumber }),
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to decommission device");
+    return data;
+  },
+  async updateTerminal(terminalId, updates) {
+    const res = await fetch(`https://api.paystack.co/terminal/${terminalId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${this._getKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to update terminal");
+    return data;
+  },
+  async sendEvent(terminalId, eventType, action, eventData) {
+    const res = await fetch(`https://api.paystack.co/terminal/${terminalId}/event`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this._getKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: eventType, action, data: eventData }),
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to send event to terminal");
+    return data.data; // { id: event_id }
+  },
+  async getEventStatus(terminalId, eventId) {
+    const res = await fetch(`https://api.paystack.co/terminal/${terminalId}/event/${eventId}`, {
+      headers: { Authorization: `Bearer ${this._getKey()}` },
+    });
+    const data = await res.json();
+    if (!data.status) throw new Error(data.message || "Failed to get event status");
+    return data.data; // { delivered: true/false }
+  },
+};
+
+function getActiveGateway() {
+  // DB settings override env vars
+  if (paymentSettingsCache.gateway === "PAYSTACK" && (paymentSettingsCache.paystackSecretKey || paystackSecretKey)) return "PAYSTACK";
+  if (paymentSettingsCache.gateway === "FLUTTERWAVE" && (paymentSettingsCache.flutterwaveSecretKey || flutterwaveSecretKey)) return "FLUTTERWAVE";
+  // Fallback to env vars
+  if (PAYMENT_GATEWAY === "PAYSTACK" && paystackSecretKey) return "PAYSTACK";
+  if (PAYMENT_GATEWAY === "FLUTTERWAVE" && flutterwaveSecretKey) return "FLUTTERWAVE";
+  return "INTERNAL";
+}
+
+// ── Mutable Payment Settings (DB-backed, env-var fallback) ──────
+const paymentSettingsCache = {
+  gateway: process.env.PAYMENT_GATEWAY || "INTERNAL",
+  paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
+  paystackPublicKey: process.env.PAYSTACK_PUBLIC_KEY || "",
+  flutterwaveSecretKey: process.env.FLUTTERWAVE_SECRET_KEY || "",
+  flutterwavePublicKey: process.env.FLUTTERWAVE_PUBLIC_KEY || "",
+  webhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || "",
+  testMode: true,
+};
+
+async function loadPaymentSettings() {
+  try {
+    const { rows } = await pool.query("SELECT * FROM payment_settings WHERE is_active=TRUE ORDER BY id DESC LIMIT 1");
+    if (rows[0]) {
+      const s = rows[0];
+      paymentSettingsCache.gateway = s.gateway || "INTERNAL";
+      paymentSettingsCache.paystackSecretKey = s.paystack_secret_key || paymentSettingsCache.paystackSecretKey;
+      paymentSettingsCache.paystackPublicKey = s.paystack_public_key || paymentSettingsCache.paystackPublicKey;
+      paymentSettingsCache.flutterwaveSecretKey = s.flutterwave_secret_key || paymentSettingsCache.flutterwaveSecretKey;
+      paymentSettingsCache.flutterwavePublicKey = s.flutterwave_public_key || paymentSettingsCache.flutterwavePublicKey;
+      paymentSettingsCache.webhookSecret = s.webhook_secret || paymentSettingsCache.webhookSecret;
+      paymentSettingsCache.testMode = s.test_mode !== false;
+      console.log(`[PAYMENT] Loaded gateway: ${paymentSettingsCache.gateway}`);
+    }
+  } catch (e) {
+    // Table may not exist yet — fall back to env vars silently
+    if (!e.message.includes("does not exist"))
+      console.error("[PAYMENT] Failed to load settings from DB:", e.message);
+  }
+}
+
+// ── SMS Setup (Telnyx, optional) ───────────────────────────────
+let telnyx = null;
+if (process.env.TELNYX_API_KEY) {
+  try {
+    const Telnyx = require("telnyx");
+    telnyx = new Telnyx(process.env.TELNYX_API_KEY);
+  } catch { console.log("[SMS] telnyx package not installed — SMS disabled"); }
+}
+
 // ── Cloudinary Setup ────────────────────────────────────────────
 const useCloudinary = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
 if (useCloudinary) {
@@ -151,9 +352,37 @@ async function updateCustomerTier(c, customerId) {
 // PHASE 7: AUTHENTICATION
 // ═══════════════════════════════════════════════════════════════════
 
+const serverStartTime = Date.now();
 app.get("/api/health", async (_q, r, n) => {
-  try { await pool.query("SELECT 1"); r.json({ status: "ok" }); }
-  catch (e) { n(e); }
+  try {
+    const checks = {};
+    // Database check
+    const dbStart = Date.now();
+    await pool.query("SELECT 1");
+    checks.database = { status: "ok", latencyMs: Date.now() - dbStart };
+    // Connection pool stats
+    checks.pool = {
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+    };
+    // System info
+    checks.system = {
+      uptime: Math.floor((Date.now() - serverStartTime) / 1000),
+      nodeVersion: process.version,
+      platform: process.platform,
+      memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    };
+    // Resend email configured
+    checks.services = {
+      email: !!resend,
+      sms: !!telnyx,
+      cloudinary: !!useCloudinary,
+    };
+    r.json({ status: "ok", timestamp: new Date().toISOString(), ...checks });
+  } catch (e) {
+    r.status(503).json({ status: "error", message: e.message, timestamp: new Date().toISOString() });
+  }
 });
 
 app.post("/api/auth/login", async (req, res, next) => {
@@ -552,7 +781,7 @@ app.get("/api/users", auth, allow("ADMIN"), async (_q, r, n) => {
        FROM users u LEFT JOIN branches b ON b.id = u.branch_id
        ORDER BY u.name`
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
@@ -700,12 +929,12 @@ app.get("/api/products", auth, async (q, r, n) => {
     }
     sql += " ORDER BY p.name";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const { barcode, name, category, price, costPrice = 0, stock = 0, reorderLevel = 5, unit = "PCS", description = "" } = req.body;
+    const { barcode, name, category, price, costPrice = 0, stock = 0, reorderLevel = 5, unit = "PCS", description = "", expiryDate, batchNumber } = req.body;
     if (!barcode || !name || !category || Number(price) < 0 || Number(stock) < 0)
       return res.status(400).json({ message: "Invalid product details." });
 
@@ -740,10 +969,10 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
     const categoryExists = existingCategory.length > 0;
 
     const { rows } = await pool.query(
-      `INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,description,image_url)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
-      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null]
+      `INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,description,image_url,expiry_date,batch_number)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active,expiry_date,batch_number`,
+      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null, expiryDate || null, batchNumber || null]
     );
     await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name, category }, req);
     const warnings = [];
@@ -755,7 +984,7 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive } = req.body;
+    const { barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, expiryDate, batchNumber } = req.body;
 
     // Check for duplicate barcode (excluding current product)
     if (barcode) {
@@ -789,10 +1018,11 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
         price=COALESCE($4,price), cost_price=COALESCE($5,cost_price), stock=COALESCE($6,stock),
         reorder_level=COALESCE($7,reorder_level), unit=COALESCE($8,unit),
         description=COALESCE($9,description), is_active=COALESCE($10,is_active),
-        image_url=COALESCE($12,image_url), updated_at=NOW()
+        image_url=COALESCE($12,image_url), expiry_date=COALESCE($13,expiry_date), batch_number=COALESCE($14,batch_number),
+        updated_at=NOW()
        WHERE id=$11
-       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active`,
-      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null]
+       RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active,expiry_date,batch_number`,
+      [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null, expiryDate || null, batchNumber || null]
     );
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
     await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body, req);
@@ -886,7 +1116,7 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
     if (productId) { sql += " WHERE im.product_id = $1"; params.push(Number(productId)); }
     sql += " ORDER BY im.created_at DESC LIMIT 200";
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1024,6 +1254,172 @@ app.get("/api/inventory/valuation", auth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Capture a valuation snapshot for trend tracking
+app.post("/api/inventory/snapshot", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.id, p.name, p.category, p.unit,
+                   COALESCE(bi.quantity, 0)::int AS stock, p.cost_price::float,
+                   COALESCE(bi.quantity, 0) * p.cost_price AS total_value
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+             WHERE p.is_active = TRUE`;
+      params = [branchId];
+    } else {
+      sql = `SELECT p.id, p.name, p.category, p.unit,
+                   p.stock::int, p.cost_price::float,
+                   p.stock * p.cost_price AS total_value
+             FROM products p WHERE p.is_active = TRUE`;
+      params = [];
+    }
+    const { rows } = await pool.query(sql, params);
+    const totalProducts = rows.length;
+    const totalUnits = rows.reduce((s, r) => s + r.stock, 0);
+    const totalValue = rows.reduce((s, r) => s + (r.total_value || 0), 0);
+    const byCategory = {};
+    rows.forEach(r => {
+      if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
+      byCategory[r.category].units += r.stock;
+      byCategory[r.category].value += Number(Number(r.total_value || 0).toFixed(2));
+    });
+    const { rows: snap } = await pool.query(
+      `INSERT INTO valuation_snapshots(branch_id, total_products, total_units, total_value, category_breakdown, captured_by)
+       VALUES($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+      [branchId || null, totalProducts, totalUnits, totalValue, JSON.stringify(byCategory), req.user.id]
+    );
+    await audit(pool, req.user.id, "SNAPSHOT", "VALUATION", snap[0].id, { totalValue, totalProducts }, req);
+    res.json({ message: "Snapshot captured.", snapshot: snap[0], summary: { totalProducts, totalUnits, totalValue, byCategory } });
+  } catch (e) { next(e); }
+});
+
+// Get valuation trend history
+app.get("/api/inventory/trend", auth, async (req, res, next) => {
+  try {
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
+    const days = Math.min(Number(req.query.days) || 30, 365);
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT id, branch_id, total_products, total_units, total_value, category_breakdown, created_at
+             FROM valuation_snapshots
+             WHERE branch_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2
+             ORDER BY created_at ASC`;
+      params = [branchId, days];
+    } else {
+      sql = `SELECT id, branch_id, total_products, total_units, total_value, category_breakdown, created_at
+             FROM valuation_snapshots
+             WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+             ORDER BY created_at ASC`;
+      params = [days];
+    }
+    const { rows } = await pool.query(sql, params);
+    // Compute deltas and collect all categories
+    const allCategories = new Set();
+    rows.forEach(r => {
+      const bd = typeof r.category_breakdown === 'string' ? JSON.parse(r.category_breakdown) : (r.category_breakdown || {});
+      Object.keys(bd).forEach(c => allCategories.add(c));
+    });
+    const trend = rows.map((r, i) => {
+      const prev = i > 0 ? rows[i - 1] : null;
+      const bd = typeof r.category_breakdown === 'string' ? JSON.parse(r.category_breakdown) : (r.category_breakdown || {});
+      // Build category values for this snapshot (0 for missing categories)
+      const categoryValues = {};
+      for (const cat of allCategories) {
+        categoryValues[cat] = Number(bd[cat]?.value || 0);
+      }
+      return {
+        id: r.id,
+        date: r.created_at,
+        totalProducts: r.total_products,
+        totalUnits: r.total_units,
+        totalValue: Number(r.total_value),
+        categoryBreakdown: bd,
+        categoryValues,
+        delta: prev ? {
+          units: r.total_units - prev.total_units,
+          value: Number((r.total_value - prev.total_value).toFixed(2)),
+          products: r.total_products - prev.total_products,
+        } : null,
+      };
+    });
+    // Compute category-level deltas
+    const categoryDeltas = {};
+    for (const cat of allCategories) {
+      categoryDeltas[cat] = trend.map((t, i) => {
+        const prev = i > 0 ? trend[i - 1] : null;
+        return prev ? Number((t.categoryValues[cat] - prev.categoryValues[cat]).toFixed(2)) : 0;
+      });
+    }
+    res.json({ trend, categories: [...allCategories].sort(), categoryDeltas, count: trend.length, days });
+  } catch (e) { next(e); }
+});
+
+// Auto-snapshot endpoint (can be called by cron, scheduler, or admin)
+app.post("/api/inventory/auto-snapshot", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    // Get all active branches (or just the global inventory if no branches)
+    const { rows: branches } = await pool.query('SELECT id FROM branches WHERE is_active = TRUE');
+    let snapshotsCreated = 0;
+
+    // Capture global snapshot
+    const { rows: globalProducts } = await pool.query(
+      `SELECT p.id, p.name, p.category, p.unit, p.stock::int AS stock, p.cost_price::float,
+              p.stock * p.cost_price AS total_value
+       FROM products p WHERE p.is_active = TRUE`
+    );
+    if (globalProducts.length > 0) {
+      const totalProducts = globalProducts.length;
+      const totalUnits = globalProducts.reduce((s, r) => s + r.stock, 0);
+      const totalValue = globalProducts.reduce((s, r) => s + (r.total_value || 0), 0);
+      const byCategory = {};
+      globalProducts.forEach(r => {
+        if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
+        byCategory[r.category].units += r.stock;
+        byCategory[r.category].value += Number(Number(r.total_value || 0).toFixed(2));
+      });
+      await pool.query(
+        `INSERT INTO valuation_snapshots(branch_id, total_products, total_units, total_value, category_breakdown, captured_by)
+         VALUES(NULL, $1, $2, $3, $4, $5)`,
+        [totalProducts, totalUnits, totalValue, JSON.stringify(byCategory), req.user.id]
+      );
+      snapshotsCreated++;
+    }
+
+    // Capture per-branch snapshots
+    for (const branch of branches) {
+      const { rows: branchProducts } = await pool.query(
+        `SELECT p.id, p.name, p.category, p.unit,
+                COALESCE(bi.quantity, 0)::int AS stock, p.cost_price::float,
+                COALESCE(bi.quantity, 0) * p.cost_price AS total_value
+         FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.is_active = TRUE`, [branch.id]
+      );
+      if (branchProducts.length > 0) {
+        const totalProducts = branchProducts.length;
+        const totalUnits = branchProducts.reduce((s, r) => s + r.stock, 0);
+        const totalValue = branchProducts.reduce((s, r) => s + (r.total_value || 0), 0);
+        const byCategory = {};
+        branchProducts.forEach(r => {
+          if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
+          byCategory[r.category].units += r.stock;
+          byCategory[r.category].value += Number(Number(r.total_value || 0).toFixed(2));
+        });
+        await pool.query(
+          `INSERT INTO valuation_snapshots(branch_id, total_products, total_units, total_value, category_breakdown, captured_by)
+           VALUES($1, $2, $3, $4, $5, $6)`,
+          [branch.id, totalProducts, totalUnits, totalValue, JSON.stringify(byCategory), req.user.id]
+        );
+        snapshotsCreated++;
+      }
+    }
+
+    await audit(pool, req.user.id, 'AUTO_SNAPSHOT', 'VALUATION', null, { snapshotsCreated }, req);
+    res.json({ message: `Auto-snapshot complete. ${snapshotsCreated} snapshot(s) captured.`, snapshotsCreated });
+  } catch (e) { next(e); }
+});
+
 app.get("/api/products/low-stock", auth, async (req, r, n) => {
   try {
     const branchId = req.user.branchId;
@@ -1042,7 +1438,7 @@ app.get("/api/products/low-stock", auth, async (req, r, n) => {
         "SELECT id,barcode,name,category,stock,reorder_level,price::float FROM products WHERE stock <= reorder_level AND is_active = TRUE ORDER BY stock ASC"
       )).rows);
     }
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1319,11 +1715,11 @@ app.get("/api/dashboard/stats", auth, async (req, r, n) => {
       lowStockCount: lowStock.rows[0].count,
       todaySales: todaySales.rows[0].count,
       todayRevenue: todayRevenue.rows[0].total,
-      totalUsers: totalUsers.rows[0].count,
-      salesChart: recentSales.rows
+      totalUsers: totalUsers.rows[0].count,      salesChart: recentSales.rows
     });
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
+
 
 app.get("/api/dashboard/top-products", auth, async (req, r, n) => {
   try {
@@ -1331,11 +1727,11 @@ app.get("/api/dashboard/top-products", auth, async (req, r, n) => {
     r.json((await pool.query(
       `SELECT si.product_name, SUM(si.quantity)::int AS total_qty, SUM(si.line_total)::float AS total_revenue
        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'${bf.sql}
-       GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`, bf.params
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${bf.sql}       GROUP BY si.product_name ORDER BY total_revenue DESC LIMIT 10`, bf.params
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
+
 
 app.get("/api/dashboard/category-sales", auth, async (req, r, n) => {
   try {
@@ -1346,7 +1742,7 @@ app.get("/api/dashboard/category-sales", auth, async (req, r, n) => {
        WHERE s.created_at >= NOW() - INTERVAL '30 days'${bf.sql}
        GROUP BY p.category ORDER BY revenue DESC`, bf.params
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1462,7 +1858,7 @@ app.get("/api/purchase-orders", auth, async (req, r, n) => {
        ORDER BY po.created_at DESC LIMIT 100`,
       params
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.get("/api/purchase-orders/:id", auth, async (req, res, next) => {
@@ -1636,7 +2032,7 @@ app.get("/api/expenses", auth, async (req, r, n) => {
       `SELECT e.*, u.name AS approved_by_name FROM expenses e LEFT JOIN users u ON u.id = e.approved_by${whereClause} ORDER BY e.created_at DESC LIMIT 200`,
       params
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -1684,7 +2080,7 @@ app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, 
     const expenses = totalExpenses.rows[0].total;
     const profit = revenue - expenses;
     r.json({ revenue, expenses, profit, todayRevenue: todaySales.rows[0].revenue, todayCost: todaySales.rows[0].cost });
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1698,7 +2094,7 @@ app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
       `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT $1`, [limit]
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) => {
@@ -1714,7 +2110,7 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
     sql += ` ORDER BY a.created_at DESC LIMIT $${params.length + 1}`;
     params.push(limit);
     r.json((await pool.query(sql, params)).rows);
-  } catch (e) { console.error("[LOGIN-HISTORY]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1746,7 +2142,7 @@ app.get("/api/cash-drawer", auth, async (req, r, n) => {
        ${whereClause}
        ORDER BY cd.opened_at DESC LIMIT 50`, params
     )).rows);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.get("/api/cash-drawer/active", auth, async (req, r, n) => {
@@ -1758,7 +2154,7 @@ app.get("/api/cash-drawer/active", auth, async (req, r, n) => {
        WHERE cd.status = 'OPEN'${bf.sql} ORDER BY cd.opened_at DESC LIMIT 1`, bf.params
     );
     r.json(rows[0] || null);
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.post("/api/cash-drawer/open", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
@@ -2150,7 +2546,7 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
 app.get("/api/categories", auth, async (_q, r, n) => {
   try {
     r.json((await pool.query("SELECT DISTINCT category FROM products ORDER BY category")).rows.map(r => r.category));
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 app.post("/api/categories", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -2309,7 +2705,7 @@ app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (req, r
          ORDER BY stock ASC`
       )).rows);
     }
-  } catch (e) { console.error("[SERVER]", e.message); res.status(500).json({ message: e.message }); }
+  } catch (e) { n(e); }
 });
 
 // Cashier Sales Report
@@ -3043,20 +3439,45 @@ app.post("/api/payments/verify", auth, async (req, res, next) => {
         return res.status(409).json({ message: "Payment reference already verified for another transaction." });
     }
 
-    // Simulate gateway verification (replace with real Paystack/Flutterwave call)
-    // In production: call gateway API to confirm payment matches amount
-    const verified = gateway === "INTERNAL" || saleRows[0].payment_method === "Cash"
-      ? true  // Cash / internal always verified
-      : true; // TODO: Replace with actual gateway API verification
+    // Real gateway verification via API
+    let verified = false;
+    let gatewayResponseData = {};
+    const activeGateway = getActiveGateway();
+
+    if (gateway === "INTERNAL" || saleRows[0].payment_method === "Cash") {
+      // Cash / internal: always verified
+      verified = true;
+    } else if (activeGateway === "PAYSTACK" && paystackSecretKey) {
+      try {
+        const result = await paystack.verifyTransaction(reference);
+        verified = result.status === "success" && result.amount === Math.round(saleRows[0].total * 100);
+        gatewayResponseData = result;
+      } catch (err) {
+        console.error("[PAYSTACK] Verification failed:", err.message);
+        gatewayResponseData = { error: err.message };
+      }
+    } else if (activeGateway === "FLUTTERWAVE" && flutterwaveSecretKey) {
+      try {
+        const result = await flutterwave.verifyTransaction(reference);
+        verified = result.status === "successful" && Math.abs(result.amount - saleRows[0].total) < 1;
+        gatewayResponseData = result;
+      } catch (err) {
+        console.error("[FLUTTERWAVE] Verification failed:", err.message);
+        gatewayResponseData = { error: err.message };
+      }
+    } else {
+      // No gateway configured — mark as verified (manual confirmation)
+      verified = true;
+      gatewayResponseData = { note: "No payment gateway configured — manual verification" };
+    }
 
     const status = verified ? "VERIFIED" : "FAILED";
     const verifiedAt = verified ? new Date() : null;
 
     const { rows } = await pool.query(
       `INSERT INTO payment_verifications(sale_id,gateway,reference,status,amount,card_last4,auth_code,gateway_response,verified_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [Number(saleId), gateway, reference, status, saleRows[0].total,
-       cardLast4 || null, authCode || null, JSON.stringify(gatewayResponse || {}), verifiedAt]
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,       [Number(saleId), gateway, reference, status, saleRows[0].total,
+       cardLast4 || null, authCode || null, JSON.stringify(gatewayResponseData), verifiedAt]
     );
 
     await audit(pool, req.user.id, "VERIFY_PAYMENT", "SALE", saleId, { gateway, reference, status }, req);
@@ -3071,6 +3492,484 @@ app.get("/api/payments/verify/:saleId", auth, async (req, res, next) => {
     );
     res.json(rows);
   } catch (e) { next(e); }
+});
+
+// ── Payment Initialization (for Card/Transfer/POS) ─────────────
+app.post("/api/payments/initialize", auth, async (req, res, next) => {
+  try {
+    const { saleId, email } = req.body;
+    if (!saleId) return res.status(400).json({ message: "saleId is required." });
+
+    const { rows: saleRows } = await pool.query("SELECT id, total, receipt_number, payment_method FROM sales WHERE id=$1", [Number(saleId)]);
+    if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+    if (saleRows[0].payment_method === "Cash")
+      return res.status(400).json({ message: "Cash payments don't need gateway initialization." });
+
+    const activeGateway = getActiveGateway();
+    const reference = `RHS-${saleRows[0].id}-${Date.now()}`;
+    const customerEmail = email || req.user.email || "customer@rhosam.com";
+
+    if (activeGateway === "PAYSTACK" && paystackSecretKey) {
+      const result = await paystack.initializeTransaction({
+        email: customerEmail,
+        amount: saleRows[0].total,
+        reference,
+        metadata: { sale_id: saleRows[0].id, receipt_number: saleRows[0].receipt_number, cashier: req.user.name },
+      });
+      await audit(pool, req.user.id, "INIT_PAYMENT", "SALE", saleId, { gateway: "PAYSTACK", reference }, req);
+      res.json({ gateway: "PAYSTACK", reference, authorizationUrl: result.authorization_url, accessCode: result.access_code });
+    } else if (activeGateway === "FLUTTERWAVE" && flutterwaveSecretKey) {
+      const result = await flutterwave.initializeTransaction({
+        email: customerEmail,
+        amount: saleRows[0].total,
+        reference,
+        redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/pos`,
+      });
+      await audit(pool, req.user.id, "INIT_PAYMENT", "SALE", saleId, { gateway: "FLUTTERWAVE", reference }, req);
+      res.json({ gateway: "FLUTTERWAVE", reference, authorizationUrl: result.link });
+    } else {
+      // No gateway configured — return internal reference for manual entry
+      res.json({ gateway: "INTERNAL", reference, authorizationUrl: null, message: "No payment gateway configured. Enter reference manually." });
+    }
+  } catch (e) { next(e); }
+});
+
+// ── Payment Gateway Status ─────────────────────────────────────
+app.get("/api/payments/gateway-status", auth, async (_req, res) => {
+  const active = getActiveGateway();
+  const dbKey = paymentSettingsCache.paystackSecretKey || paystackSecretKey;
+  const dbFwKey = paymentSettingsCache.flutterwaveSecretKey || flutterwaveSecretKey;
+  res.json({
+    activeGateway: active,
+    paystackConfigured: !!(active === "PAYSTACK" && dbKey),
+    flutterwaveConfigured: !!(active === "FLUTTERWAVE" && dbFwKey),
+    paystackPublicKey: paymentSettingsCache.paystackPublicKey || paystackPublicKey || null,
+    flutterwavePublicKey: paymentSettingsCache.flutterwavePublicKey || flutterwavePublicKey || null,
+  });
+});
+
+// ── Payment Settings (Admin) ───────────────────────────────────
+app.get("/api/payment-settings", auth, allow("ADMIN"), async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM payment_settings WHERE is_active=TRUE ORDER BY id DESC LIMIT 1");
+    if (!rows[0]) return res.json({ gateway: "INTERNAL", testMode: true });
+    const s = rows[0];
+    // Mask secret keys for security — only show last 4 chars
+    res.json({
+      id: s.id,
+      gateway: s.gateway,
+      paystackSecretKey: s.paystack_secret_key ? `****${s.paystack_secret_key.slice(-4)}` : "",
+      paystackSecretKeyFull: s.paystack_secret_key || "",
+      paystackPublicKey: s.paystack_public_key || "",
+      flutterwaveSecretKey: s.flutterwave_secret_key ? `****${s.flutterwave_secret_key.slice(-4)}` : "",
+      flutterwaveSecretKeyFull: s.flutterwave_secret_key || "",
+      flutterwavePublicKey: s.flutterwave_public_key || "",
+      webhookSecret: s.webhook_secret ? `****${s.webhook_secret.slice(-4)}` : "",
+      webhookSecretFull: s.webhook_secret || "",
+      testMode: s.test_mode,
+      updatedBy: s.updated_by,
+      updatedAt: s.updated_at,
+    });
+  } catch (e) { next(e); }
+});
+
+app.put("/api/payment-settings", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const { gateway, paystackSecretKey, paystackPublicKey, flutterwaveSecretKey, flutterwavePublicKey, webhookSecret, testMode } = req.body;
+    if (!gateway || !["INTERNAL", "PAYSTACK", "FLUTTERWAVE"].includes(gateway))
+      return res.status(400).json({ message: "Invalid gateway. Must be INTERNAL, PAYSTACK, or FLUTTERWAVE." });
+
+    // Deactivate old settings
+    await pool.query("UPDATE payment_settings SET is_active=FALSE, updated_at=NOW() WHERE is_active=TRUE");
+
+    // Insert new settings (keep existing values if not provided)
+    const { rows } = await pool.query(
+      `INSERT INTO payment_settings(gateway, paystack_secret_key, paystack_public_key, flutterwave_secret_key, flutterwave_public_key, webhook_secret, test_mode, updated_by)
+       VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        gateway,
+        paystackSecretKey || null,
+        paystackPublicKey || null,
+        flutterwaveSecretKey || null,
+        flutterwavePublicKey || null,
+        webhookSecret || null,
+        testMode !== false,
+        req.user.id,
+      ]
+    );
+
+    // Reload settings into memory
+    await loadPaymentSettings();
+
+    await audit(pool, req.user.id, "UPDATE", "PAYMENT_SETTINGS", rows[0].id, { gateway, testMode }, req);
+    res.json({ message: "Payment settings updated.", gateway, testMode });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PAYSTACK TERMINAL — Device Management & Payments
+// ═══════════════════════════════════════════════════════════════════
+
+// List registered terminal devices (syncs with Paystack)
+app.get("/api/terminals", auth, allow("ADMIN", "MANAGER"), async (_req, res, next) => {
+  try {
+    // Load local DB records
+    const { rows: dbTerminals } = await pool.query(
+      `SELECT td.*, b.name AS branch_name FROM terminal_devices td
+       LEFT JOIN branches b ON b.id = td.branch_id
+       ORDER BY td.name`
+    );
+
+    // Try to sync with Paystack API if gateway is Paystack
+    let paystackTerminals = [];
+    if (getActiveGateway() === "PAYSTACK") {
+      try {
+        paystackTerminals = await paystackTerminal.listTerminals();
+      } catch (e) { console.error("[TERMINAL] Failed to list Paystack terminals:", e.message); }
+    }
+
+    res.json({ terminals: dbTerminals, paystackTerminals });
+  } catch (e) { next(e); }
+});
+
+// Fetch a single terminal's details and presence
+app.get("/api/terminals/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      `SELECT td.*, b.name AS branch_name FROM terminal_devices td
+       LEFT JOIN branches b ON b.id = td.branch_id WHERE td.id=$1`, [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Terminal not found." });
+
+    // Check online status from Paystack
+    let presence = { online: false, available: false };
+    if (getActiveGateway() === "PAYSTACK" && rows[0].terminal_code) {
+      try {
+        presence = await paystackTerminal.checkPresence(rows[0].terminal_code);
+        await pool.query(
+          "UPDATE terminal_devices SET is_online=$1, last_seen_at=NOW(), updated_at=NOW() WHERE id=$2",
+          [presence.online, id]
+        );
+      } catch (e) { console.error("[TERMINAL] Presence check failed:", e.message); }
+    }
+
+    res.json({ ...rows[0], presence });
+  } catch (e) { next(e); }
+});
+
+// Register a terminal device (from Paystack sync or manual entry)
+app.post("/api/terminals", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const { paystackTerminalId, serialNumber, name, branchId } = req.body;
+    if (!name) return res.status(400).json({ message: "Terminal name is required." });
+
+    let terminalData = {};
+
+    // If syncing from Paystack, fetch terminal details
+    if (paystackTerminalId && getActiveGateway() === "PAYSTACK") {
+      try {
+        terminalData = await paystackTerminal.getTerminal(paystackTerminalId);
+      } catch (e) {
+        return res.status(400).json({ message: `Failed to fetch terminal from Paystack: ${e.message}` });
+      }
+    }
+
+    const psId = terminalData.id || Number(paystackTerminalId);
+    const code = terminalData.terminal_id || serialNumber || `TERM-${Date.now()}`;
+    const serial = terminalData.serial_number || serialNumber || null;
+    const deviceMake = terminalData.device_make || null;
+    const address = terminalData.address || null;
+    const psStatus = terminalData.status || "active";
+
+    if (!psId) return res.status(400).json({ message: "Paystack terminal ID or serial number is required." });
+
+    const { rows } = await pool.query(
+      `INSERT INTO terminal_devices(paystack_id, terminal_code, serial_number, name, device_make, address, status, branch_id)
+       VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [psId, code, serial, name, deviceMake, address, psStatus, branchId || null]
+    );
+
+    await audit(pool, req.user.id, "CREATE", "TERMINAL", rows[0].id, { name, code }, req);
+    res.status(201).json(rows[0]);
+  } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Terminal already registered." }) : next(e); }
+});
+
+// Update terminal (name, branch assignment)
+app.put("/api/terminals/:id", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, branchId, address } = req.body;
+    const updates = [];
+    const params = [];
+    let idx = 1;
+    if (name !== undefined) { updates.push(`name=$${idx++}`); params.push(name); }
+    if (branchId !== undefined) { updates.push(`branch_id=$${idx++}`); params.push(branchId || null); }
+    if (address !== undefined) { updates.push(`address=$${idx++}`); params.push(address); }
+    if (!updates.length) return res.status(400).json({ message: "No fields to update." });
+    updates.push(`updated_at=NOW()`);
+    params.push(id);
+    const { rows } = await pool.query(
+      `UPDATE terminal_devices SET ${updates.join(",")} WHERE id=$${idx} RETURNING *`, params
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Terminal not found." });
+    await audit(pool, req.user.id, "UPDATE", "TERMINAL", id, req.body, req);
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Delete terminal
+app.delete("/api/terminals/:id", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rowCount } = await pool.query("DELETE FROM terminal_devices WHERE id=$1", [id]);
+    if (rowCount === 0) return res.status(404).json({ message: "Terminal not found." });
+    await audit(pool, req.user.id, "DELETE", "TERMINAL", id, {}, req);
+    res.json({ message: "Terminal removed." });
+  } catch (e) { next(e); }
+});
+
+// ── Terminal Payments ──────────────────────────────────────────
+
+// Initialize a transaction and send it to a terminal
+app.post("/api/terminals/:id/charge", auth, allow("ADMIN", "MANAGER", "CASHIER"), async (req, res, next) => {
+  try {
+    const terminalId = Number(req.params.id);
+    const { saleId, amount, email } = req.body;
+    if (!terminalId) return res.status(400).json({ message: "Terminal ID required." });
+    if (!saleId && !amount) return res.status(400).json({ message: "saleId or amount required." });
+
+    // Fetch terminal from DB
+    const { rows: termRows } = await pool.query("SELECT * FROM terminal_devices WHERE id=$1", [terminalId]);
+    if (!termRows[0]) return res.status(404).json({ message: "Terminal not found in system." });
+    const terminal = termRows[0];
+
+    // Check terminal is online
+    if (getActiveGateway() === "PAYSTACK") {
+      try {
+        const presence = await paystackTerminal.checkPresence(terminal.terminal_code);
+        if (!presence.online) return res.status(400).json({ message: "Terminal is offline. Please check the device connection." });
+        await pool.query("UPDATE terminal_devices SET is_online=TRUE, last_seen_at=NOW(), updated_at=NOW() WHERE id=$1", [terminalId]);
+      } catch (e) {
+        return res.status(500).json({ message: `Cannot reach terminal: ${e.message}` });
+      }
+    }
+
+    // Get sale details if saleId provided
+    let saleTotal = Number(amount);
+    let saleRef = `TERM-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
+    if (saleId) {
+      const { rows: saleRows } = await pool.query("SELECT id, total, receipt_number FROM sales WHERE id=$1", [Number(saleId)]);
+      if (!saleRows[0]) return res.status(404).json({ message: "Sale not found." });
+      saleTotal = Number(saleRows[0].total);
+      saleRef = saleRows[0].receipt_number;
+    }
+
+    if (!saleTotal || saleTotal <= 0) return res.status(400).json({ message: "Invalid amount." });
+
+    // Initialize transaction with Paystack
+    const reference = `RHS-T-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
+    const customerEmail = email || req.user.email || "pos@rhosam.com";
+    let paystackTxId = null;
+
+    if (getActiveGateway() === "PAYSTACK") {
+      const initResult = await paystack.initializeTransaction({
+        email: customerEmail,
+        amount: saleTotal,
+        reference,
+        metadata: { sale_id: saleId, terminal_id: terminalId, cashier: req.user.name },
+      });
+      paystackTxId = initResult.id;
+
+      // Send transaction to terminal
+      const eventResult = await paystackTerminal.sendEvent(
+        terminal.terminal_code,
+        "transaction",
+        "process",
+        { id: initResult.id }
+      );
+
+      // Record terminal transaction
+      const { rows: txRows } = await pool.query(
+        `INSERT INTO terminal_transactions(sale_id, terminal_id, paystack_transaction_id, event_id, reference, amount, status)
+         VALUES($1, $2, $3, $4, $5, $6, 'SENT') RETURNING *`,
+        [saleId || null, terminalId, paystackTxId, eventResult.id, reference, saleTotal]
+      );
+
+      await audit(pool, req.user.id, "TERMINAL_CHARGE", "TERMINAL", terminalId, { reference, amount: saleTotal, saleId }, req);
+      res.json({
+        terminalTransaction: txRows[0],
+        reference,
+        eventId: eventResult.id,
+        status: "SENT",
+        message: `Payment request sent to ${terminal.name}. Customer should tap/insert card on the terminal.`,
+      });
+    } else {
+      return res.status(400).json({ message: "Terminal payments require Paystack gateway. Configure it in Payment Settings." });
+    }
+  } catch (e) { next(e); }
+});
+
+// Check terminal transaction status
+app.get("/api/terminals/transactions/:txId/status", auth, async (req, res, next) => {
+  try {
+    const txId = Number(req.params.txId);
+    const { rows } = await pool.query("SELECT * FROM terminal_transactions WHERE id=$1", [txId]);
+    if (!rows[0]) return res.status(404).json({ message: "Terminal transaction not found." });
+    const tx = rows[0];
+
+    // Check event delivery status from Paystack
+    if (tx.event_id && tx.terminal_id) {
+      const { rows: termRows } = await pool.query("SELECT terminal_code FROM terminal_devices WHERE id=$1", [tx.terminal_id]);
+      if (termRows[0] && getActiveGateway() === "PAYSTACK") {
+        try {
+          const eventStatus = await paystackTerminal.getEventStatus(termRows[0].terminal_code, tx.event_id);
+          if (eventStatus.delivered && tx.status === "SENT") {
+            await pool.query("UPDATE terminal_transactions SET event_delivered=TRUE, status='PROCESSING', updated_at=NOW() WHERE id=$1", [txId]);
+            tx.status = "PROCESSING";
+            tx.event_delivered = true;
+          }
+        } catch (e) { console.error("[TERMINAL] Event status check failed:", e.message); }
+      }
+    }
+
+    // Also verify with Paystack if we have a transaction ID
+    if (tx.paystack_transaction_id && getActiveGateway() === "PAYSTACK" && tx.status !== "SUCCESS" && tx.status !== "FAILED") {
+      try {
+        const payResult = await paystack.verifyTransaction(tx.reference);
+        if (payResult.status === "success") {
+          await pool.query(
+            "UPDATE terminal_transactions SET status='SUCCESS', gateway_response=$1, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(payResult), txId]
+          );
+          tx.status = "SUCCESS";
+          tx.gateway_response = payResult;
+        } else if (payResult.status === "failed") {
+          await pool.query(
+            "UPDATE terminal_transactions SET status='FAILED', gateway_response=$1, updated_at=NOW() WHERE id=$2",
+            [JSON.stringify(payResult), txId]
+          );
+          tx.status = "FAILED";
+        }
+      } catch (e) { console.error("[TERMINAL] Transaction verify failed:", e.message); }
+    }
+
+    res.json(tx);
+  } catch (e) { next(e); }
+});
+
+// List terminal transactions
+app.get("/api/terminals/transactions", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const terminalId = req.query.terminalId ? Number(req.query.terminalId) : null;
+    let sql = `SELECT tt.*, td.name AS terminal_name, td.terminal_code, s.receipt_number
+               FROM terminal_transactions tt
+               LEFT JOIN terminal_devices td ON td.id = tt.terminal_id
+               LEFT JOIN sales s ON s.id = tt.sale_id`;
+    const params = [];
+    if (terminalId) { sql += " WHERE tt.terminal_id=$1"; params.push(terminalId); }
+    sql += ` ORDER BY tt.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ── Paystack Webhook ───────────────────────────────────────────
+app.post("/api/webhooks/paystack", async (req, res) => {
+  try {
+    const signature = req.headers["x-paystack-signature"] || "";
+    // req.body is already parsed by global express.json(), so re-stringify for signature verification
+    const body = JSON.stringify(req.body);
+
+    if (!paystack.verifyWebhook(signature, body)) {
+      console.error("[WEBHOOK] Invalid Paystack signature");
+      return res.status(400).json({ message: "Invalid signature" });
+    }
+
+    const event = req.body;
+    if (event.event === "charge.success") {
+      const { reference, amount, status, gateway_response, card } = event.data || {};
+      if (reference) {
+        // Update or insert payment verification
+        const { rows: existing } = await pool.query(
+          "SELECT id, sale_id, status FROM payment_verifications WHERE reference=$1", [reference]
+        );
+        if (existing[0]) {
+          if (existing[0].status !== "VERIFIED") {
+            await pool.query(
+              "UPDATE payment_verifications SET status='VERIFIED', verified_at=NOW(), gateway_response=$1 WHERE id=$2",
+              [JSON.stringify(event.data), existing[0].id]
+            );
+          }
+        } else {
+          // Try to extract sale_id from reference format RHS-{saleId}-...
+          const saleIdMatch = reference.match(/^RHS-(\d+)-/);
+          const saleId = saleIdMatch ? Number(saleIdMatch[1]) : null;
+          if (saleId) {
+            await pool.query(
+              "INSERT INTO payment_verifications(sale_id,gateway,reference,status,amount,card_last4,gateway_response,verified_at) VALUES($1,'PAYSTACK',$2,'VERIFIED',$3,$4,$5,NOW())",
+              [saleId, reference, (amount || 0) / 100, card?.last4 || null, JSON.stringify(event.data)]
+            );
+          }
+        }
+        console.log(`[WEBHOOK] Paystack charge.success: ${reference}`);
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error("[WEBHOOK] Paystack error:", e.message);
+    res.status(500).json({ message: "Webhook processing failed" });
+  }
+});
+
+// ── Flutterwave Webhook ────────────────────────────────────────
+app.post("/api/webhooks/flutterwave", async (req, res) => {
+  try {
+    const signature = req.headers["verif-hash"] || "";
+    // req.body is already parsed by global express.json(), so re-stringify for signature verification
+    const body = JSON.stringify(req.body);
+
+    if (!flutterwave.verifyWebhook(signature, body)) {
+      console.error("[WEBHOOK] Invalid Flutterwave signature");
+      return res.status(400).json({ message: "Invalid signature" });
+    }
+
+    const event = req.body;
+    if (event.event === "charge.completed" && event.data?.status === "successful") {
+      const { tx_ref, amount, id: fwId, card, flw_ref } = event.data;
+      if (tx_ref) {
+        const { rows: existing } = await pool.query(
+          "SELECT id, status FROM payment_verifications WHERE reference=$1", [tx_ref]
+        );
+        if (existing[0]) {
+          if (existing[0].status !== "VERIFIED") {
+            await pool.query(
+              "UPDATE payment_verifications SET status='VERIFIED', verified_at=NOW(), gateway_response=$1 WHERE id=$2",
+              [JSON.stringify(event.data), existing[0].id]
+            );
+          }
+        } else {
+          const saleIdMatch = tx_ref.match(/^RHS-(\d+)-/);
+          const saleId = saleIdMatch ? Number(saleIdMatch[1]) : null;
+          if (saleId) {
+            await pool.query(
+              "INSERT INTO payment_verifications(sale_id,gateway,reference,status,amount,card_last4,gateway_response,verified_at) VALUES($1,'FLUTTERWAVE',$2,'VERIFIED',$3,$4,$5,NOW())",
+              [saleId, tx_ref, amount || 0, card?.last4 || null, JSON.stringify(event.data)]
+            );
+          }
+        }
+        console.log(`[WEBHOOK] Flutterwave charge.completed: ${tx_ref}`);
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error("[WEBHOOK] Flutterwave error:", e.message);
+    res.status(500).json({ message: "Webhook processing failed" });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3101,6 +4000,708 @@ app.get("/api/admin/backup", auth, allow("ADMIN"), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// PHASE: PRODUCT EXPIRY TRACKING
+// ═══════════════════════════════════════════════════════════════════
+
+// Get products expiring soon (within N days)
+app.get("/api/inventory/expiring", auth, async (req, res, next) => {
+  try {
+    const days = Math.min(Number(req.query.days) || 30, 365);
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.id, p.barcode, p.name, p.category, p.unit, p.expiry_date, p.batch_number,
+                   p.cost_price::float, p.price::float,
+                   COALESCE(bi.quantity, 0)::int AS stock,
+                   (p.expiry_date - CURRENT_DATE)::int AS days_until_expiry
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+             WHERE p.is_active = TRUE AND p.expiry_date IS NOT NULL
+               AND p.expiry_date <= CURRENT_DATE + INTERVAL '1 day' * $2
+             ORDER BY p.expiry_date ASC`;
+      params = [branchId, days];
+    } else {
+      sql = `SELECT id, barcode, name, category, unit, expiry_date, batch_number,
+                   cost_price::float, price::float, stock,
+                   (expiry_date - CURRENT_DATE)::int AS days_until_expiry
+             FROM products
+             WHERE is_active = TRUE AND expiry_date IS NOT NULL
+               AND expiry_date <= CURRENT_DATE + INTERVAL '1 day' * $1
+             ORDER BY expiry_date ASC`;
+      params = [days];
+    }
+    const { rows } = await pool.query(sql, params);
+    // Categorize
+    const expired = rows.filter(r => r.days_until_expiry < 0);
+    const expiringToday = rows.filter(r => r.days_until_expiry === 0);
+    const expiringSoon = rows.filter(r => r.days_until_expiry > 0);
+    res.json({ products: rows, summary: { total: rows.length, expired: expired.length, expiringToday: expiringToday.length, expiringSoon: expiringSoon.length }, days });
+  } catch (e) { next(e); }
+});
+
+// Record an expiry event
+app.post("/api/inventory/expiry-event", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+  try {
+    const { productId, eventType, quantity, notes } = req.body;
+    if (!productId || !['EXPIRED','DISPOSED','NEAR_EXPIRY_ALERT','PRICE_MARKDOWN'].includes(eventType))
+      return res.status(400).json({ message: 'Product and valid event type required.' });
+    const { rows: product } = await pool.query('SELECT id, name, expiry_date, batch_number FROM products WHERE id=$1', [productId]);
+    if (!product[0]) return res.status(404).json({ message: 'Product not found.' });
+    const qty = Math.abs(Number(quantity) || 0);
+    const { rows } = await pool.query(
+      `INSERT INTO expiry_events(product_id, branch_id, event_type, quantity, expiry_date, batch_number, notes, performed_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
+      [productId, req.user.branchId || null, eventType, qty, product[0].expiry_date, product[0].batch_number, notes || '', req.user.id]
+    );
+    // If disposed/expired, reduce stock
+    if (['EXPIRED','DISPOSED'].includes(eventType) && qty > 0) {
+      await pool.query('UPDATE products SET stock = GREATEST(stock - $1, 0), updated_at = NOW() WHERE id=$2', [qty, productId]);
+      if (req.user.branchId) {
+        await pool.query(
+          'UPDATE branch_inventory SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW() WHERE branch_id=$2 AND product_id=$3',
+          [qty, req.user.branchId, productId]
+        );
+      }
+      await pool.query(
+        `INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,'EXPIRED',$2,$3,$4,$5)`,
+        [productId, -qty, `EXP-${rows[0].id}`, req.user.id, notes || 'Expired product disposed']
+      );
+    }
+    await audit(pool, req.user.id, 'EXPIRY_EVENT', 'PRODUCT', productId, { eventType, qty }, req);
+    res.status(201).json({ message: 'Expiry event recorded.', event: rows[0] });
+  } catch (e) { next(e); }
+});
+
+// Get expiry events history
+app.get("/api/inventory/expiry-events", auth, async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const { rows } = await pool.query(
+      `SELECT ee.*, p.name AS product_name, p.barcode, u.name AS performed_by_name
+       FROM expiry_events ee
+       JOIN products p ON p.id = ee.product_id
+       LEFT JOIN users u ON u.id = ee.performed_by
+       ORDER BY ee.created_at DESC LIMIT $1`, [limit]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE: BULK IMPORT / EXPORT (CSV)
+// ═══════════════════════════════════════════════════════════════════
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = file.mimetype === 'text/csv' || file.originalname.endsWith('.csv');
+    cb(ok ? null : new Error('Only CSV files are allowed.'), ok);
+  },
+});
+
+// Export products as CSV
+app.get("/api/inventory/export", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.barcode, p.name, p.category, p.price::float AS price, p.cost_price::float AS cost_price,
+                   COALESCE(bi.quantity, 0)::int AS stock, COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+                   p.unit, p.expiry_date, p.batch_number, p.is_active
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+             WHERE p.is_active = TRUE ORDER BY p.name`;
+      params = [branchId];
+    } else {
+      sql = `SELECT barcode, name, category, price::float AS price, cost_price::float AS cost_price,
+                   stock, reorder_level, unit, expiry_date, batch_number, is_active
+             FROM products WHERE is_active = TRUE ORDER BY name`;
+      params = [];
+    }
+    const { rows } = await pool.query(sql, params);
+    const headers = ['barcode','name','category','price','cost_price','stock','reorder_level','unit','expiry_date','batch_number'];
+    const csvLines = [headers.join(',')];
+    for (const r of rows) {
+      csvLines.push(headers.map(h => {
+        let val = r[h];
+        if (val === null || val === undefined) return '';
+        val = String(val);
+        return val.includes(',') || val.includes('"') || val.includes('\n') ? '"' + val.replace(/"/g, '""') + '"' : val;
+      }).join(','));
+    }
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="rhosam-inventory-${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send(csvLines.join('\n'));
+  } catch (e) { next(e); }
+});
+
+// Import products from CSV
+app.post("/api/inventory/import", auth, allow('ADMIN'), csvUpload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No CSV file provided.' });
+    const content = req.file.buffer.toString('utf8');
+    const lines = content.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return res.status(400).json({ message: 'CSV must have a header row and at least one data row.' });
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+    const required = ['barcode', 'name', 'category', 'price'];
+    const missing = required.filter(h => !headers.includes(h));
+    if (missing.length) return res.status(400).json({ message: `Missing required columns: ${missing.join(', ')}` });
+    let created = 0, updated = 0, skipped = 0, errors = [];
+    for (let i = 1; i < lines.length; i++) {
+      try {
+        // Simple CSV parse (handles quoted fields)
+        const values = [];
+        let current = '', inQuotes = false;
+        for (const ch of lines[i]) {
+          if (ch === '"') { inQuotes = !inQuotes; continue; }
+          if (ch === ',' && !inQuotes) { values.push(current.trim()); current = ''; continue; }
+          current += ch;
+        }
+        values.push(current.trim());
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = values[idx] || ''; });
+        if (!row.barcode || !row.name) { skipped++; continue; }
+        const { rows: existing } = await pool.query('SELECT id FROM products WHERE barcode=$1', [row.barcode]);
+        if (existing[0]) {
+          await pool.query(
+            'UPDATE products SET name=$1, category=$2, price=$3, cost_price=COALESCE($4,cost_price), stock=COALESCE($5,stock), reorder_level=COALESCE($6,reorder_level), unit=COALESCE($7,unit), expiry_date=COALESCE($8,expiry_date), batch_number=COALESCE($9,batch_number), updated_at=NOW() WHERE barcode=$10',
+            [row.name, row.category, row.price, row.cost_price || null, row.stock || null, row.reorder_level || null, row.unit || null, row.expiry_date || null, row.batch_number || null, row.barcode]
+          );
+          updated++;
+        } else {
+          await pool.query(
+            'INSERT INTO products(barcode,name,category,price,cost_price,stock,reorder_level,unit,expiry_date,batch_number) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+            [row.barcode, row.name, row.category, row.price, row.cost_price || 0, row.stock || 0, row.reorder_level || 5, row.unit || 'PCS', row.expiry_date || null, row.batch_number || null]
+          );
+          created++;
+        }
+      } catch (err) { skipped++; errors.push(`Row ${i+1}: ${err.message}`); }
+    }
+    await audit(pool, req.user.id, 'CSV_IMPORT', 'PRODUCTS', null, { created, updated, skipped, file: req.file.originalname }, req);
+    res.json({ message: 'Import complete.', created, updated, skipped, errors: errors.slice(0, 20) });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE: INVENTORY AUDIT CYCLE (Stock-Taking)
+// ═══════════════════════════════════════════════════════════════════
+
+// List audits
+app.get("/api/inventory-audits", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    let sql = `SELECT ia.*, u.name AS created_by_name, u2.name AS completed_by_name, b.name AS branch_name
+               FROM inventory_audits ia
+               LEFT JOIN users u ON u.id = ia.created_by
+               LEFT JOIN users u2 ON u2.id = ia.completed_by
+               LEFT JOIN branches b ON b.id = ia.branch_id`;
+    const params = [];
+    if (branchId) { sql += ' WHERE ia.branch_id = $1'; params.push(branchId); }
+    sql += ' ORDER BY ia.created_at DESC LIMIT 50';
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// Get audit with items
+app.get("/api/inventory-audits/:id", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      `SELECT ia.*, u.name AS created_by_name, b.name AS branch_name
+       FROM inventory_audits ia
+       LEFT JOIN users u ON u.id = ia.created_by
+       LEFT JOIN branches b ON b.id = ia.branch_id
+       WHERE ia.id=$1`, [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Audit not found.' });
+    const { rows: items } = await pool.query(
+      `SELECT iai.*, p.name AS product_name, p.barcode, p.category, p.unit,
+              u.name AS counted_by_name
+       FROM inventory_audit_items iai
+       JOIN products p ON p.id = iai.product_id
+       LEFT JOIN users u ON u.id = iai.counted_by
+       WHERE iai.audit_id=$1 ORDER BY p.name`, [id]
+    );
+    res.json({ ...rows[0], items });
+  } catch (e) { next(e); }
+});
+
+// Create audit (auto-populate with current products)
+app.post("/api/inventory-audits", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { title, notes } = req.body;
+    if (!title) return res.status(400).json({ message: 'Title required.' });
+    const branchId = req.user.branchId;
+    await client.query('BEGIN');
+    const { rows: auditRows } = await client.query(
+      `INSERT INTO inventory_audits(branch_id, title, notes, created_by, status)
+       VALUES($1,$2,$3,$4,'DRAFT') RETURNING id, created_at`,
+      [branchId || null, title, notes || '', req.user.id]
+    );
+    const auditId = auditRows[0].id;
+    // Populate with current products
+    let sql, params;
+    if (branchId) {
+      sql = `SELECT p.id AS product_id, COALESCE(bi.quantity, 0)::int AS qty, p.cost_price::float
+             FROM products p
+             LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+             WHERE p.is_active = TRUE`;
+      params = [branchId];
+    } else {
+      sql = 'SELECT id AS product_id, stock AS qty, cost_price::float FROM products WHERE is_active = TRUE';
+      params = [];
+    }
+    const { rows: products } = await client.query(sql, params);
+    for (const p of products) {
+      await client.query(
+        'INSERT INTO inventory_audit_items(audit_id, product_id, system_quantity, unit_cost) VALUES($1,$2,$3,$4)',
+        [auditId, p.product_id, p.qty, p.cost_price]
+      );
+    }
+    await client.query('UPDATE inventory_audits SET total_items=$1 WHERE id=$2', [products.length, auditId]);
+    await audit(client, req.user.id, 'CREATE', 'INVENTORY_AUDIT', auditId, { title, itemCount: products.length }, req);
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Audit created.', id: auditId, totalItems: products.length });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
+});
+
+// Update audit status
+app.patch("/api/inventory-audits/:id/status", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { status } = req.body;
+    if (!['IN_PROGRESS','COMPLETED','CANCELLED'].includes(status))
+      return res.status(400).json({ message: 'Invalid status.' });
+    const updates = ['status=$1', 'updated_at=NOW()'];
+    const params = [status];
+    if (status === 'IN_PROGRESS') updates.push('started_at=NOW()');
+    if (status === 'COMPLETED') {
+      updates.push('completed_at=NOW()', `completed_by=$2`);
+      params.push(req.user.id);
+    }
+    params.push(id);
+    const { rows } = await pool.query(
+      `UPDATE inventory_audits SET ${updates.join(',')} WHERE id=$${params.length} RETURNING id, status`, params
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Audit not found.' });
+    // If completed, calculate summary
+    if (status === 'COMPLETED') {
+      const { rows: summary } = await pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER(WHERE discrepancy = 0 OR counted_quantity IS NULL)::int AS matched,
+                COUNT(*) FILTER(WHERE discrepancy != 0 AND counted_quantity IS NOT NULL)::int AS discrepant,
+                COALESCE(SUM(discrepancy_value) FILTER(WHERE discrepancy != 0 AND counted_quantity IS NOT NULL), 0)::numeric AS total_discrepancy_value
+         FROM inventory_audit_items WHERE audit_id=$1`, [id]
+      );
+      await pool.query(
+        'UPDATE inventory_audits SET total_items=$1, matched_items=$2, discrepancy_items=$3, total_discrepancy_value=$4 WHERE id=$5',
+        [summary[0].total, summary[0].matched, summary[0].discrepant, summary[0].total_discrepancy_value, id]
+      );
+    }
+    await audit(pool, req.user.id, 'UPDATE_STATUS', 'INVENTORY_AUDIT', id, { status }, req);
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Update a counted item within an audit
+app.patch("/api/inventory-audits/:auditId/items/:itemId", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const { auditId, itemId } = { auditId: Number(req.params.auditId), itemId: Number(req.params.itemId) };
+    const { countedQuantity, notes } = req.body;
+    if (countedQuantity === undefined || countedQuantity === null)
+      return res.status(400).json({ message: 'countedQuantity required.' });
+    const { rows } = await pool.query(
+      'UPDATE inventory_audit_items SET counted_quantity=$1, notes=$2, counted_by=$3, counted_at=NOW() WHERE id=$4 AND audit_id=$5 RETURNING id, product_id, system_quantity, counted_quantity, discrepancy, discrepancy_value',
+      [Number(countedQuantity), notes || '', req.user.id, itemId, auditId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Audit item not found.' });
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Delete audit (DRAFT only)
+app.delete("/api/inventory-audits/:id", auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query('SELECT status FROM inventory_audits WHERE id=$1', [id]);
+    if (!rows[0]) return res.status(404).json({ message: 'Audit not found.' });
+    if (rows[0].status !== 'DRAFT') return res.status(400).json({ message: 'Only DRAFT audits can be deleted.' });
+    await pool.query('DELETE FROM inventory_audits WHERE id=$1', [id]);
+    res.json({ message: 'Audit deleted.' });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE: STOCK ALERTS & NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+// List alert rules
+app.get("/api/alert-rules", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const { rows } = await pool.query('SELECT ar.*, u.name AS created_by_name FROM alert_rules ar LEFT JOIN users u ON u.id = ar.created_by ORDER BY ar.alert_type, ar.name');
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// Create alert rule
+app.post("/api/alert-rules", auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const { name, alertType, category, thresholdValue, thresholdUnit, notifyEmail, notifyDashboard, emailRecipients } = req.body;
+    if (!name || !alertType) return res.status(400).json({ message: 'Name and type required.' });
+    const { rows } = await pool.query(
+      `INSERT INTO alert_rules(name,alert_type,category,threshold_value,threshold_unit,notify_email,notify_dashboard,email_recipients,created_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [name, alertType, category || null, thresholdValue || 0, thresholdUnit || 'UNITS', notifyEmail || false, notifyDashboard !== false, emailRecipients || null, req.user.id]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Update alert rule
+app.patch("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, category, thresholdValue, thresholdUnit, isActive, notifyEmail, notifyDashboard, emailRecipients } = req.body;
+    const updates = [];
+    const params = [];
+    let idx = 1;
+    if (name !== undefined) { updates.push(`name=$${idx++}`); params.push(name); }
+    if (category !== undefined) { updates.push(`category=$${idx++}`); params.push(category || null); }
+    if (thresholdValue !== undefined) { updates.push(`threshold_value=$${idx++}`); params.push(thresholdValue); }
+    if (thresholdUnit !== undefined) { updates.push(`threshold_unit=$${idx++}`); params.push(thresholdUnit); }
+    if (isActive !== undefined) { updates.push(`is_active=$${idx++}`); params.push(isActive); }
+    if (notifyEmail !== undefined) { updates.push(`notify_email=$${idx++}`); params.push(notifyEmail); }
+    if (notifyDashboard !== undefined) { updates.push(`notify_dashboard=$${idx++}`); params.push(notifyDashboard); }
+    if (emailRecipients !== undefined) { updates.push(`email_recipients=$${idx++}`); params.push(emailRecipients); }
+    if (!updates.length) return res.status(400).json({ message: 'No fields to update.' });
+    updates.push('updated_at=NOW()');
+    params.push(id);
+    const { rows } = await pool.query(`UPDATE alert_rules SET ${updates.join(',')} WHERE id=$${idx} RETURNING *`, params);
+    if (!rows[0]) return res.status(404).json({ message: 'Rule not found.' });
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// Delete alert rule
+app.delete("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM alert_rules WHERE id=$1', [Number(req.params.id)]);
+    if (!rowCount) return res.status(404).json({ message: 'Rule not found.' });
+    res.json({ message: 'Rule deleted.' });
+  } catch (e) { next(e); }
+});
+
+// Get active alerts (dashboard)
+app.get("/api/stock-alerts", auth, async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    const unreadOnly = req.query.unread === 'true';
+    let sql = `SELECT sa.*, p.name AS product_name, p.barcode, b.name AS branch_name
+               FROM stock_alerts sa
+               LEFT JOIN products p ON p.id = sa.product_id
+               LEFT JOIN branches b ON b.id = sa.branch_id`;
+    const conditions = [];
+    const params = [];
+    let idx = 1;
+    if (branchId) { conditions.push(`sa.branch_id = $${idx++}`); params.push(branchId); }
+    if (unreadOnly) { conditions.push('sa.is_read = FALSE'); }
+    conditions.push('sa.is_dismissed = FALSE');
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY sa.created_at DESC LIMIT 100';
+    const { rows } = await pool.query(sql, params);
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*)::int AS total, COUNT(*) FILTER(WHERE is_read = FALSE)::int AS unread FROM stock_alerts WHERE is_dismissed = FALSE' + (branchId ? ' AND branch_id = $1' : ''),
+      branchId ? [branchId] : []
+    );
+    res.json({ alerts: rows, ...countRows[0] });
+  } catch (e) { next(e); }
+});
+
+// Scan for alerts based on rules
+app.post("/api/stock-alerts/scan", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const branchId = req.user.branchId;
+    let generated = 0;
+    const { rows: rules } = await pool.query('SELECT * FROM alert_rules WHERE is_active = TRUE');
+    for (const rule of rules) {
+      let products = [];
+      if (rule.alert_type === 'LOW_STOCK') {
+        const sql = branchId
+          ? `SELECT p.id, p.name, COALESCE(bi.quantity, 0)::int AS stock, ${rule.threshold_value} AS threshold FROM products p LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1 WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) <= ${rule.threshold_value} AND COALESCE(bi.quantity, 0) > 0`
+          : `SELECT id, name, stock, ${rule.threshold_value} AS threshold FROM products WHERE is_active = TRUE AND stock <= ${rule.threshold_value} AND stock > 0`;
+        const { rows } = await pool.query(sql, branchId ? [branchId] : []);
+        products = rows;
+      } else if (rule.alert_type === 'OUT_OF_STOCK') {
+        const sql = branchId
+          ? `SELECT p.id, p.name, COALESCE(bi.quantity, 0)::int AS stock FROM products p LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1 WHERE p.is_active = TRUE AND COALESCE(bi.quantity, 0) = 0`
+          : `SELECT id, name, stock FROM products WHERE is_active = TRUE AND stock = 0`;
+        const { rows } = await pool.query(sql, branchId ? [branchId] : []);
+        products = rows;
+      } else if (rule.alert_type === 'EXPIRING_SOON') {
+        const sql = branchId
+          ? `SELECT p.id, p.name, p.expiry_date, (p.expiry_date - CURRENT_DATE)::int AS days FROM products p LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1 WHERE p.is_active = TRUE AND p.expiry_date IS NOT NULL AND p.expiry_date <= CURRENT_DATE + INTERVAL '1 day' * $2`
+          : `SELECT id, name, expiry_date, (expiry_date - CURRENT_DATE)::int AS days FROM products WHERE is_active = TRUE AND expiry_date IS NOT NULL AND expiry_date <= CURRENT_DATE + INTERVAL '1 day' * $1`;
+        const { rows } = await pool.query(sql, branchId ? [branchId, rule.threshold_value] : [rule.threshold_value]);
+        products = rows;
+      }
+      for (const p of products) {
+        // Don't create duplicate active alerts for the same product+rule
+        const { rows: existing } = await pool.query(
+          'SELECT id FROM stock_alerts WHERE rule_id=$1 AND product_id=$2 AND branch_id IS NOT DISTINCT FROM $3 AND is_dismissed = FALSE',
+          [rule.id, p.id, branchId || null]
+        );
+        if (existing[0]) continue;
+        const severity = rule.alert_type === 'OUT_OF_STOCK' ? 'CRITICAL' : (p.days !== undefined && p.days <= 0 ? 'CRITICAL' : 'WARNING');
+        const title = `${rule.name}: ${p.name}`;
+        const message = rule.alert_type === 'EXPIRING_SOON'
+          ? `${p.name} expires on ${p.expiry_date}`
+          : `${p.name} has ${p.stock} units (threshold: ${rule.threshold_value})`;
+        await pool.query(
+          `INSERT INTO stock_alerts(rule_id, alert_type, severity, product_id, branch_id, title, message, current_value, threshold_value)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [rule.id, rule.alert_type, severity, p.id, branchId || null, title, message, p.stock, rule.threshold_value]
+        );
+        generated++;
+      }
+    }
+    await audit(pool, req.user.id, 'ALERT_SCAN', 'SYSTEM', null, { generated, rulesChecked: rules.length }, req);
+    res.json({ message: `Alert scan complete. ${generated} new alerts generated.`, generated });
+  } catch (e) { next(e); }
+});
+
+// Mark alerts as read
+app.patch("/api/stock-alerts/mark-read", auth, async (req, res, next) => {
+  try {
+    const { ids } = req.body; // array of alert IDs, or empty for "mark all"
+    if (Array.isArray(ids) && ids.length) {
+      await pool.query('UPDATE stock_alerts SET is_read = TRUE WHERE id = ANY($1)', [ids]);
+    } else {
+      const branchId = req.user.branchId;
+      if (branchId) {
+        await pool.query('UPDATE stock_alerts SET is_read = TRUE WHERE branch_id=$1 AND is_read = FALSE', [branchId]);
+      } else {
+        await pool.query('UPDATE stock_alerts SET is_read = FALSE WHERE is_read = FALSE');
+      }
+    }
+    res.json({ message: 'Alerts marked as read.' });
+  } catch (e) { next(e); }
+});
+
+// Dismiss alerts
+app.patch("/api/stock-alerts/dismiss", auth, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ message: 'ids required.' });
+    await pool.query(
+      'UPDATE stock_alerts SET is_dismissed = TRUE, dismissed_by = $1, dismissed_at = NOW() WHERE id = ANY($2)',
+      [req.user.id, ids]
+    );
+    res.json({ message: 'Alerts dismissed.' });
+  } catch (e) { next(e); }
+});
+
+// Delete alert (admin)
+app.delete("/api/stock-alerts/:id", auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM stock_alerts WHERE id=$1', [Number(req.params.id)]);
+    if (!rowCount) return res.status(404).json({ message: 'Alert not found.' });
+    res.json({ message: 'Alert deleted.' });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// NOTIFICATION SERVICE: Email (Resend) + SMS (Telnyx)
+// ═══════════════════════════════════════════════════════════════════
+
+const NOTIFICATION_EVENT_TYPES = [
+  'LOW_STOCK', 'OUT_OF_STOCK', 'EXPIRING_SOON', 'DAILY_REPORT',
+  'SALE_MILESTONE', 'NEW_SALE', 'STOCK_ADJUSTMENT', 'SYSTEM_ALERT'
+];
+
+// Send email via Resend
+async function sendEmail(to, subject, html) {
+  if (!resend) return { ok: false, error: 'Email not configured' };
+  try {
+    const { error } = await resend.emails.send({
+      from: process.env.EMAIL_FROM || 'RHoSAM <onboarding@resend.dev>',
+      to, subject, html,
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// Send SMS via Telnyx
+async function sendSMS(to, message) {
+  if (!telnyx) return { ok: false, error: 'SMS not configured' };
+  try {
+    await telnyx.messages.create({
+      to,
+      from: process.env.TELNYX_SENDER_ID || process.env.TELNYX_PHONE_NUMBER || '+1234567890',
+      text: message,
+    });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// Check user preference and send notification
+async function notifyUser(userId, eventType, { subject, emailHtml, smsText, metadata = {} }) {
+  try {
+    // Get user info
+    const { rows: userRows } = await pool.query('SELECT id, name, email, phone FROM users WHERE id=$1 AND is_active=TRUE', [userId]);
+    const user = userRows[0];
+    if (!user) return;
+
+    // Get preferences (default: email ON, SMS OFF)
+    const { rows: prefRows } = await pool.query(
+      'SELECT email_enabled, sms_enabled FROM notification_preferences WHERE user_id=$1 AND event_type=$2',
+      [userId, eventType]
+    );
+    const pref = prefRows[0] || { email_enabled: true, sms_enabled: false };
+
+    // Send email
+    if (pref.email_enabled && user.email && emailHtml) {
+      const result = await sendEmail(user.email, subject, emailHtml);
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [userId, eventType, 'EMAIL', user.email, subject, 'HTML email', result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
+      );
+    }
+
+    // Send SMS
+    if (pref.sms_enabled && user.phone && smsText) {
+      const result = await sendSMS(user.phone, smsText);
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [userId, eventType, 'SMS', user.phone, subject || 'RHoSAM', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
+      );
+    }
+  } catch (e) { console.error('[NOTIFY]', e.message); }
+}
+
+// Broadcast notification to all users with a specific role
+async function notifyRole(role, eventType, notificationData) {
+  try {
+    const { rows } = await pool.query('SELECT id FROM users WHERE role=$1 AND is_active=TRUE', [role]);
+    for (const user of rows) {
+      await notifyUser(user.id, eventType, notificationData);
+    }
+  } catch (e) { console.error('[NOTIFY BROADCAST]', e.message); }
+}
+
+// ── Notification Preferences API ───────────────────────────────
+app.get('/api/notifications/preferences', auth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM notification_preferences WHERE user_id=$1 ORDER BY event_type', [req.user.id]
+    );
+    // Include unconfigured event types with defaults
+    const configured = new Set(rows.map(r => r.event_type));
+    const defaults = NOTIFICATION_EVENT_TYPES
+      .filter(t => !configured.has(t))
+      .map(t => ({ user_id: req.user.id, event_type: t, email_enabled: true, sms_enabled: false }));
+    res.json([...rows, ...defaults]);
+  } catch (e) { next(e); }
+});
+
+app.put('/api/notifications/preferences', auth, async (req, res, next) => {
+  try {
+    const { preferences } = req.body;
+    if (!Array.isArray(preferences)) return res.status(400).json({ message: 'preferences array required.' });
+    for (const p of preferences) {
+      if (!p.event_type) continue;
+      await pool.query(
+        `INSERT INTO notification_preferences(user_id, event_type, email_enabled, sms_enabled, updated_at)
+         VALUES($1, $2, $3, $4, NOW())
+         ON CONFLICT (user_id, event_type)
+         DO UPDATE SET email_enabled=$3, sms_enabled=$4, updated_at=NOW()`,
+        [req.user.id, p.event_type, p.email_enabled !== false, p.sms_enabled === true]
+      );
+    }
+    res.json({ message: 'Preferences updated.' });
+  } catch (e) { next(e); }
+});
+
+// ── Notification Log API ───────────────────────────────────────
+app.get('/api/notifications/log', auth, async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const channel = req.query.channel;
+    const eventType = req.query.event_type;
+    let sql = 'SELECT nl.*, u.name AS user_name FROM notification_log nl LEFT JOIN users u ON u.id = nl.user_id';
+    const conditions = [];
+    const params = [];
+    let idx = 1;
+    // Admin sees all, others see only their own
+    if (req.user.role !== 'ADMIN') {
+      conditions.push(`nl.user_id = $${idx++}`);
+      params.push(req.user.id);
+    }
+    if (channel) { conditions.push(`nl.channel = $${idx++}`); params.push(channel.toUpperCase()); }
+    if (eventType) { conditions.push(`nl.event_type = $${idx++}`); params.push(eventType); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ` ORDER BY nl.created_at DESC LIMIT $${idx}`;
+    params.push(limit);
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ── Send test notification ─────────────────────────────────────
+app.post('/api/notifications/test', auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const { channel, recipient } = req.body;
+    if (!channel || !recipient) return res.status(400).json({ message: 'channel and recipient required.' });
+    if (channel === 'EMAIL') {
+      const result = await sendEmail(recipient, 'RHoSAM Test Notification',
+        `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:20px"><div style="background:#16a34a;color:white;padding:20px;border-radius:12px 12px 0 0;text-align:center"><h1 style="margin:0">📧 Test Email</h1></div><div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb;border-radius:0 0 12px 12px"><p>This is a test notification from RHoSAM Supermarket POS.</p><p style="color:#666;font-size:13px">If you received this, email notifications are working correctly.</p><p style="color:#9ca3af;font-size:12px;margin-top:16px">Sent at ${new Date().toLocaleString('en-NG')}</p></div></div>`
+      );
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+        [req.user.id, 'SYSTEM_ALERT', 'EMAIL', recipient, 'Test Email', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
+      );
+      return result.ok ? res.json({ message: 'Test email sent!' }) : res.status(500).json({ message: result.error });
+    }
+    if (channel === 'SMS') {
+      const result = await sendSMS(recipient, 'RHoSAM Test: SMS notifications are working! 🛍️');
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+        [req.user.id, 'SYSTEM_ALERT', 'SMS', recipient, 'Test SMS', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
+      );
+      return result.ok ? res.json({ message: 'Test SMS sent!' }) : res.status(500).json({ message: result.error });
+    }
+    res.status(400).json({ message: 'Invalid channel. Use EMAIL or SMS.' });
+  } catch (e) { next(e); }
+});
+
+// ── Send manual notification ───────────────────────────────────
+app.post('/api/notifications/send', auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    const { userId, eventType, subject, emailHtml, smsText } = req.body;
+    if (!userId || !eventType) return res.status(400).json({ message: 'userId and eventType required.' });
+    await notifyUser(Number(userId), eventType, { subject, emailHtml, smsText });
+    res.json({ message: 'Notification sent.' });
+  } catch (e) { next(e); }
+});
+
+// ── Notification status endpoint ───────────────────────────────
+app.get('/api/notifications/status', auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const emailConfigured = !!resend;
+    const smsConfigured = !!telnyx;
+    const { rows: stats } = await pool.query(
+      `SELECT channel, status, COUNT(*)::int AS count
+       FROM notification_log
+       WHERE created_at >= NOW() - INTERVAL '7 days'
+       GROUP BY channel, status`
+    );
+    res.json({ emailConfigured, smsConfigured, recentStats: stats });
+  } catch (e) { next(e); }
+});
+
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));
@@ -3108,4 +4709,7 @@ app.use((e, _q, r, _next) => {
   r.status(status).json({ message: e.message || "Unexpected server error." });
 });
 
-app.listen(port, () => console.log(`RHoSAM API running on http://localhost:${port}`));
+app.listen(port, async () => {
+  console.log(`RHoSAM API running on http://localhost:${port}`);
+  await loadPaymentSettings();
+});

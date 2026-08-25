@@ -11,6 +11,14 @@ async function run() {
     "migration-branch-scoping.sql",
     "migration-branch-comm.sql",
     "migration-branch-inventory.sql",
+    "migration-valuation-snapshots.sql",
+    "migration-product-expiry.sql",
+    "migration-inventory-audit.sql",
+    "migration-stock-alerts.sql",
+    "migration-notifications.sql",
+    "migration-payment-and-audit.sql",
+    "migration-payment-settings.sql",
+    "migration-paystack-terminal.sql",
   ];
 
   for (const file of migrations) {

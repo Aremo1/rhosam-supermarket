@@ -3,15 +3,16 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-
 import QRCode from "qrcode";
 import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
+import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import "./App.css";
 
 // ═══════════════════════════════════════════════════════════════════
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","categories","inventory","damages","wastage","stock-valuation","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr"],
-  MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr"],
-  CASHIER: ["dashboard","pos","cashdrawer","sales","change-password","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
+  MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
+  CASHIER: ["dashboard","pos","cashdrawer","sales","notification-prefs","change-password","wifiqr"],
 };
 const LABELS = {
   dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", categories: "Categories", inventory: "Inventory",
@@ -19,28 +20,39 @@ const LABELS = {
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
   damages: "Damages", wastage: "Wastage", "stock-valuation": "Stock Valuation",
+  expiry: "Expiry Tracking", "import-export": "Import / Export", "audit-cycle": "Audit Cycle", alerts: "Stock Alerts", notifications: "Notification Center", "notification-prefs": "Notification Settings",
   cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
-  "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR",
+  "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR", "payment-settings": "Payment Settings", terminals: "Payment Terminals",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
   damages: "⚠️", wastage: "🗑️", "stock-valuation": "💎",
+  expiry: "⏰", "import-export": "📤", "audit-cycle": "🔍", alerts: "🔔", notifications: "📬", "notification-prefs": "⚙️",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
-  "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶",
-};
+  "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶", "payment-settings": "⚙️", terminals: "💳",
+};function Layout({ children }) {
+  const { user, logout, fetchStockAlerts } = useAuth();
 
-function Layout({ children }) {
-  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
+  const [alertCount, setAlertCount] = useState(0);
   const currentPage = location.pathname.slice(1) || "dashboard";
   const menuItems = MENUS[user?.role] || MENUS.CASHIER;
+
+  // Fetch unread alert count for sidebar badge
+  useEffect(() => {
+    fetchStockAlerts(true).then(d => setAlertCount(d?.unread || 0)).catch(() => {});
+    const interval = setInterval(() => {
+      fetchStockAlerts(true).then(d => setAlertCount(d?.unread || 0)).catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [fetchStockAlerts]);
 
   // Apply dark mode class to body
   useEffect(() => {
@@ -80,6 +92,9 @@ function Layout({ children }) {
               onClick={() => { navigate(`/${key}`); setSidebarOpen(false); }}>
               <span className="nav-icon">{ICONS[key]}</span>
               <span className="nav-label">{LABELS[key]}</span>
+              {key === 'alerts' && alertCount > 0 && (
+                <span className="nav-badge" style={{ marginLeft: 'auto', background: 'var(--danger, #ef4444)', color: '#fff', fontSize: '0.65rem', fontWeight: 700, padding: '1px 6px', borderRadius: 10, minWidth: 18, textAlign: 'center' }}>{alertCount > 99 ? '99+' : alertCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -168,7 +183,7 @@ function LoginPage() {
 // DASHBOARD (Phase 9)
 // ═══════════════════════════════════════════════════════════════════
 function DashboardPage() {
-  const { fetchDashboard, fetchTopProducts, fetchCategorySales, fetchBranchSummary, fetchBranches, user } = useAuth();
+  const { fetchDashboard, fetchTopProducts, fetchCategorySales, fetchBranchSummary, fetchBranches, fetchExpiringProducts, user } = useAuth();
   const [stats, setStats] = useState(null);
   const [topProducts, setTopProducts] = useState([]);
   const [catSales, setCatSales] = useState([]);
@@ -176,6 +191,7 @@ function DashboardPage() {
   const [branches, setBranches] = useState([]);
   const [branchSummary, setBranchSummary] = useState(null);
   const [selectedBranch, setSelectedBranch] = useState("");
+  const [expiringData, setExpiringData] = useState(null);
   const isAdmin = user?.role === "ADMIN";
 
   // Load branches list for admin selector
@@ -189,11 +205,14 @@ function DashboardPage() {
   const load = useCallback(async (branchId) => {
     try {
       const bid = branchId || undefined;
-      const [s, tp, cs] = await Promise.all([fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid)]);
-      setStats(s); setTopProducts(tp); setCatSales(cs);
-    } catch { }
+      const [s, tp, cs, exp] = await Promise.allSettled([fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid), fetchExpiringProducts(30)]);
+      if (s.status === 'fulfilled') setStats(s.value);
+      if (tp.status === 'fulfilled') setTopProducts(tp.value);
+      if (cs.status === 'fulfilled') setCatSales(cs.value);
+      if (exp.status === 'fulfilled') setExpiringData(exp.value);
+    } catch (err) { console.error('[Dashboard]', err); }
     finally { setLoading(false); }
-  }, [fetchDashboard, fetchTopProducts, fetchCategorySales]);
+  }, [fetchDashboard, fetchTopProducts, fetchCategorySales, fetchExpiringProducts]);
 
   useEffect(() => { load(selectedBranch || undefined); }, [load, selectedBranch]);
 
@@ -236,6 +255,52 @@ function DashboardPage() {
         <div className="summary-card"><span>Total Transactions</span><strong>{stats.totalSales}</strong></div>
         <div className="summary-card"><span>Active Users{selectedBranch ? ' at ' + selectedBranchName : ''}</span><strong>{stats.totalUsers}</strong></div>
       </div>
+
+      {/* Expiry Alerts Widget */}
+      {expiringData && expiringData.summary && (expiringData.summary.expired > 0 || expiringData.summary.expiringSoon > 0) && (
+        <div className="panel" style={{ borderLeft: '4px solid var(--warning, #f59e0b)' }}>
+          <h2>⏰ Expiry Alerts</h2>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            {expiringData.summary.expired > 0 && (
+              <div className="summary-card" style={{ borderLeft: '3px solid var(--danger, #ef4444)' }}>
+                <span style={{ color: 'var(--danger, #ef4444)' }}>Expired</span>
+                <strong style={{ color: 'var(--danger, #ef4444)' }}>{expiringData.summary.expired}</strong>
+                <small>products past expiry</small>
+              </div>
+            )}
+            {expiringData.summary.expiringToday > 0 && (
+              <div className="summary-card" style={{ borderLeft: '3px solid var(--warning, #f59e0b)' }}>
+                <span style={{ color: 'var(--warning, #f59e0b)' }}>Expiring Today</span>
+                <strong style={{ color: 'var(--warning, #f59e0b)' }}>{expiringData.summary.expiringToday}</strong>
+                <small>expires today</small>
+              </div>
+            )}
+            {expiringData.summary.expiringSoon > 0 && (
+              <div className="summary-card" style={{ borderLeft: '3px solid var(--accent, #16a34a)' }}>
+                <span>Expiring Soon</span>
+                <strong>{expiringData.summary.expiringSoon}</strong>
+                <small>within 30 days</small>
+              </div>
+            )}
+          </div>
+          {expiringData.products?.length > 0 && (
+            <div className="table-wrap" style={{ marginTop: 8 }}>
+              <table>
+                <thead><tr><th>Product</th><th>Expiry Date</th><th>Days Left</th><th>Stock</th></tr></thead>
+                <tbody>{expiringData.products.slice(0, 5).map(p => (
+                  <tr key={p.id}>
+                    <td><strong>{p.name}</strong>{p.batch_number && <code style={{ marginLeft: 6, fontSize: 11 }}>{p.batch_number}</code>}</td>
+                    <td>{new Date(p.expiry_date).toLocaleDateString('en-NG', { dateStyle: 'medium' })}</td>
+                    <td><span className={`status-badge ${p.days_until_expiry <= 0 ? 'inactive' : p.days_until_expiry <= 7 ? 'warning' : 'active'}`}>{p.days_until_expiry <= 0 ? 'Expired' : `${p.days_until_expiry}d`}</span></td>
+                    <td>{p.stock}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              {expiringData.products.length > 5 && <p style={{ marginTop: 8, fontSize: '0.8rem' }}>… and {expiringData.products.length - 5} more. <a href="/expiry">View all →</a></p>}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Branch Overview Table (Admin only, when viewing all branches) */}
       {isAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (
@@ -367,7 +432,7 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt, user } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, verifyPayment, initializePayment, getGatewayStatus, user } = useAuth();
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
@@ -388,6 +453,12 @@ function POSPage() {
   const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
   const scanTimeoutRef = useRef(null);
+  // Payment gateway state
+  const [gatewayStatus, setGatewayStatus] = useState(null);
+  const [paymentModal, setPaymentModal] = useState(null); // { saleId, reference, authorizationUrl, gateway }
+  const [paymentVerifying, setPaymentVerifying] = useState(false);
+  const [paymentReference, setPaymentReference] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
 
   // Play a short beep for successful scans
   const playBeep = useCallback(() => {
@@ -410,7 +481,7 @@ function POSPage() {
     scanTimeoutRef.current = setTimeout(() => setScanFeedback(null), 1500);
   }, [playBeep]);
 
-  useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); }, [fetchProducts, fetchCustomers, user]);
+  useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); getGatewayStatus().then(setGatewayStatus).catch(() => {}); }, [fetchProducts, fetchCustomers, getGatewayStatus, user]);
 
   // Auto-focus search on mount and after cart changes
   useEffect(() => { searchRef.current?.focus(); }, [cart, receipt]);
@@ -441,12 +512,15 @@ function POSPage() {
 
   function addToCart(product, fromScan = false) {
     if (product.stock <= 0) { setError(`${product.name} is out of stock!`); return; }
+    // Warn if stock is low (at or below reorder level)
+    if (product.stock <= product.reorder_level) {
+      setError(`⚠️ Low stock warning: ${product.name} has only ${product.stock} unit(s) left!`);
+    }
     setCart(prev => {
       const existing = prev.find(c => c.productId === product.id);
       if (existing) return prev.map(c => c.productId === product.id ? { ...c, quantity: c.quantity + 1 } : c);
-      return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, discount: 0 }];
+      return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, discount: 0, maxStock: product.stock }];
     });
-    setError("");
     if (fromScan) showScanFeedback(product);
     setSearch("");
     setTimeout(() => searchRef.current?.focus(), 10);
@@ -494,10 +568,10 @@ function POSPage() {
     if (qty < 1) { setCart(prev => prev.filter(c => c.productId !== productId)); return; }
     // Check against available stock
     const product = products.find(p => p.id === productId);
-    if (product && qty > product.stock) {
-      setError(`Maximum stock for ${product.name} is ${product.stock}`);
-      setTimeout(() => setError(""), 2000);
-      setCart(prev => prev.map(c => c.productId === productId ? { ...c, quantity: product.stock } : c));
+    const maxQty = product?.stock || 0;
+    if (product && qty > maxQty) {
+      setError(`Cannot add more: ${product.name} only has ${maxQty} unit(s) in stock.`);
+      setCart(prev => prev.map(c => c.productId === productId ? { ...c, quantity: maxQty, maxStock: maxQty } : c));
       return;
     }
     setCart(prev => prev.map(c => c.productId === productId ? { ...c, quantity: qty } : c));
@@ -515,12 +589,45 @@ function POSPage() {
         items: cart.map(c => ({ productId: c.productId, quantity: c.quantity, discount: c.discount })),
         discount, tax, amountPaid: amountPaid ? Number(amountPaid) : total,
       });
-      setReceipt(result);
+      // For electronic payments, initialize gateway payment
+      if (payment !== "Cash" && result.id) {
+        try {
+          const initData = await initializePayment({ saleId: result.id, email: customerEmail || undefined });
+          if (initData.authorizationUrl) {
+            // Open gateway payment page in new tab
+            window.open(initData.authorizationUrl, "_blank");
+          }
+          setPaymentModal({ saleId: result.id, reference: initData.reference, gateway: initData.gateway, authorizationUrl: initData.authorizationUrl });
+          setReceipt(result);
+        } catch (payErr) {
+          // Payment init failed but sale was created — show receipt and manual verification option
+          setReceipt(result);
+          setPaymentModal({ saleId: result.id, reference: null, gateway: "INTERNAL", authorizationUrl: null, error: payErr.message });
+        }
+      } else {
+        setReceipt(result);
+      }
       setCart([]); setCustomerName("Walk-in Customer"); setCustomerId(null);
       setDiscount(0); setTax(0); setAmountPaid("");
       fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {});
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
+  }
+
+  async function handleVerifyPayment() {
+    if (!paymentModal?.saleId || !paymentReference.trim()) return;
+    setPaymentVerifying(true);
+    try {
+      await verifyPayment({
+        saleId: paymentModal.saleId,
+        gateway: paymentModal.gateway || "INTERNAL",
+        reference: paymentReference.trim(),
+      });
+      setPaymentModal(null);
+      setPaymentReference("");
+      // Reload receipt with verified status
+    } catch (err) { setError(`Verification failed: ${err.message}`); }
+    finally { setPaymentVerifying(false); }
   }
 
   async function handleEmailReceipt(e) {
@@ -532,6 +639,52 @@ function POSPage() {
       setEmailMsg("Receipt sent!");
     } catch (err) { setEmailMsg(`Error: ${err.message}`); }
     finally { setEmailSending(false); }
+  }
+
+  // Payment verification modal
+  if (paymentModal && receipt) {
+    return (
+      <div className="receipt-view">
+        <div className="receipt">
+          <h2>🛍️ RHoSAM Supermarket</h2>
+          {user?.branch?.name && <p className="muted">Branch: {user.branch.name}</p>}
+          <p className="muted">Receipt: {receipt.receiptNumber}</p>
+          <p className="muted">Payment: {receipt.paymentMethod}</p>
+          <hr />
+          <div style={{ padding: '16px 0' }}>
+            <h3>💳 Payment Verification</h3>
+            {paymentModal.authorizationUrl && (
+              <div style={{ marginBottom: 12, padding: 12, background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <p style={{ fontSize: '0.85rem', marginBottom: 8 }}>Gateway: <strong>{paymentModal.gateway}</strong></p>
+                <p style={{ fontSize: '0.85rem', marginBottom: 8 }}>Reference: <code>{paymentModal.reference}</code></p>
+                <button className="btn primary" onClick={() => window.open(paymentModal.authorizationUrl, '_blank')} style={{ fontSize: '0.85rem' }}>🔗 Open Payment Page</button>
+              </div>
+            )}
+            {paymentModal.error && (
+              <div style={{ marginBottom: 12, padding: 12, background: 'rgba(245,158,11,0.1)', borderRadius: 8, border: '1px solid rgba(245,158,11,0.3)', fontSize: '0.85rem', color: '#92400e' }}>
+                ⚠️ Gateway init failed: {paymentModal.error}
+              </div>
+            )}
+            <p className="muted" style={{ fontSize: '0.85rem', marginBottom: 8 }}>Enter the payment reference from the gateway to verify:</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="text"
+                value={paymentReference}
+                onChange={e => setPaymentReference(e.target.value)}
+                placeholder="Payment reference"
+                style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontFamily: 'monospace' }}
+              />
+              <button className="btn primary" onClick={handleVerifyPayment} disabled={paymentVerifying || !paymentReference.trim()}>
+                {paymentVerifying ? 'Verifying…' : '✓ Verify'}
+              </button>
+            </div>
+          </div>
+          <div className="receipt-actions no-print">
+            <button onClick={() => { setPaymentModal(null); setReceipt(null); setPaymentReference(""); }}>🛒 New Sale</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (receipt) {
@@ -684,31 +837,46 @@ function POSPage() {
 
         <div className="cart-list">
           {!cart.length && <div className="empty-cart">Cart is empty<br />Click a product to add it</div>}
-          {cart.map(item => (
-            <div key={item.productId} className="cart-item">
-              <div>
-                <strong>{item.name}</strong>
-                <small>₦{Number(item.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })} each</small>
+          {cart.map(item => {
+            const product = products.find(p => p.id === item.productId);
+            const availableStock = product?.stock ?? item.maxStock ?? 0;
+            const isLow = availableStock <= (product?.reorder_level || 5) && availableStock > 0;
+            const isMaxed = item.quantity >= availableStock;
+            return (
+              <div key={item.productId} className="cart-item" style={isLow ? { borderLeft: '3px solid var(--warning, #f59e0b)' } : isMaxed ? { borderLeft: '3px solid var(--danger, #ef4444)' } : {}}>
+                <div>
+                  <strong>{item.name}</strong>
+                  <small>₦{Number(item.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })} each</small>
+                  {isLow && <small style={{ color: 'var(--warning, #f59e0b)', fontSize: '0.7rem' }}>⚠️ Low stock: {availableStock} left</small>}
+                </div>
+                <div className="quantity-controls">
+                  <button onClick={() => updateQty(item.productId, item.quantity - 1)}>−</button>
+                  <span>{item.quantity}</span>
+                  <button onClick={() => updateQty(item.productId, item.quantity + 1)} disabled={isMaxed} style={isMaxed ? { opacity: 0.4, cursor: 'not-allowed' } : {}}>+</button>
+                </div>
+                <div className="cart-item-total">₦{Number(item.price * item.quantity).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
               </div>
-              <div className="quantity-controls">
-                <button onClick={() => updateQty(item.productId, item.quantity - 1)}>−</button>
-                <span>{item.quantity}</span>
-                <button onClick={() => updateQty(item.productId, item.quantity + 1)}>+</button>
-              </div>
-              <div className="cart-item-total">₦{Number(item.price * item.quantity).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="cart-summary">
           <label>Payment Method
             <select value={payment} onChange={e => setPayment(e.target.value)}>
-              <option value="Cash">Cash</option>
-              <option value="Card">Card</option>
-              <option value="Transfer">Transfer</option>
-              <option value="POS">POS</option>
+              <option value="Cash">💵 Cash</option>
+              <option value="Card">💳 Card {gatewayStatus?.activeGateway !== 'INTERNAL' ? `(${gatewayStatus?.activeGateway})` : ''}</option>
+              <option value="Transfer">🏦 Transfer {gatewayStatus?.activeGateway !== 'INTERNAL' ? `(${gatewayStatus?.activeGateway})` : ''}</option>
+              <option value="POS">📱 POS {gatewayStatus?.activeGateway !== 'INTERNAL' ? `(${gatewayStatus?.activeGateway})` : ''}</option>
             </select>
+            {payment !== 'Cash' && gatewayStatus?.activeGateway === 'INTERNAL' && (
+              <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>No gateway configured — manual verification</small>
+            )}
           </label>
+          {payment !== 'Cash' && (
+            <label>Customer Email
+              <input type="email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} placeholder="For payment link (optional)" style={{ fontSize: '0.85rem' }} />
+            </label>
+          )}
           <div className="summary-row"><span>Subtotal</span><span>₦{subtotal.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
           <label>Discount<input type="number" min="0" step="0.01" value={discount} onChange={e => setDiscount(Number(e.target.value))} /></label>
           <label>Tax<input type="number" min="0" step="0.01" value={tax} onChange={e => setTax(Number(e.target.value))} /></label>
@@ -716,6 +884,11 @@ function POSPage() {
           <label>Amount Paid<input type="number" min="0" step="0.01" value={amountPaid} onChange={e => setAmountPaid(e.target.value)} placeholder={total.toFixed(2)} /></label>
           {Number(amountPaid) > total && (
             <div className="summary-row"><span>Change</span><span className="change">₦{(Number(amountPaid) - total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
+          )}
+          {cart.some(item => { const p = products.find(x => x.id === item.productId); return p && p.stock <= p.reorder_level && p.stock > 0; }) && (
+            <div style={{ padding: '8px 12px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, fontSize: '0.8rem', color: '#92400e' }}>
+              ⚠️ Some items in cart are low on stock. After this sale, consider restocking.
+            </div>
           )}
           <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : "💳 Checkout"}</button>
         </div>
@@ -740,7 +913,7 @@ function ProductsPage() {
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
 
   const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace(/\/api$/, "");
-  const formDefault = { barcode: "", name: "", category: "", price: "", costPrice: "", stock: "", reorderLevel: "5", unit: "PCS", description: "" };
+  const formDefault = { barcode: "", name: "", category: "", price: "", costPrice: "", stock: "", reorderLevel: "5", unit: "PCS", description: "", expiryDate: "", batchNumber: "" };
   const [form, setForm] = useState(formDefault);
 
   const load = useCallback(async () => {
@@ -774,7 +947,7 @@ function ProductsPage() {
 
   function startEdit(p) {
     setEditProduct(p);
-    setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "" });
+    setForm({ barcode: p.barcode, name: p.name, category: p.category, price: p.price, costPrice: p.cost_price || 0, stock: p.stock, reorderLevel: p.reorder_level, unit: p.unit || "PCS", description: p.description || "", expiryDate: p.expiry_date ? p.expiry_date.slice(0, 10) : "", batchNumber: p.batch_number || "" });
     setDupWarnings({ barcode: null, name: null });
     setImageFile(null); setImagePreview(p.image_url ? `${API_BASE}${p.image_url}` : null);
     setShowForm(true);
@@ -845,6 +1018,8 @@ function ProductsPage() {
               <label>Unit<select value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })}>
                 <option>PCS</option><option>KG</option><option>LTR</option><option>BOX</option><option>CARTON</option><option>BAG</option>
               </select></label>
+              <label>Expiry Date<input type="date" value={form.expiryDate} onChange={e => setForm({ ...form, expiryDate: e.target.value })} /></label>
+              <label>Batch Number<input value={form.batchNumber} onChange={e => setForm({ ...form, batchNumber: e.target.value })} placeholder="e.g. BATCH-2026-001" /></label>
               <label>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></label>
               <label>Product Image
                 <div className="image-upload-area">
@@ -866,9 +1041,20 @@ function ProductsPage() {
       )}
 
       {loading ? <p className="loading">Loading…</p> : (
-        <div className="table-wrap">
+        <>
+          {products.filter(p => p.stock <= 0 && p.is_active).length > 0 && (
+            <div style={{ padding: '10px 16px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, marginBottom: 12, fontSize: '0.85rem', color: '#991b1b' }}>
+              🚫 <strong>{products.filter(p => p.stock <= 0 && p.is_active).length} product(s) are out of stock</strong> — these cannot be sold at POS until restocked.
+            </div>
+          )}
+          {products.filter(p => p.stock > 0 && p.stock <= p.reorder_level && p.is_active).length > 0 && (
+            <div style={{ padding: '10px 16px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, marginBottom: 12, fontSize: '0.85rem', color: '#92400e' }}>
+              ⚠️ <strong>{products.filter(p => p.stock > 0 && p.stock <= p.reorder_level && p.is_active).length} product(s) are low on stock</strong> — consider restocking soon.
+            </div>
+          )}
+          <div className="table-wrap">
           <table>
-            <thead><tr><th>Image</th><th>Barcode</th><th>Name</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Reorder</th><th>Unit</th><th>Status</th>{isAdmin && <th>Actions</th>}</tr></thead>
+            <thead><tr><th>Image</th><th>Barcode</th><th>Name</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Expiry</th><th>Unit</th><th>Status</th>{isAdmin && <th>Actions</th>}</tr></thead>
             <tbody>{products.map(p => (
               <tr key={p.id}>
                 <td>{p.image_url ? <img src={`${API_BASE}${p.image_url}`} alt={p.name} className="product-thumb" /> : <span className="no-image">—</span>}</td>
@@ -876,7 +1062,8 @@ function ProductsPage() {
                 <td>₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td>₦{Number(p.cost_price || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td className={p.stock <= p.reorder_level ? "low-stock" : ""}>{p.stock}</td>
-                <td>{p.reorder_level}</td><td>{p.unit}</td>
+                <td>{p.expiry_date ? (() => { const d = new Date(p.expiry_date); const days = Math.ceil((d - new Date()) / 86400000); return <span style={{ color: days <= 0 ? 'var(--danger)' : days <= 30 ? 'var(--warning)' : 'var(--muted)' }}>{d.toLocaleDateString('en-NG', { dateStyle: 'short' })}{days <= 0 ? ' ⚠️' : days <= 30 ? ` (${days}d)` : ''}</span>; })() : '—'}</td>
+                <td>{p.unit}</td>
                 <td><span className={`status-badge ${p.is_active ? "active" : "inactive"}`}>{p.is_active ? "Active" : "Inactive"}</span></td>
                 {isAdmin && <td>
                   <button className="btn-sm" onClick={() => startEdit(p)}>Edit</button>
@@ -886,7 +1073,8 @@ function ProductsPage() {
             ))}</tbody>
           </table>
           {!products.length && <p className="muted">No products found.</p>}
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -935,20 +1123,27 @@ function InventoryPage() {
       {loading ? <p className="loading">Loading…</p> : (
         <>
           {tab === "stock" && (
-            <div className="table-wrap">
+            <>
+              {products.filter(p => p.stock <= 0).length > 0 && (
+                <div style={{ padding: '10px 16px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, marginBottom: 12, fontSize: '0.85rem', color: '#991b1b' }}>
+                  🚫 <strong>{products.filter(p => p.stock <= 0).length} product(s) out of stock</strong> — adjust stock to make them available for sale.
+                </div>
+              )}
+              <div className="table-wrap">
               <table>
                 <thead><tr><th>Product</th><th>Category</th><th>Stock</th><th>Reorder Level</th><th>Status</th><th>Action</th></tr></thead>
                 <tbody>{products.map(p => (
-                  <tr key={p.id}>
+                  <tr key={p.id} style={p.stock <= 0 ? { background: 'rgba(239,68,68,0.04)' } : {}}>
                     <td>{p.name}</td><td>{p.category}</td>
                     <td className={p.stock <= p.reorder_level ? "low-stock" : ""}>{p.stock}</td>
                     <td>{p.reorder_level}</td>
-                    <td><span className={`status-badge ${p.stock > p.reorder_level ? "active" : "warning"}`}>{p.stock <= p.reorder_level ? "⚠ Low" : "✓ OK"}</span></td>
+                    <td><span className={`status-badge ${p.stock <= 0 ? 'inactive' : p.stock <= p.reorder_level ? 'warning' : 'active'}`}>{p.stock <= 0 ? '🚫 Out' : p.stock <= p.reorder_level ? '⚠ Low' : '✓ OK'}</span></td>
                     <td><button className="btn-sm" onClick={() => setAdjustModal(p)}>Adjust</button></td>
                   </tr>
                 ))}</tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
 
           {tab === "low" && (
@@ -1055,7 +1250,10 @@ function DamagesPage() {
         <div className="summary-card"><span>Units Lost</span><strong>{damages.reduce((s, d) => s + Math.abs(d.quantity), 0)}</strong></div>
       </div>
       <div className="panel-header">
-        <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Report Damage</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Report Damage</button>
+          <button className="btn secondary" onClick={() => generateDamagesReportPDF(damages, { branchName: user?.branch?.name, generatedBy: user?.name })}>📄 Export PDF</button>
+        </div>
       </div>
       {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
       {showForm && (
@@ -1142,7 +1340,10 @@ function WastagePage() {
         <div className="summary-card"><span>Units Wasted</span><strong>{wastage.reduce((s, w) => s + Math.abs(w.quantity), 0)}</strong></div>
       </div>
       <div className="panel-header">
-        <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Record Wastage</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" onClick={() => { setShowForm(true); setForm({ productId: "", quantity: "", reason: "" }); }}>+ Record Wastage</button>
+          <button className="btn secondary" onClick={() => generateWastageReportPDF(wastage, { branchName: user?.branch?.name, generatedBy: user?.name })}>📄 Export PDF</button>
+        </div>
       </div>
       {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
       {showForm && (
@@ -1191,24 +1392,56 @@ function WastagePage() {
 // STOCK VALUATION PAGE
 // ═══════════════════════════════════════════════════════════════════
 function StockValuationPage() {
-  const { fetchValuation, user } = useAuth();
+  const { fetchValuation, captureSnapshot, fetchValuationTrend, user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [tab, setTab] = useState("current");
+  const [trend, setTrend] = useState(null);
+  const [trendLoading, setTrendLoading] = useState(false);
+  const [trendDays, setTrendDays] = useState(30);
+  const [snapshotMsg, setSnapshotMsg] = useState("");
 
   const load = useCallback(async () => {
     try { setData(await fetchValuation(user?.branchId)); } catch { } finally { setLoading(false); }
   }, [fetchValuation, user]);
 
+  const loadTrend = useCallback(async () => {
+    setTrendLoading(true);
+    try { setTrend(await fetchValuationTrend(user?.branchId, trendDays)); } catch { } finally { setTrendLoading(false); }
+  }, [fetchValuationTrend, user, trendDays]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (tab === "trend") loadTrend(); }, [tab, loadTrend]);
+
+  async function handleSnapshot() {
+    setSnapshotMsg("");
+    try {
+      const res = await captureSnapshot(user?.branchId);
+      setSnapshotMsg(`Snapshot #${res.snapshot.id} captured — total value: ${fmt(res.summary.totalValue)}`);
+    } catch (err) { setSnapshotMsg(`Error: ${err.message}`); }
+  }
 
   const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
   const filtered = categoryFilter ? (data?.products || []).filter(p => p.category === categoryFilter) : (data?.products || []);
   const categories = [...new Set((data?.products || []).map(p => p.category))].sort();
 
+  const trendData = trend?.trend || [];
+  const maxVal = Math.max(...trendData.map(t => t.totalValue), 1);
+
   return (
     <div className="page-panel">
-      {data && (
+      {/* Tabs */}
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === "current" ? "active" : ""} onClick={() => setTab("current")}>📊 Current Valuation</button>
+          <button className={tab === "trend" ? "active" : ""} onClick={() => setTab("trend")}>📈 Trend History</button>
+        </div>
+        <button className="btn primary" onClick={handleSnapshot}>📸 Capture Snapshot</button>
+      </div>
+      {snapshotMsg && <div className={snapshotMsg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{snapshotMsg}</div>}
+
+      {tab === "current" && data && (
         <>
           <div className="summary-grid">
             <div className="summary-card accent"><span>Total Products</span><strong>{data.summary.totalProducts}</strong></div>
@@ -1216,13 +1449,11 @@ function StockValuationPage() {
             <div className="summary-card"><span>Total Value</span><strong>{fmt(data.summary.totalValue)}</strong></div>
             <div className="summary-card"><span>Categories</span><strong>{Object.keys(data.summary.byCategory).length}</strong></div>
           </div>
-          <div className="panel-header">
-            <div className="tabs" style={{ marginBottom: 0 }}>
-              <button className={!categoryFilter ? "active" : ""} onClick={() => setCategoryFilter("")}>All</button>
-              {categories.map(c => (
-                <button key={c} className={categoryFilter === c ? "active" : ""} onClick={() => setCategoryFilter(c)}>{c}</button>
-              ))}
-            </div>
+          <div className="tabs" style={{ marginTop: 8 }}>
+            <button className={!categoryFilter ? "active" : ""} onClick={() => setCategoryFilter("")}>All</button>
+            {categories.map(c => (
+              <button key={c} className={categoryFilter === c ? "active" : ""} onClick={() => setCategoryFilter(c)}>{c}</button>
+            ))}
           </div>
           {categoryFilter && (
             <div className="summary-grid" style={{ marginTop: 8 }}>
@@ -1249,7 +1480,6 @@ function StockValuationPage() {
               </table>
             </div>
           )}
-          {/* Category value summary */}
           <div className="panel" style={{ marginTop: 16 }}>
             <h2>Value by Category</h2>
             <div className="table-wrap">
@@ -1266,6 +1496,63 @@ function StockValuationPage() {
               </table>
             </div>
           </div>
+        </>
+      )}
+
+      {tab === "trend" && (
+        <>
+          <div className="panel-header" style={{ marginTop: 8 }}>
+            <div className="tabs" style={{ marginBottom: 0 }}>
+              {[7, 14, 30, 60, 90, 365].map(d => (
+                <button key={d} className={trendDays === d ? "active" : ""} onClick={() => setTrendDays(d)}>{d}d</button>
+              ))}
+            </div>
+          </div>
+          {trendLoading ? <p className="loading">Loading trend…</p> : trendData.length === 0 ? (
+            <p className="muted" style={{ marginTop: 16 }}>No snapshots yet. Click "Capture Snapshot" above to start tracking.</p>
+          ) : (
+            <>
+              <div className="summary-grid" style={{ marginTop: 8 }}>
+                <div className="summary-card"><span>Snapshots</span><strong>{trendData.length}</strong></div>
+                <div className="summary-card"><span>Latest Value</span><strong>{fmt(trendData[trendData.length - 1]?.totalValue)}</strong></div>
+                <div className="summary-card"><span>First Value</span><strong>{fmt(trendData[0]?.totalValue)}</strong></div>
+                <div className="summary-card"><span>Change</span><strong style={{ color: (trendData[trendData.length - 1]?.totalValue - trendData[0]?.totalValue) >= 0 ? "var(--success)" : "var(--danger)" }}>
+                  {trendData.length > 1 ? `${(trendData[trendData.length - 1]?.totalValue - trendData[0]?.totalValue) >= 0 ? '+' : ''}${fmt((trendData[trendData.length - 1]?.totalValue - trendData[0]?.totalValue).toFixed(2))}` : '—'}
+                </strong></div>
+              </div>
+              <div className="panel" style={{ marginTop: 12 }}>
+                <h2>Stock Value Over Time</h2>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 200, padding: '8px 0', overflowX: 'auto' }}>
+                  {trendData.map((t, i) => (
+                    <div key={t.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: Math.max(30, 600 / trendData.length), flex: 1 }}>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>{fmt(t.totalValue)}</div>
+                      <div title={`Value: ${fmt(t.totalValue)}\nUnits: ${t.totalUnits.toLocaleString()}\nProducts: ${t.totalProducts}${t.delta ? `\nChange: ${t.delta.value >= 0 ? '+' : ''}${fmt(t.delta.value)}` : ''}`}
+                        style={{ width: '100%', height: `${Math.max(4, (t.totalValue / maxVal) * 160)}px`, background: i === trendData.length - 1 ? 'var(--accent)' : 'var(--primary)', borderRadius: '4px 4px 0 0', transition: 'height 0.3s', cursor: 'pointer' }} />
+                      <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 60 }}>
+                        {new Date(t.date).toLocaleDateString('en-NG', { month: 'short', day: 'numeric' })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="table-wrap" style={{ marginTop: 12 }}>
+                <table>
+                  <thead><tr><th>Date</th><th>Products</th><th>Units</th><th>Total Value</th><th>Change</th></tr></thead>
+                  <tbody>{trendData.map(t => (
+                    <tr key={t.id}>
+                      <td>{new Date(t.date).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                      <td>{t.totalProducts}</td>
+                      <td>{t.totalUnits.toLocaleString()}</td>
+                      <td><strong>{fmt(t.totalValue)}</strong></td>
+                      <td style={{ color: t.delta ? (t.delta.value >= 0 ? 'var(--success)' : 'var(--danger)') : 'var(--muted)' }}>
+                        {t.delta ? `${t.delta.value >= 0 ? '+' : ''}${fmt(t.delta.value)}` : '—'}
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
@@ -3950,6 +4237,1242 @@ function WifiQRPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// EXPIRY TRACKING PAGE
+// ═══════════════════════════════════════════════════════════════════
+function ExpiryTrackingPage() {
+  const { fetchExpiringProducts, reportExpiryEvent, fetchExpiryEvents, user } = useAuth();
+  const [tab, setTab] = useState('expiring');
+  const [data, setData] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(30);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ productId: '', eventType: 'DISPOSED', quantity: '1', notes: '' });
+  const [msg, setMsg] = useState('');
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [e, ev] = await Promise.all([fetchExpiringProducts(days), fetchExpiryEvents()]);
+      setData(e); setEvents(ev);
+    } catch {} finally { setLoading(false); }
+  }, [fetchExpiringProducts, fetchExpiryEvents, days]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSubmit(e) {
+    e.preventDefault(); setMsg('');
+    try {
+      await reportExpiryEvent({ ...form, productId: Number(form.productId), quantity: Number(form.quantity) });
+      setMsg('Event recorded.'); setShowForm(false); load();
+    } catch (err) { setMsg('Error: ' + err.message); }
+  }
+
+  const fmt = (n) => '₦' + Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'expiring' ? 'active' : ''} onClick={() => setTab('expiring')}>⏰ Expiring Products</button>
+          <button className={tab === 'events' ? 'active' : ''} onClick={() => setTab('events')}>📋 Expiry Events</button>
+        </div>
+        {isAdmin && <button className="btn primary" onClick={() => setShowForm(true)}>+ Record Event</button>}
+      </div>
+
+      {tab === 'expiring' && (
+        <>
+          <div className="tabs" style={{ marginTop: 8 }}>
+            {[7, 14, 30, 60, 90].map(d => (
+              <button key={d} className={days === d ? 'active' : ''} onClick={() => setDays(d)}>{d}d</button>
+            ))}
+          </div>
+          {loading ? <p className="loading">Loading…</p> : (
+            <>
+              {data && (
+                <div className="summary-grid" style={{ marginTop: 8 }}>
+                  <div className="summary-card accent"><span>Total</span><strong>{data.summary.total}</strong></div>
+                  <div className="summary-card" style={{ color: 'var(--danger)' }}><span>Expired</span><strong>{data.summary.expired}</strong></div>
+                  <div className="summary-card" style={{ color: 'var(--warning)' }}><span>Expiring Today</span><strong>{data.summary.expiringToday}</strong></div>
+                  <div className="summary-card"><span>Expiring Soon</span><strong>{data.summary.expiringSoon}</strong></div>
+                </div>
+              )}
+              <div className="table-wrap" style={{ marginTop: 8 }}>
+                {data?.products?.length ? (
+                  <table>
+                    <thead><tr><th>Name</th><th>Barcode</th><th>Category</th><th>Expiry Date</th><th>Days Left</th><th>Stock</th><th>Cost</th><th>Value</th></tr></thead>
+                    <tbody>{data.products.map(p => (
+                      <tr key={p.id} style={{ background: p.days_until_expiry <= 0 ? 'rgba(239,68,68,0.05)' : p.days_until_expiry <= 7 ? 'rgba(245,158,11,0.05)' : 'transparent' }}>
+                        <td>{p.name}{p.batch_number && <code style={{ marginLeft: 6, fontSize: 11 }}>{p.batch_number}</code>}</td>
+                        <td><code>{p.barcode}</code></td>
+                        <td>{p.category}</td>
+                        <td>{new Date(p.expiry_date).toLocaleDateString('en-NG', { dateStyle: 'medium' })}</td>
+                        <td><span className={`status-badge ${p.days_until_expiry <= 0 ? 'inactive' : p.days_until_expiry <= 7 ? 'warning' : 'active'}`}>{p.days_until_expiry <= 0 ? 'Expired' : `${p.days_until_expiry}d`}</span></td>
+                        <td>{p.stock}</td>
+                        <td>{fmt(p.cost_price)}</td>
+                        <td>{fmt(p.cost_price * p.stock)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                ) : <p className="muted">No products expiring within {days} days. 🎉</p>}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'events' && (
+        <div className="table-wrap">
+          {events.length ? (
+            <table>
+              <thead><tr><th>Date</th><th>Product</th><th>Event</th><th>Qty</th><th>Performed By</th><th>Notes</th></tr></thead>
+              <tbody>{events.map(ev => (
+                <tr key={ev.id}>
+                  <td>{new Date(ev.created_at).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                  <td>{ev.product_name}</td>
+                  <td><span className={`status-badge ${ev.event_type === 'EXPIRED' ? 'inactive' : ev.event_type === 'DISPOSED' ? 'warning' : 'active'}`}>{ev.event_type}</span></td>
+                  <td>{ev.quantity}</td>
+                  <td>{ev.performed_by_name}</td>
+                  <td>{ev.notes || '—'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p className="muted">No expiry events recorded yet.</p>}
+        </div>
+      )}
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Record Expiry Event</h2>
+            {msg && <div className={msg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginBottom: 8 }}>{msg}</div>}
+            <form onSubmit={handleSubmit} className="form-grid">
+              <label>Product ID<input type="number" min="1" value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} required /></label>
+              <label>Event Type
+                <select value={form.eventType} onChange={e => setForm({ ...form, eventType: e.target.value })}>
+                  <option value="DISPOSED">Disposed</option>
+                  <option value="EXPIRED">Expired</option>
+                  <option value="PRICE_MARKDOWN">Price Markdown</option>
+                  <option value="NEAR_EXPIRY_ALERT">Near-Expiry Alert</option>
+                </select>
+              </label>
+              <label>Quantity<input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required /></label>
+              <label>Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Record</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BULK IMPORT / EXPORT PAGE
+// ═══════════════════════════════════════════════════════════════════
+function BulkImportExportPage() {
+  const { exportInventoryCSV, importInventoryCSV, user } = useAuth();
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const isAdmin = user?.role === 'ADMIN';
+
+  async function handleExport() {
+    try { await exportInventoryCSV(user?.branchId); } catch (err) { alert('Export failed: ' + err.message); }
+  }
+
+  async function handleFile(file) {
+    if (!file || !file.name.endsWith('.csv')) { alert('Please select a CSV file.'); return; }
+    setImporting(true); setResult(null);
+    try {
+      const r = await importInventoryCSV(file);
+      setResult(r);
+    } catch (err) { setResult({ error: err.message }); }
+    finally { setImporting(false); }
+  }
+
+  function handleDrop(e) {
+    e.preventDefault(); setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    handleFile(file);
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="summary-grid">
+        <div className="panel" style={{ flex: 1, minWidth: 300 }}>
+          <h2>📤 Export Inventory</h2>
+          <p className="muted">Download your current inventory as a CSV file for offline analysis or spreadsheet reporting.</p>
+          <button className="btn primary" onClick={handleExport} style={{ marginTop: 12 }}>Download CSV</button>
+          <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>Includes: barcode, name, category, price, cost, stock, reorder level, unit, expiry date, batch number.</p>
+        </div>
+        <div className="panel" style={{ flex: 1, minWidth: 300 }}>
+          <h2>📥 Import Products</h2>
+          <p className="muted">Upload a CSV file to bulk create or update products. New barcodes are created, existing ones are updated.</p>
+          {isAdmin ? (
+            <div
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              style={{
+                border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 8, padding: 32, textAlign: 'center', marginTop: 12,
+                background: dragOver ? 'var(--accent)10' : 'transparent', cursor: 'pointer', transition: 'all 0.2s'
+              }}
+              onClick={() => document.getElementById('csv-file-input').click()}
+            >
+              <input id="csv-file-input" type="file" accept='.csv' style={{ display: 'none' }}
+                onChange={e => handleFile(e.target.files[0])} />
+              {importing ? <p className="loading">Importing…</p> : (
+                <>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+                  <p>Drag & drop a CSV file here, or <strong>click to browse</strong></p>
+                  <p className="muted" style={{ fontSize: 12 }}>Required columns: barcode, name, category, price</p>
+                </>
+              )}
+            </div>
+          ) : (
+            <p className="muted" style={{ marginTop: 12 }}>Only administrators can import products.</p>
+          )}
+          {result && !result.error && (
+            <div className="muted" style={{ marginTop: 12, padding: 12, background: 'var(--card)', borderRadius: 8 }}>
+              <p><strong>Import Complete</strong></p>
+              <p>✅ Created: {result.created} &nbsp; 🔄 Updated: {result.updated} &nbsp; ⏭️ Skipped: {result.skipped}</p>
+              {result.errors?.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: 'pointer' }}>Show errors ({result.errors.length})</summary>
+                  <ul style={{ fontSize: 12, marginTop: 4 }}>{result.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          )}
+          {result?.error && <div className="error-msg" style={{ marginTop: 12 }}>{result.error}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INVENTORY AUDIT PAGE (Stock-Taking)
+// ═══════════════════════════════════════════════════════════════════
+function InventoryAuditPage() {
+  const { fetchAudits, getAudit, createAudit, updateAuditStatus, updateAuditItem, deleteAudit, user } = useAuth();
+  const [audits, setAudits] = useState([]);
+  const [active, setActive] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: '', notes: '' });
+  const [countModal, setCountModal] = useState(null);
+  const [countVal, setCountVal] = useState('');
+  const [countNotes, setCountNotes] = useState('');
+  const [filter, setFilter] = useState('');
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try { setAudits(await fetchAudits()); } catch {} finally { setLoading(false); }
+  }, [fetchAudits]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    try {
+      await createAudit(form); setShowForm(false); setForm({ title: '', notes: '' }); load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function openAudit(id) {
+    try { setActive(await getAudit(id)); } catch (err) { alert(err.message); }
+  }
+
+  async function handleStatusChange(id, status) {
+    try {
+      await updateAuditStatus(id, status);
+      if (active?.id === id) openAudit(id);
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleCount(e) {
+    e.preventDefault();
+    try {
+      await updateAuditItem(active.id, countModal.id, { countedQuantity: Number(countVal), notes: countNotes });
+      setCountModal(null); setCountVal(''); setCountNotes('');
+      openAudit(active.id);
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Delete this draft audit?')) return;
+    try { await deleteAudit(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  const fmt = (n) => '₦' + Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const filteredItems = active?.items?.filter(i => !filter || i.product_name.toLowerCase().includes(filter.toLowerCase()) || (i.barcode || '').includes(filter)) || [];
+  const countedCount = filteredItems.filter(i => i.counted_quantity !== null).length;
+  const discrepancies = filteredItems.filter(i => i.counted_quantity !== null && i.discrepancy !== 0);
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <h2 style={{ margin: 0 }}>{active ? `📋 Audit: ${active.title}` : 'Inventory Audits'}</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {active && <button className="btn secondary" onClick={() => setActive(null)}>← Back to List</button>}
+          {isAdmin && !active && <button className="btn primary" onClick={() => setShowForm(true)}>+ New Audit</button>}
+        </div>
+      </div>
+
+      {!active && (
+        loading ? <p className="loading">Loading…</p> : (
+          <div className="table-wrap">
+            {audits.length ? (
+              <table>
+                <thead><tr><th>Title</th><th>Branch</th><th>Status</th><th>Items</th><th>Matched</th><th>Discrepancies</th><th>Value</th><th>Created By</th><th>Date</th><th>Actions</th></tr></thead>
+                <tbody>{audits.map(a => (
+                  <tr key={a.id}>
+                    <td><button className="btn-sm" onClick={() => openAudit(a.id)}>{a.title}</button></td>
+                    <td>{a.branch_name || 'All'}</td>
+                    <td><span className={`status-badge ${a.status === 'COMPLETED' ? 'active' : a.status === 'IN_PROGRESS' ? 'warning' : a.status === 'CANCELLED' ? 'inactive' : ''}`}>{a.status}</span></td>
+                    <td>{a.total_items}</td><td>{a.matched_items}</td>
+                    <td className={a.discrepancy_items > 0 ? 'low-stock' : ''}>{a.discrepancy_items}</td>
+                    <td>{fmt(a.total_discrepancy_value)}</td>
+                    <td>{a.created_by_name}</td>
+                    <td>{new Date(a.created_at).toLocaleDateString('en-NG', { dateStyle: 'medium' })}</td>
+                    <td>
+                      {a.status === 'DRAFT' && <><button className="btn-sm" onClick={() => handleStatusChange(a.id, 'IN_PROGRESS')}>Start</button>{' '}</>}
+                      {a.status === 'IN_PROGRESS' && <button className="btn-sm" onClick={() => handleStatusChange(a.id, 'COMPLETED')}>Complete</button>}
+                      {a.status === 'DRAFT' && <>{' '}<button className="btn-sm danger" onClick={() => handleDelete(a.id)}>Delete</button></>}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No audits yet. Create one to start stock-taking.</p>}
+          </div>
+        )
+      )}
+
+      {active && (
+        <>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card"><span>Total Items</span><strong>{active.total_items}</strong></div>
+            <div className="summary-card"><span>Counted</span><strong>{countedCount}</strong></div>
+            <div className="summary-card"><span>Discrepancies</span><strong style={{ color: discrepancies.length > 0 ? 'var(--danger)' : 'var(--success)' }}>{discrepancies.length}</strong></div>
+            <div className="summary-card"><span>Status</span><strong>{active.status}</strong></div>
+          </div>
+          {active.status === 'IN_PROGRESS' && (
+            <div style={{ margin: '8px 0' }}>
+              <input className="search-input" placeholder='Search products…' value={filter} onChange={e => setFilter(e.target.value)} />
+            </div>
+          )}
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Product</th><th>Barcode</th><th>System Qty</th><th>Counted</th><th>Discrepancy</th><th>Value</th>{active.status === 'IN_PROGRESS' && <th>Action</th>}</tr></thead>
+              <tbody>{filteredItems.map(i => (
+                <tr key={i.id} style={{ background: i.discrepancy !== 0 && i.counted_quantity !== null ? 'rgba(239,68,68,0.05)' : 'transparent' }}>
+                  <td>{i.product_name}</td><td><code>{i.barcode}</code></td>
+                  <td>{i.system_quantity}</td>
+                  <td>{i.counted_quantity !== null ? i.counted_quantity : '—'}</td>
+                  <td style={{ color: i.discrepancy > 0 ? 'var(--success)' : i.discrepancy < 0 ? 'var(--danger)' : 'var(--muted)' }}>
+                    {i.counted_quantity !== null ? `${i.discrepancy > 0 ? '+' : ''}${i.discrepancy}` : '—'}
+                  </td>
+                  <td>{i.counted_quantity !== null ? fmt(i.discrepancy_value) : '—'}</td>
+                  {active.status === 'IN_PROGRESS' && (
+                    <td>
+                      <button className="btn-sm" onClick={() => { setCountModal(i); setCountVal(i.counted_quantity ?? ''); setCountNotes(i.notes || ''); }}>
+                        {i.counted_quantity !== null ? 'Edit' : 'Count'}
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Inventory Audit</h2>
+            <p className="muted">This will capture a snapshot of all current product stock levels for counting.</p>
+            <form onSubmit={handleCreate} className="form-grid">
+              <label>Title<input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required placeholder='e.g. Monthly Audit - August 2026' /></label>
+              <label>Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Create Audit</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {countModal && (
+        <div className="modal-overlay" onClick={() => setCountModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Count: {countModal.product_name}</h2>
+            <p className="muted">System quantity: {countModal.system_quantity}</p>
+            <form onSubmit={handleCount} className="form-grid">
+              <label>Counted Quantity<input type="number" min="0" value={countVal} onChange={e => setCountVal(e.target.value)} required autoFocus /></label>
+              <label>Notes<textarea value={countNotes} onChange={e => setCountNotes(e.target.value)} rows={2} placeholder='e.g. Damaged on shelf' /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setCountModal(null)}>Cancel</button>
+                <button type="submit" className="btn primary">Save Count</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STOCK ALERTS PAGE
+// ═══════════════════════════════════════════════════════════════════
+function StockAlertsPage() {
+  const { fetchStockAlerts, scanStockAlerts, markAlertsRead, dismissAlerts, fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, user } = useAuth();
+  const [tab, setTab] = useState('alerts');
+  const [alerts, setAlerts] = useState({ alerts: [], total: 0, unread: 0 });
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [showRuleForm, setShowRuleForm] = useState(false);
+  const [ruleForm, setRuleForm] = useState({ name: '', alertType: 'LOW_STOCK', thresholdValue: 5, thresholdUnit: 'UNITS', notifyDashboard: true });
+  const [msg, setMsg] = useState('');
+  const isAdmin = user?.role === 'ADMIN';
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [a, r] = await Promise.all([fetchStockAlerts(), fetchAlertRules()]);
+      setAlerts(a); setRules(r);
+    } catch {} finally { setLoading(false); }
+  }, [fetchStockAlerts, fetchAlertRules]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleScan() {
+    setScanning(true); setMsg('');
+    try {
+      const r = await scanStockAlerts();
+      setMsg(r.message); load();
+    } catch (err) { setMsg('Error: ' + err.message); }
+    finally { setScanning(false); }
+  }
+
+  async function handleCreateRule(e) {
+    e.preventDefault();
+    try {
+      await createAlertRule(ruleForm); setShowRuleForm(false);
+      setRuleForm({ name: '', alertType: 'LOW_STOCK', thresholdValue: 5, thresholdUnit: 'UNITS', notifyDashboard: true });
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleDeleteRule(id) {
+    if (!confirm('Delete this rule?')) return;
+    try { await deleteAlertRule(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  async function handleDismiss(ids) {
+    try { await dismissAlerts(ids); load(); } catch (err) { alert(err.message); }
+  }
+
+  async function handleMarkRead() {
+    try { await markAlertsRead(); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}>🔔 Active Alerts ({alerts.unread || 0})</button>
+          <button className={tab === 'rules' ? 'active' : ''} onClick={() => setTab('rules')}>⚙️ Rules ({rules.length})</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn secondary" onClick={handleScan} disabled={scanning}>{scanning ? '⏳ Scanning…' : '🔍 Scan Now'}</button>
+          {tab === 'alerts' && alerts.alerts?.length > 0 && <button className="btn secondary" onClick={handleMarkRead}>Mark All Read</button>}
+          {isAdmin && tab === 'rules' && <button className="btn primary" onClick={() => setShowRuleForm(true)}>+ New Rule</button>}
+        </div>
+      </div>
+
+      {msg && <div className="muted" style={{ margin: '8px 0' }}>{msg}</div>}
+
+      {loading ? <p className="loading">Loading…</p> : (
+        <>
+          {tab === 'alerts' && (
+            <div className="table-wrap">
+              {alerts.alerts?.length ? (
+                <table>
+                  <thead><tr><th>Severity</th><th>Type</th><th>Alert</th><th>Message</th><th>Date</th><th>Actions</th></tr></thead>
+                  <tbody>{alerts.alerts.map(a => (
+                    <tr key={a.id} style={{ background: a.is_read ? 'transparent' : 'rgba(59,130,246,0.03)' }}>
+                      <td><span className={`status-badge ${a.severity === 'CRITICAL' ? 'inactive' : a.severity === 'WARNING' ? 'warning' : 'active'}`}>{a.severity}</span></td>
+                      <td>{a.alert_type}</td>
+                      <td><strong>{a.title}</strong></td>
+                      <td>{a.message}</td>
+                      <td>{new Date(a.created_at).toLocaleDateString('en-NG', { dateStyle: 'short' })}</td>
+                      <td>
+                        <button className="btn-sm" onClick={() => handleDismiss([a.id])}>Dismiss</button>
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No active alerts. Click "Scan Now" to check for issues.</p>}
+            </div>
+          )}
+
+          {tab === 'rules' && (
+            <div className="table-wrap">
+              {rules.length ? (
+                <table>
+                  <thead><tr><th>Name</th><th>Type</th><th>Threshold</th><th>Dashboard</th><th>Email</th><th>Active</th><th>Actions</th></tr></thead>
+                  <tbody>{rules.map(r => (
+                    <tr key={r.id}>
+                      <td><strong>{r.name}</strong></td>
+                      <td><span className="status-badge active">{r.alert_type}</span></td>
+                      <td>{r.threshold_value} {r.threshold_unit}</td>
+                      <td>{r.notify_dashboard ? '✅' : '—'}</td>
+                      <td>{r.notify_email ? '✅' : '—'}</td>
+                      <td>{r.is_active ? '✅' : '❌'}</td>
+                      <td>
+                        <button className="btn-sm" onClick={() => updateAlertRule(r.id, { isActive: !r.is_active }).then(load)}>{r.is_active ? 'Disable' : 'Enable'}</button>
+                        {isAdmin && <>{' '}<button className="btn-sm danger" onClick={() => handleDeleteRule(r.id)}>Delete</button></>}
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No alert rules configured. Create one to get started.</p>}
+            </div>
+          )}
+        </>
+      )}
+
+      {showRuleForm && (
+        <div className="modal-overlay" onClick={() => setShowRuleForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Alert Rule</h2>
+            <form onSubmit={handleCreateRule} className="form-grid">
+              <label>Name<input value={ruleForm.name} onChange={e => setRuleForm({ ...ruleForm, name: e.target.value })} required placeholder='e.g. Low Stock Warning' /></label>
+              <label>Type
+                <select value={ruleForm.alertType} onChange={e => setRuleForm({ ...ruleForm, alertType: e.target.value })}>
+                  <option value='LOW_STOCK'>Low Stock</option>
+                  <option value='OUT_OF_STOCK'>Out of Stock</option>
+                  <option value='EXPIRING_SOON'>Expiring Soon</option>
+                  <option value='NEGATIVE_STOCK'>Negative Stock</option>
+                  <option value='OVERSTOCK'>Overstock</option>
+                </select>
+              </label>
+              <label>Threshold<input type='number' min='0' step='any' value={ruleForm.thresholdValue} onChange={e => setRuleForm({ ...ruleForm, thresholdValue: Number(e.target.value) })} required /></label>
+              <label>Unit
+                <select value={ruleForm.thresholdUnit} onChange={e => setRuleForm({ ...ruleForm, thresholdUnit: e.target.value })}>
+                  <option value='UNITS'>Units</option>
+                  <option value='DAYS'>Days</option>
+                  <option value='PERCENT'>Percent</option>
+                </select>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type='checkbox' checked={ruleForm.notifyDashboard} onChange={e => setRuleForm({ ...ruleForm, notifyDashboard: e.target.checked })} />
+                Show on Dashboard
+              </label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowRuleForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Create Rule</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NOTIFICATION PREFERENCES PAGE
+// ═══════════════════════════════════════════════════════════════════
+function NotificationPreferencesPage() {
+  const { fetchNotificationPreferences, updateNotificationPreferences, user } = useAuth();
+  const [prefs, setPrefs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetchNotificationPreferences().then(setPrefs).catch(() => {}).finally(() => setLoading(false));
+  }, [fetchNotificationPreferences]);
+
+  const EVENT_LABELS = {
+    LOW_STOCK: { name: 'Low Stock Alerts', desc: 'When product stock drops below reorder level', icon: '📦' },
+    OUT_OF_STOCK: { name: 'Out of Stock Alerts', desc: 'When a product hits zero stock', icon: '🚫' },
+    EXPIRING_SOON: { name: 'Expiry Alerts', desc: 'When products are approaching their expiry date', icon: '⏰' },
+    DAILY_REPORT: { name: 'Daily Reports', desc: 'End-of-day sales and performance summary', icon: '📊' },
+    SALE_MILESTONE: { name: 'Sale Milestones', desc: 'Notifications for high-value sales targets', icon: '🎯' },
+    STOCK_ADJUSTMENT: { name: 'Stock Adjustments', desc: 'When stock levels are manually changed', icon: '📋' },
+    NEW_SALE: { name: 'New Sale Notifications', desc: 'Real-time notifications for each completed sale', icon: '🛒' },
+    SYSTEM_ALERT: { name: 'System Alerts', desc: 'Critical system notifications and updates', icon: '🔔' },
+  };
+
+  function togglePref(eventType, channel) {
+    setPrefs(prev => prev.map(p => {
+      if (p.event_type !== eventType) return p;
+      if (channel === 'email') return { ...p, email_enabled: !p.email_enabled };
+      return { ...p, sms_enabled: !p.sms_enabled };
+    }));
+  }
+
+  async function handleSave() {
+    setSaving(true); setMsg('');
+    try {
+      await updateNotificationPreferences(prefs);
+      setMsg('Preferences saved!');
+    } catch (err) { setMsg('Error: ' + err.message); }
+    finally { setSaving(false); }
+  }
+
+  if (loading) return <div className="page-panel"><p className="loading">Loading preferences…</p></div>;
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div><h2 style={{ margin: 0 }}>Notification Preferences</h2><p className="muted" style={{ margin: '4px 0 0' }}>Choose how you want to be notified for each event type</p></div>
+        <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : '💾 Save Preferences'}</button>
+      </div>
+      {msg && <div className={msg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ margin: '8px 0' }}>{msg}</div>}
+      <div className="table-wrap" style={{ marginTop: 12 }}>
+        <table>
+          <thead><tr><th>Event</th><th>Description</th><th style={{ textAlign: 'center' }}>📧 Email</th><th style={{ textAlign: 'center' }}>📱 SMS</th></tr></thead>
+          <tbody>{prefs.map(p => {
+            const info = EVENT_LABELS[p.event_type] || { name: p.event_type, desc: '', icon: '📌' };
+            return (
+              <tr key={p.event_type}>
+                <td><strong>{info.icon} {info.name}</strong></td>
+                <td className="muted" style={{ fontSize: '0.85rem' }}>{info.desc}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <label style={{ cursor: 'pointer', display: 'inline-flex' }}>
+                    <input type="checkbox" checked={p.email_enabled} onChange={() => togglePref(p.event_type, 'email')} style={{ width: 18, height: 18 }} />
+                  </label>
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <label style={{ cursor: 'pointer', display: 'inline-flex' }}>
+                    <input type="checkbox" checked={p.sms_enabled} onChange={() => togglePref(p.event_type, 'sms')} style={{ width: 18, height: 18 }} />
+                  </label>
+                </td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      </div>
+      <p className="muted" style={{ marginTop: 12, fontSize: '0.8rem' }}>💡 Email notifications are sent to <strong>{user?.email}</strong>. SMS requires a phone number on your profile.</p>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NOTIFICATION CENTER PAGE (Admin)
+// ═══════════════════════════════════════════════════════════════════
+function NotificationCenterPage() {
+  const { fetchNotificationLog, sendTestNotification, getNotificationStatus, user } = useAuth();
+  const [tab, setTab] = useState('log');
+  const [log, setLog] = useState([]);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [testForm, setTestForm] = useState({ channel: 'EMAIL', recipient: user?.email || '' });
+  const [testMsg, setTestMsg] = useState('');
+  const [filter, setFilter] = useState({ channel: '', event_type: '' });
+  const isAdmin = user?.role === 'ADMIN';
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [l, s] = await Promise.all([
+        fetchNotificationLog({ ...filter, limit: 100 }),
+        isAdmin ? getNotificationStatus() : Promise.resolve(null)
+      ]);
+      setLog(l); setStatus(s);
+    } catch {} finally { setLoading(false); }
+  }, [fetchNotificationLog, getNotificationStatus, isAdmin, filter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleTest(e) {
+    e.preventDefault(); setTestMsg('');
+    try {
+      const r = await sendTestNotification(testForm);
+      setTestMsg(r.message || 'Sent!');
+    } catch (err) { setTestMsg('Error: ' + err.message); }
+  }
+
+  const channelColors = { EMAIL: 'active', SMS: 'warning' };
+  const statusColors = { SENT: 'active', FAILED: 'inactive', PENDING: 'warning' };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'log' ? 'active' : ''} onClick={() => setTab('log')}>📋 Notification Log</button>
+          {isAdmin && <button className={tab === 'status' ? 'active' : ''} onClick={() => setTab('status')}>📊 Service Status</button>}
+          {isAdmin && <button className={tab === 'test' ? 'active' : ''} onClick={() => setTab('test')}>🧪 Send Test</button>}
+        </div>
+      </div>
+
+      {tab === 'log' && (
+        <>
+          <div style={{ display: 'flex', gap: 8, margin: '8px 0' }}>
+            <select value={filter.channel} onChange={e => setFilter(f => ({ ...f, channel: e.target.value }))} className="search-input" style={{ width: 120 }}>
+              <option value="">All Channels</option>
+              <option value="EMAIL">Email</option>
+              <option value="SMS">SMS</option>
+            </select>
+            <select value={filter.event_type} onChange={e => setFilter(f => ({ ...f, event_type: e.target.value }))} className="search-input" style={{ width: 180 }}>
+              <option value="">All Events</option>
+              <option value="LOW_STOCK">Low Stock</option>
+              <option value="OUT_OF_STOCK">Out of Stock</option>
+              <option value="EXPIRING_SOON">Expiring Soon</option>
+              <option value="DAILY_REPORT">Daily Report</option>
+              <option value="SALE_MILESTONE">Sale Milestone</option>
+              <option value="SYSTEM_ALERT">System Alert</option>
+            </select>
+          </div>
+          {loading ? <p className="loading">Loading…</p> : (
+            <div className="table-wrap">
+              {log.length ? (
+                <table>
+                  <thead><tr><th>Date</th><th>Channel</th><th>Event</th><th>Recipient</th><th>Status</th><th>User</th></tr></thead>
+                  <tbody>{log.map(n => (
+                    <tr key={n.id}>
+                      <td>{new Date(n.created_at).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                      <td><span className={`status-badge ${channelColors[n.channel]}`}>{n.channel}</span></td>
+                      <td>{n.event_type}</td>
+                      <td><code style={{ fontSize: 12 }}>{n.recipient}</code></td>
+                      <td><span className={`status-badge ${statusColors[n.status]}`}>{n.status}</span></td>
+                      <td>{n.user_name || '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No notifications sent yet.</p>}
+            </div>
+          )}
+        </>
+      )}
+
+      {tab === 'status' && status && (
+        <div className="summary-grid" style={{ marginTop: 12 }}>
+          <div className="summary-card"><span>Email Service</span><strong style={{ color: status.emailConfigured ? 'var(--success)' : 'var(--danger)' }}>{status.emailConfigured ? '✅ Configured' : '❌ Not configured'}</strong><small>Resend API</small></div>
+          <div className="summary-card"><span>SMS Service</span><strong style={{ color: status.smsConfigured ? 'var(--success)' : 'var(--danger)' }}>{status.smsConfigured ? '✅ Configured' : '❌ Not configured'}</strong><small>Telnyx API</small></div>
+          {status.recentStats?.map(s => (
+            <div key={`${s.channel}-${s.status}`} className="summary-card">
+              <span>{s.channel} — {s.status}</span>
+              <strong>{s.count}</strong>
+              <small>Last 7 days</small>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'test' && (
+        <div className="panel" style={{ marginTop: 12, maxWidth: 500 }}>
+          <h3>Send Test Notification</h3>
+          <form onSubmit={handleTest} className="form-grid">
+            <label>Channel
+              <select value={testForm.channel} onChange={e => setTestForm({ ...testForm, channel: e.target.value })}>
+                <option value="EMAIL">📧 Email</option>
+                <option value="SMS">📱 SMS</option>
+              </select>
+            </label>
+            <label>Recipient
+              <input value={testForm.recipient} onChange={e => setTestForm({ ...testForm, recipient: e.target.value })} required
+                placeholder={testForm.channel === 'EMAIL' ? 'email@example.com' : '+234...'} />
+            </label>
+            <div className="form-actions">
+              <button type="submit" className="btn primary">Send Test {testForm.channel}</button>
+            </div>
+          </form>
+          {testMsg && <div className={testMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 8 }}>{testMsg}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PAYSTACK TERMINAL
+// ═══════════════════════════════════════════════════════════════════
+function TerminalPage() {
+  const { fetchTerminals, getTerminal, createTerminal, updateTerminal, deleteTerminal, chargeTerminal, getTerminalTxStatus, fetchTerminalTransactions, fetchBranches, user } = useAuth();
+  const [terminals, setTerminals] = useState([]);
+  const [paystackTerminals, setPaystackTerminals] = useState([]);
+  const [txHistory, setTxHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("devices");
+  const [selectedTerminal, setSelectedTerminal] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addForm, setAddForm] = useState({ name: "", serialNumber: "", branchId: "" });
+  const [branches, setBranches] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  // Charge flow
+  const [chargeModal, setChargeModal] = useState(null);
+  const [chargeAmount, setChargeAmount] = useState("");
+  const [chargeEmail, setChargeEmail] = useState("");
+  const [activeCharge, setActiveCharge] = useState(null);
+  const [polling, setPolling] = useState(false);
+  const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
+
+  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  const load = useCallback(async () => {
+    setLoading(true); setMsg(""); setError("");
+    try {
+      const [t, b, tx] = await Promise.all([
+        fetchTerminals(),
+        fetchBranches().catch(() => []),
+        fetchTerminalTransactions().catch(() => []),
+      ]);
+      setTerminals(t.terminals || []);
+      setPaystackTerminals(t.paystackTerminals || []);
+      setBranches(b);
+      setTxHistory(tx);
+    } catch {} finally { setLoading(false); }
+  }, [fetchTerminals, fetchBranches, fetchTerminalTransactions]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleAddTerminal(e) {
+    e.preventDefault(); setMsg(""); setError("");
+    try {
+      await createTerminal({
+        name: addForm.name,
+        serialNumber: addForm.serialNumber || undefined,
+        branchId: addForm.branchId ? Number(addForm.branchId) : undefined,
+      });
+      setMsg("Terminal registered!"); setShowAddForm(false);
+      setAddForm({ name: "", serialNumber: "", branchId: "" });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleSyncFromPaystack(psTerminal) {
+    try {
+      await createTerminal({
+        paystackTerminalId: psTerminal.id,
+        name: psTerminal.name || `Terminal ${psTerminal.terminal_id}`,
+      });
+      setMsg(`Synced "${psTerminal.name}" from Paystack!`);
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleDeleteTerminal(id, name) {
+    if (!confirm(`Remove terminal "${name}"?`)) return;
+    try { await deleteTerminal(id); load(); } catch (err) { setError(err.message); }
+  }
+
+  async function handleCharge() {
+    if (!chargeModal) return;
+    setMsg(""); setError("");
+    try {
+      const result = await chargeTerminal(chargeModal.id, {
+        amount: Number(chargeAmount),
+        email: chargeEmail || undefined,
+      });
+      setActiveCharge(result);
+      setChargeModal(null);
+      // Start polling for status
+      pollTxStatus(result.terminalTransaction.id);
+    } catch (err) { setError(err.message); }
+  }
+
+  function pollTxStatus(txId) {
+    setPolling(true);
+    const interval = setInterval(async () => {
+      try {
+        const status = await getTerminalTxStatus(txId);
+        if (status.status === "SUCCESS") {
+          clearInterval(interval);
+          setActiveCharge(prev => ({ ...prev, status: "SUCCESS" }));
+          setMsg("✅ Payment successful!");
+          setPolling(false);
+          load();
+        } else if (status.status === "FAILED") {
+          clearInterval(interval);
+          setActiveCharge(prev => ({ ...prev, status: "FAILED" }));
+          setError("Payment failed.");
+          setPolling(false);
+        }
+      } catch { }
+    }, 3000);
+    // Stop polling after 2 minutes
+    setTimeout(() => { clearInterval(interval); setPolling(false); }, 120000);
+  }
+
+  async function handleRefreshTerminal(terminal) {
+    try {
+      const fresh = await getTerminal(terminal.id);
+      setTerminals(prev => prev.map(t => t.id === terminal.id ? { ...t, ...fresh } : t));
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      {error && <div className="error-msg" style={{ marginBottom: 12 }}>{error}</div>}
+      {msg && <div style={{ background: '#dcfce7', border: '1px solid #86efac', color: '#166534', padding: '10px 14px', borderRadius: 'var(--radius-sm)', marginBottom: 12, fontWeight: 600 }}>{msg}</div>}
+
+      <div className="tabs">
+        <button className={tab === "devices" ? "active" : ""} onClick={() => setTab("devices")}>📱 Devices ({terminals.length})</button>
+        <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>📋 Transaction History</button>
+      </div>
+
+      {/* ── DEVICES TAB ── */}
+      {tab === "devices" && (
+        <>
+          <div className="panel-header" style={{ marginTop: 8 }}>
+            <button className="btn primary" onClick={() => setShowAddForm(true)}>+ Register Terminal</button>
+            <button className="btn secondary" onClick={load}>🔄 Refresh</button>
+          </div>
+
+          {/* Paystack terminals available to sync */}
+          {paystackTerminals.length > 0 && (
+            <div className="panel" style={{ borderLeft: '4px solid var(--accent, #16a34a)', marginTop: 12 }}>
+              <h2 style={{ fontSize: '0.95rem' }}>🔗 Paystack Terminals Available</h2>
+              <p className="muted" style={{ fontSize: '0.8rem', marginBottom: 8 }}>These terminals are registered on your Paystack account but not yet linked to RHoSAM.</p>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {paystackTerminals.map(pt => {
+                  const alreadySynced = terminals.some(t => t.paystack_id === pt.id);
+                  return (
+                    <div key={pt.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                      <div>
+                        <strong>{pt.name}</strong>
+                        <span className="muted" style={{ marginLeft: 8, fontSize: '0.8rem' }}>{pt.terminal_id}</span>
+                        <span className={`status-badge ${pt.status === 'active' ? 'active' : 'inactive'}`} style={{ marginLeft: 8 }}>{pt.status}</span>
+                      </div>
+                      {alreadySynced ? (
+                        <span className="muted" style={{ fontSize: '0.8rem' }}>✅ Linked</span>
+                      ) : (
+                        <button className="btn-sm" onClick={() => handleSyncFromPaystack(pt)}>Sync</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Registered terminals */}
+          {loading ? <p className="loading">Loading…</p> : (
+            <div className="table-wrap" style={{ marginTop: 12 }}>
+              {terminals.length ? (
+                <table>
+                  <thead><tr><th>Name</th><th>Code</th><th>Branch</th><th>Status</th><th>Online</th><th>Last Seen</th><th>Actions</th></tr></thead>
+                  <tbody>{terminals.map(t => (
+                    <tr key={t.id}>
+                      <td><strong>{t.name}</strong></td>
+                      <td><code>{t.terminal_code}</code></td>
+                      <td>{t.branch_name || '—'}</td>
+                      <td><span className={`status-badge ${t.status === 'active' ? 'active' : 'inactive'}`}>{t.status}</span></td>
+                      <td>{t.is_online ? <span style={{ color: 'var(--success)' }}>🟢 Online</span> : <span style={{ color: 'var(--muted)' }}>🔴 Offline</span>}</td>
+                      <td>{t.last_seen_at ? new Date(t.last_seen_at).toLocaleString() : 'Never'}</td>
+                      <td>
+                        <button className="btn-sm" onClick={() => handleRefreshTerminal(t)} title="Refresh status">🔄</button>
+                        <button className="btn-sm" onClick={() => { setChargeModal(t); setChargeAmount(""); setChargeEmail(""); }} title="Charge">💳 Charge</button>
+                        {isAdmin && <button className="btn-sm danger" onClick={() => handleDeleteTerminal(t.id, t.name)}>✕</button>}
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No terminals registered. Click "Register Terminal" or sync from Paystack above.</p>}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── TRANSACTION HISTORY TAB ── */}
+      {tab === "history" && (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          {txHistory.length ? (
+            <table>
+              <thead><tr><th>Date</th><th>Terminal</th><th>Reference</th><th>Amount</th><th>Status</th><th>Receipt</th></tr></thead>
+              <tbody>{txHistory.map(tx => (
+                <tr key={tx.id}>
+                  <td>{new Date(tx.created_at).toLocaleString()}</td>
+                  <td>{tx.terminal_name || '—'}</td>
+                  <td><code>{tx.reference}</code></td>
+                  <td>{fmt(tx.amount)}</td>
+                  <td><span className={`status-badge ${tx.status === 'SUCCESS' ? 'active' : tx.status === 'FAILED' ? 'inactive' : tx.status === 'PROCESSING' ? 'info' : 'warning'}`}>{tx.status}</span></td>
+                  <td>{tx.receipt_number || '—'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p className="muted">No terminal transactions yet.</p>}
+        </div>
+      )}
+
+      {/* ── ADD TERMINAL MODAL ── */}
+      {showAddForm && (
+        <div className="modal-overlay" onClick={() => setShowAddForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Register Terminal</h2>
+            <form onSubmit={handleAddTerminal} className="form-grid">
+              <label>Terminal Name<input value={addForm.name} onChange={e => setAddForm({ ...addForm, name: e.target.value })} required placeholder="e.g. Front Counter Terminal" /></label>
+              <label>Serial Number<input value={addForm.serialNumber} onChange={e => setAddForm({ ...addForm, serialNumber: e.target.value })} placeholder="Device serial number (optional)" /></label>
+              <label>Branch
+                <select value={addForm.branchId} onChange={e => setAddForm({ ...addForm, branchId: e.target.value })}>
+                  <option value="">No Branch</option>
+                  {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowAddForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Register</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── CHARGE MODAL ── */}
+      {chargeModal && (
+        <div className="modal-overlay" onClick={() => setChargeModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>💳 Charge: {chargeModal.name}</h2>
+            <p className="muted" style={{ marginBottom: 12 }}>Send a payment request to this terminal. The customer will tap/insert their card on the device.</p>
+            <form onSubmit={e => { e.preventDefault(); handleCharge(); }} className="form-grid">
+              <label>Amount (₦)
+                <input type="number" min="1" step="0.01" value={chargeAmount} onChange={e => setChargeAmount(e.target.value)} required autoFocus placeholder="Enter amount" style={{ fontSize: '1.2rem', fontWeight: 700 }} />
+              </label>
+              <label>Customer Email (optional)
+                <input type="email" value={chargeEmail} onChange={e => setChargeEmail(e.target.value)} placeholder="For receipt (optional)" />
+              </label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setChargeModal(null)}>Cancel</button>
+                <button type="submit" className="btn primary" disabled={!chargeAmount || Number(chargeAmount) <= 0}>💳 Send to Terminal</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── ACTIVE CHARGE STATUS ── */}
+      {activeCharge && (
+        <div className="panel" style={{ marginTop: 16, borderLeft: `4px solid ${activeCharge.status === 'SUCCESS' ? 'var(--success)' : activeCharge.status === 'FAILED' ? 'var(--danger)' : 'var(--warning)'}` }}>
+          <h2>⏳ Payment in Progress</h2>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card"><span>Reference</span><strong><code>{activeCharge.reference}</code></strong></div>
+            <div className="summary-card"><span>Amount</span><strong>{fmt(activeCharge.terminalTransaction?.amount)}</strong></div>
+            <div className="summary-card">
+              <span>Status</span>
+              <strong style={{ color: activeCharge.status === 'SUCCESS' ? 'var(--success)' : activeCharge.status === 'FAILED' ? 'var(--danger)' : 'var(--warning)' }}>
+                {activeCharge.status === 'SUCCESS' ? '✅ Success' : activeCharge.status === 'FAILED' ? '❌ Failed' : '⏳ Waiting for customer...'}
+              </strong>
+            </div>
+          </div>
+          <p className="muted" style={{ marginTop: 8, fontSize: '0.85rem' }}>{activeCharge.message}</p>
+          {polling && <p className="muted" style={{ fontSize: '0.8rem' }}>🔄 Polling for payment status every 3 seconds…</p>}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <button className="btn secondary" onClick={() => { setActiveCharge(null); setMsg(""); setError(""); }}>Dismiss</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PAYMENT SETTINGS (Admin)
+// ═══════════════════════════════════════════════════════════════════
+function PaymentSettingsPage() {
+  const { getPaymentSettings, updatePaymentSettings, user } = useAuth();
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+
+  // Form state — secrets start masked; we only send actual values when saving
+  const [form, setForm] = useState({
+    gateway: "INTERNAL",
+    paystackSecretKey: "",
+    paystackPublicKey: "",
+    flutterwaveSecretKey: "",
+    flutterwavePublicKey: "",
+    webhookSecret: "",
+    testMode: true,
+  });
+  const [showSecrets, setShowSecrets] = useState(false);
+
+  useEffect(() => {
+    getPaymentSettings()
+      .then(s => {
+        setSettings(s);
+        setForm({
+          gateway: s.gateway || "INTERNAL",
+          paystackSecretKey: s.paystackSecretKeyFull || "",
+          paystackPublicKey: s.paystackPublicKey || "",
+          flutterwaveSecretKey: s.flutterwaveSecretKeyFull || "",
+          flutterwavePublicKey: s.flutterwavePublicKey || "",
+          webhookSecret: s.webhookSecretFull || "",
+          testMode: s.testMode !== false,
+        });
+      })
+      .catch(() => setSettings({ gateway: "INTERNAL", testMode: true }))
+      .finally(() => setLoading(false));
+  }, [getPaymentSettings]);
+
+  async function handleSave(e) {
+    e.preventDefault(); setSaving(true); setError(""); setMsg("");
+    try {
+      const result = await updatePaymentSettings(form);
+      setMsg(result.message || "Saved!");
+      // Reload to show masked values
+      const fresh = await getPaymentSettings();
+      setSettings(fresh);
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  }
+
+  if (loading) return <div className="page-panel"><p className="loading">Loading payment settings…</p></div>;
+
+  return (
+    <div className="page-panel" style={{ maxWidth: 700 }}>
+      <div className="panel">
+        <h2>💳 Payment Gateway Settings</h2>
+        <p className="muted" style={{ marginBottom: 16 }}>Configure which payment gateway to use for Card, Transfer, and POS transactions. Cash payments don't require a gateway.</p>
+
+        {error && <div className="error-msg" style={{ marginBottom: 12 }}>{error}</div>}
+        {msg && <div style={{ background: '#dcfce7', border: '1px solid #86efac', color: '#166534', padding: '10px 14px', borderRadius: 'var(--radius-sm)', marginBottom: 12, fontWeight: 600 }}>{msg}</div>}
+
+        {settings?.updatedAt && (
+          <p className="muted" style={{ marginBottom: 12, fontSize: '0.8rem' }}>
+            Last updated: {new Date(settings.updatedAt).toLocaleString('en-NG')}
+          </p>
+        )}
+
+        <form onSubmit={handleSave} className="form-grid">
+          {/* Gateway Selection */}
+          <label>Active Gateway
+            <select value={form.gateway} onChange={e => setForm({ ...form, gateway: e.target.value })}>
+              <option value="INTERNAL">🔒 Internal (Cash Only — No Gateway)</option>
+              <option value="PAYSTACK">💳 Paystack</option>
+              <option value="FLUTTERWAVE">💳 Flutterwave</option>
+            </select>
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={form.testMode} onChange={e => setForm({ ...form, testMode: e.target.checked })} style={{ width: 'auto' }} />
+            Test Mode (use sandbox/test API keys)
+          </label>
+
+          {/* Paystack Settings */}
+          {form.gateway === "PAYSTACK" && (
+            <>
+              <div style={{ gridColumn: '1 / -1', marginTop: 8, padding: '8px 12px', background: 'var(--surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.85rem' }}>
+                <strong>Paystack Configuration</strong>
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.8rem' }}>Get your keys at <a href="https://dashboard.paystack.com/#/settings/keys" target="_blank" rel="noreferrer">dashboard.paystack.com</a></p>
+              </div>
+              <label>Secret Key
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type={showSecrets ? 'text' : 'password'}
+                    value={form.paystackSecretKey}
+                    onChange={e => setForm({ ...form, paystackSecretKey: e.target.value })}
+                    placeholder="sk_test_xxxxxxxx or sk_live_xxxxxxxx"
+                    style={{ flex: 1, fontFamily: 'monospace' }}
+                  />
+                </div>
+                {settings?.paystackSecretKey && <small className="muted">Current: {settings.paystackSecretKey}</small>}
+              </label>
+              <label>Public Key
+                <input
+                  type="text"
+                  value={form.paystackPublicKey}
+                  onChange={e => setForm({ ...form, paystackPublicKey: e.target.value })}
+                  placeholder="pk_test_xxxxxxxx or pk_live_xxxxxxxx"
+                  style={{ fontFamily: 'monospace' }}
+                />
+              </label>
+            </>
+          )}
+
+          {/* Flutterwave Settings */}
+          {form.gateway === "FLUTTERWAVE" && (
+            <>
+              <div style={{ gridColumn: '1 / -1', marginTop: 8, padding: '8px 12px', background: 'var(--surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.85rem' }}>
+                <strong>Flutterwave Configuration</strong>
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.8rem' }}>Get your keys at <a href="https://dashboard.flutterwave.com/dashboard/settings/apis" target="_blank" rel="noreferrer">dashboard.flutterwave.com</a></p>
+              </div>
+              <label>Secret Key
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type={showSecrets ? 'text' : 'password'}
+                    value={form.flutterwaveSecretKey}
+                    onChange={e => setForm({ ...form, flutterwaveSecretKey: e.target.value })}
+                    placeholder="FLWSECK-xxxxxxxx"
+                    style={{ flex: 1, fontFamily: 'monospace' }}
+                  />
+                </div>
+                {settings?.flutterwaveSecretKey && <small className="muted">Current: {settings.flutterwaveSecretKey}</small>}
+              </label>
+              <label>Public Key
+                <input
+                  type="text"
+                  value={form.flutterwavePublicKey}
+                  onChange={e => setForm({ ...form, flutterwavePublicKey: e.target.value })}
+                  placeholder="FLWPUBK-xxxxxxxx"
+                  style={{ fontFamily: 'monospace' }}
+                />
+              </label>
+            </>
+          )}
+
+          {/* Webhook Secret (shown for both gateways) */}
+          {form.gateway !== "INTERNAL" && (
+            <label>Webhook Secret
+              <input
+                type={showSecrets ? 'text' : 'password'}
+                value={form.webhookSecret}
+                onChange={e => setForm({ ...form, webhookSecret: e.target.value })}
+                placeholder="For verifying gateway callbacks"
+                style={{ fontFamily: 'monospace' }}
+              />
+              {settings?.webhookSecret && <small className="muted">Current: {settings.webhookSecret}</small>}
+            </label>
+          )}
+
+          {/* Show/hide secrets toggle */}
+          {form.gateway !== "INTERNAL" && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="checkbox" checked={showSecrets} onChange={e => setShowSecrets(e.target.checked)} style={{ width: 'auto' }} />
+              Show secret keys
+            </label>
+          )}
+
+          <div className="form-actions">
+            <button type="submit" className="btn primary" disabled={saving}>{saving ? "Saving…" : "💾 Save Settings"}</button>
+          </div>
+        </form>
+
+        {/* Webhook URLs */}
+        {form.gateway !== "INTERNAL" && (
+          <div style={{ marginTop: 20, padding: 16, background: 'var(--surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: '0.95rem' }}>📡 Webhook URLs</h3>
+            <p className="muted" style={{ marginBottom: 8, fontSize: '0.8rem' }}>Add these URLs in your {form.gateway} dashboard to receive payment confirmations:</p>
+            <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', background: 'var(--card-bg)', padding: 12, borderRadius: 6, border: '1px solid var(--border)', wordBreak: 'break-all' }}>
+              <div style={{ marginBottom: 4 }}><strong>Paystack:</strong> {window.location.origin}/api/webhooks/paystack</div>
+              <div><strong>Flutterwave:</strong> {window.location.origin}/api/webhooks/flutterwave</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -3990,7 +5513,14 @@ export default function App() {
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/mfa" element={<MfaSetupPage />} />
           <Route path="/wifiqr" element={<WifiQRPage />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/expiry" element={<ExpiryTrackingPage />} />
+          <Route path="/import-export" element={<BulkImportExportPage />} />
+          <Route path="/audit-cycle" element={<InventoryAuditPage />} />
+          <Route path="/alerts" element={<StockAlertsPage />} />
+          <Route path="/notifications" element={<NotificationCenterPage />} />           <Route path="/notification-prefs" element={<NotificationPreferencesPage />} />
+           <Route path="/payment-settings" element={<PaymentSettingsPage />} />
+           <Route path="/terminals" element={<TerminalPage />} />
+           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout></AuthGate>} />
     </Routes>

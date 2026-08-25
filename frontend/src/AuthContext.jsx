@@ -73,6 +73,8 @@ export function AuthProvider({ children }) {
     reportDamage: (data) => request("/inventory/damage", { method: "POST", body: JSON.stringify(data) }),
     reportWastage: (data) => request("/inventory/wastage", { method: "POST", body: JSON.stringify(data) }),
     fetchValuation: (branchId) => request(`/inventory/valuation${branchId ? `?branchId=${branchId}` : ""}`),
+    captureSnapshot: (branchId) => request(`/inventory/snapshot${branchId ? `?branchId=${branchId}` : ""}`, { method: "POST" }),
+    fetchValuationTrend: (branchId, days) => request(`/inventory/trend${branchId ? `?branchId=${branchId}` : ""}${days ? `${branchId ? '&' : '?'}days=${days}` : ""}`),
     fetchSales: (params) => request(`/sales${params ? `?${new URLSearchParams(params)}` : ""}`),
     getSale: (id) => request(`/sales/${id}`),
     createSale: (data) => request("/sales", { method: "POST", body: JSON.stringify(data) }),
@@ -152,6 +154,51 @@ export function AuthProvider({ children }) {
     // Auto Reorder
     fetchAutoReorderSuggestions: () => request("/auto-reorder/suggestions"),
     createAutoReorder: (items) => request("/auto-reorder/create", { method: "POST", body: JSON.stringify({ items }) }),
+    // Expiry tracking
+    fetchExpiringProducts: (days) => request(`/inventory/expiring${days ? `?days=${days}` : ''}`),
+    reportExpiryEvent: (data) => request('/inventory/expiry-event', { method: 'POST', body: JSON.stringify(data) }),
+    fetchExpiryEvents: (limit) => request(`/inventory/expiry-events${limit ? `?limit=${limit}` : ''}`),
+    // Bulk import/export
+    exportInventoryCSV: async (branchId) => {
+      const token = localStorage.getItem('rhosam_token');
+      const r = await fetch(`${API}/inventory/export${branchId ? `?branchId=${branchId}` : ''}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error('Export failed');
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = `rhosam-inventory-${new Date().toISOString().slice(0,10)}.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    },
+    importInventoryCSV: async (file) => {
+      const token = localStorage.getItem('rhosam_token');
+      const fd = new FormData(); fd.append('file', file);
+      const r = await fetch(`${API}/inventory/import`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+      const d = await r.json(); if (!r.ok) throw new Error(d.message || 'Import failed'); return d;
+    },
+    // Inventory audits
+    fetchAudits: () => request('/inventory-audits'),
+    getAudit: (id) => request(`/inventory-audits/${id}`),
+    createAudit: (data) => request('/inventory-audits', { method: 'POST', body: JSON.stringify(data) }),
+    updateAuditStatus: (id, status) => request(`/inventory-audits/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+    updateAuditItem: (auditId, itemId, data) => request(`/inventory-audits/${auditId}/items/${itemId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    deleteAudit: (id) => request(`/inventory-audits/${id}`, { method: 'DELETE' }),
+    // Stock alerts
+    fetchAlertRules: () => request('/alert-rules'),
+    createAlertRule: (data) => request('/alert-rules', { method: 'POST', body: JSON.stringify(data) }),
+    updateAlertRule: (id, data) => request(`/alert-rules/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    deleteAlertRule: (id) => request(`/alert-rules/${id}`, { method: 'DELETE' }),
+    fetchStockAlerts: (unreadOnly) => request(`/stock-alerts${unreadOnly ? '?unread=true' : ''}`),
+    scanStockAlerts: () => request('/stock-alerts/scan', { method: 'POST' }),
+    markAlertsRead: (ids) => request('/stock-alerts/mark-read', { method: 'PATCH', body: JSON.stringify({ ids: ids || [] }) }),
+    dismissAlerts: (ids) => request('/stock-alerts/dismiss', { method: 'PATCH', body: JSON.stringify({ ids }) }),
+    deleteStockAlert: (id) => request(`/stock-alerts/${id}`, { method: 'DELETE' }),
+    // Notifications
+    fetchNotificationPreferences: () => request('/notifications/preferences'),
+    updateNotificationPreferences: (preferences) => request('/notifications/preferences', { method: 'PUT', body: JSON.stringify({ preferences }) }),
+    fetchNotificationLog: (params) => request(`/notifications/log${params ? `?${new URLSearchParams(params)}` : ''}`),
+    sendTestNotification: (data) => request('/notifications/test', { method: 'POST', body: JSON.stringify(data) }),
+    sendNotification: (data) => request('/notifications/send', { method: 'POST', body: JSON.stringify(data) }),
+    getNotificationStatus: () => request('/notifications/status'),
     // Executive Dashboard
     fetchExecutiveOverview: () => request("/executive/overview"),
     // Customer Display
@@ -167,6 +214,20 @@ export function AuthProvider({ children }) {
     // Payment Verification
     verifyPayment: (data) => request("/payments/verify", { method: "POST", body: JSON.stringify(data) }),
     getPaymentVerifications: (saleId) => request(`/payments/verify/${saleId}`),
+    initializePayment: (data) => request("/payments/initialize", { method: "POST", body: JSON.stringify(data) }),
+    getGatewayStatus: () => request("/payments/gateway-status"),
+    // Payment Settings (Admin)
+    getPaymentSettings: () => request("/payment-settings"),
+    updatePaymentSettings: (data) => request("/payment-settings", { method: "PUT", body: JSON.stringify(data) }),
+    // Terminal Management
+    fetchTerminals: () => request("/terminals"),
+    getTerminal: (id) => request(`/terminals/${id}`),
+    createTerminal: (data) => request("/terminals", { method: "POST", body: JSON.stringify(data) }),
+    updateTerminal: (id, data) => request(`/terminals/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteTerminal: (id) => request(`/terminals/${id}`, { method: "DELETE" }),
+    chargeTerminal: (terminalId, data) => request(`/terminals/${terminalId}/charge`, { method: "POST", body: JSON.stringify(data) }),
+    getTerminalTxStatus: (txId) => request(`/terminals/transactions/${txId}/status`),
+    fetchTerminalTransactions: (params) => request(`/terminals/transactions${params ? `?${new URLSearchParams(params)}` : ""}`),
     // Admin Backup
     downloadBackup: async () => {
       const token = localStorage.getItem("rhosam_token");

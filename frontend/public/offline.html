@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RHoSAM POS — Offline</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f3f6f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #1f2937;
+    }
+    .offline-container {
+      text-align: center;
+      max-width: 420px;
+      padding: 40px 32px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    .offline-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.7; transform: scale(1.05); }
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: #111827;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #6b7280;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .offline-features {
+      text-align: left;
+      background: #f9fafb;
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+    }
+    .offline-features h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .offline-features ul {
+      list-style: none;
+      font-size: 14px;
+    }
+    .offline-features li {
+      padding: 6px 0;
+      color: #4b5563;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .offline-features li::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #16a34a;
+      flex-shrink: 0;
+    }
+    .retry-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 32px;
+      background: #16a34a;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .retry-btn:hover {
+      background: #15803d;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(22,163,74,0.3);
+    }
+    .retry-btn:active {
+      transform: translateY(0);
+    }
+    .spinner {
+      display: none;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    .retry-btn.loading .spinner { display: block; }
+    .retry-btn.loading .btn-text { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .footer {
+      margin-top: 20px;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-container">
+    <div class="offline-icon">📡</div>
+    <h1>You're Offline</h1>
+    <p class="subtitle">
+      No internet connection detected. Some features may be limited, but you can still access cached data.
+    </p>
+    <div class="offline-features">
+      <h3>Available Offline</h3>
+      <ul>
+        <li>View recently accessed pages</li>
+        <li>Browse cached product catalog</li>
+        <li>View cached sales data</li>
+        <li>Draft sales (sync when back online)</li>
+      </ul>
+    </div>
+    <button class="retry-btn" onclick="retryConnection()" id="retryBtn">
+      <div class="spinner"></div>
+      <span class="btn-text">🔄 Try Again</span>
+    </button>
+    <p class="footer">RHoSAM Supermarket POS</p>
+  </div>
+  <script>
+    // Auto-retry when online
+    window.addEventListener('online', () => {
+      window.location.reload();
+    });
+
+    function retryConnection() {
+      const btn = document.getElementById('retryBtn');
+      btn.classList.add('loading');
+      // Try to reload after brief delay
+      setTimeout(() => {
+        if (navigator.onLine) {
+          window.location.reload();
+        } else {
+          btn.classList.remove('loading');
+          alert('Still offline. Please check your internet connection.');
+        }
+      }, 1500);
+    }
+
+    // Check connection every 5 seconds
+    setInterval(() => {
+      if (navigator.onLine) {
+        window.location.reload();
+      }
+    }, 5000);
+  </script>
+</body>
+</html>
