@@ -5,13 +5,13 @@
 -- Registered terminal devices
 CREATE TABLE IF NOT EXISTS terminal_devices (
   id SERIAL PRIMARY KEY,
-  paystack_id INTEGER UNIQUE NOT NULL,          -- Paystack terminal ID
-  terminal_code VARCHAR(20) UNIQUE NOT NULL,    -- Device code (e.g. 2872S934)
+  paystack_id INTEGER,                           -- Paystack terminal ID (nullable for standalone terminals)
+  terminal_code VARCHAR(20) UNIQUE NOT NULL,
   serial_number VARCHAR(50),
   name VARCHAR(100) NOT NULL,
   device_make VARCHAR(50),
   address TEXT,
-  status VARCHAR(20) NOT NULL DEFAULT 'active', -- active, inactive, decommissioned
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
   branch_id INTEGER REFERENCES branches(id),
   is_online BOOLEAN DEFAULT FALSE,
   last_seen_at TIMESTAMPTZ,
@@ -19,16 +19,20 @@ CREATE TABLE IF NOT EXISTS terminal_devices (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Fix existing tables: make paystack_id nullable and drop unique constraint
+ALTER TABLE terminal_devices ALTER COLUMN paystack_id DROP NOT NULL;
+ALTER TABLE terminal_devices DROP CONSTRAINT IF EXISTS terminal_devices_paystack_id_key;
+
 -- Terminal payment transactions
 CREATE TABLE IF NOT EXISTS terminal_transactions (
   id SERIAL PRIMARY KEY,
   sale_id BIGINT REFERENCES sales(id),
   terminal_id INTEGER REFERENCES terminal_devices(id),
-  paystack_transaction_id INTEGER,              -- Paystack transaction ID
-  event_id VARCHAR(50),                         -- Terminal event ID (for tracking delivery)
+  paystack_transaction_id INTEGER,
+  event_id VARCHAR(50),
   reference VARCHAR(100) NOT NULL,
   amount NUMERIC(14,2) NOT NULL,
-  status VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- PENDING, SENT, PROCESSING, SUCCESS, FAILED, CANCELLED
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
   event_delivered BOOLEAN DEFAULT FALSE,
   gateway_response JSONB DEFAULT '{}',
   error_message TEXT,

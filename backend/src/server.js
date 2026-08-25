@@ -3746,14 +3746,12 @@ app.post("/api/terminals", auth, allow("ADMIN"), async (req, res, next) => {
       }
     }
 
-    const psId = terminalData.id || Number(paystackTerminalId);
+    const psId = terminalData.id || (paystackTerminalId ? Number(paystackTerminalId) : null);
     const code = terminalData.terminal_id || serialNumber || `TERM-${Date.now()}`;
     const serial = terminalData.serial_number || serialNumber || null;
     const deviceMake = terminalData.device_make || null;
     const address = terminalData.address || null;
     const psStatus = terminalData.status || "active";
-
-    if (!psId) return res.status(400).json({ message: "Paystack terminal ID or serial number is required." });
 
     const { rows } = await pool.query(
       `INSERT INTO terminal_devices(paystack_id, terminal_code, serial_number, name, device_make, address, status, branch_id)
@@ -3933,8 +3931,10 @@ app.get("/api/terminals/transactions/:txId/status", auth, async (req, res, next)
 // List terminal transactions
 app.get("/api/terminals/transactions", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
-    const terminalId = req.query.terminalId ? Number(req.query.terminalId) : null;
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    const rawTerminalId = parseInt(req.query.terminalId, 10);
+    const terminalId = Number.isFinite(rawTerminalId) && rawTerminalId > 0 ? rawTerminalId : null;
     let sql = `SELECT tt.*, td.name AS terminal_name, td.terminal_code, s.receipt_number
                FROM terminal_transactions tt
                LEFT JOIN terminal_devices td ON td.id = tt.terminal_id
