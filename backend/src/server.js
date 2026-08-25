@@ -3931,22 +3931,20 @@ app.get("/api/terminals/transactions/:txId/status", auth, async (req, res, next)
 // List terminal transactions
 app.get("/api/terminals/transactions", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const rawLimit = parseInt(req.query.limit, 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-    const rawTerminalId = parseInt(req.query.terminalId, 10);
-    const terminalId = Number.isFinite(rawTerminalId) && rawTerminalId > 0 ? rawTerminalId : null;
-    let sql = `SELECT tt.*, td.name AS terminal_name, td.terminal_code, s.receipt_number
-               FROM terminal_transactions tt
-               LEFT JOIN terminal_devices td ON td.id = tt.terminal_id
-               LEFT JOIN sales s ON s.id = tt.sale_id`;
-    const params = [];
-    if (terminalId) { sql += " WHERE tt.terminal_id=$1"; params.push(terminalId); }
-    sql += ` ORDER BY tt.created_at DESC LIMIT $${params.length + 1}`;
-    params.push(limit);
-    const { rows } = await pool.query(sql, params);
+    const lim = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const tId = parseInt(req.query.terminalId, 10) || null;
+    const params = tId ? [tId] : [];
+    const where = tId ? " WHERE tt.terminal_id=$1" : "";
+    const rows = (await pool.query(
+      `SELECT tt.id, tt.sale_id, tt.terminal_id, tt.reference, tt.amount, tt.status, tt.created_at,
+              td.name AS terminal_name, td.terminal_code, s.receipt_number
+       FROM terminal_transactions tt
+       LEFT JOIN terminal_devices td ON td.id = tt.terminal_id
+       LEFT JOIN sales s ON s.id = tt.sale_id
+       ${where} ORDER BY tt.created_at DESC LIMIT ${lim}`
+    )).rows;
     res.json(rows);
   } catch (e) {
-    // If table doesn't exist or query fails, return empty array
     if (e.message.includes("does not exist") || e.message.includes("NaN") || e.code === "42P01") {
       return res.json([]);
     }
