@@ -3945,7 +3945,13 @@ app.get("/api/terminals/transactions", auth, allow("ADMIN", "MANAGER"), async (r
     params.push(limit);
     const { rows } = await pool.query(sql, params);
     res.json(rows);
-  } catch (e) { next(e); }
+  } catch (e) {
+    // If table doesn't exist or query fails, return empty array
+    if (e.message.includes("does not exist") || e.message.includes("NaN") || e.code === "42P01") {
+      return res.json([]);
+    }
+    next(e);
+  }
 });
 
 // ── Paystack Webhook ───────────────────────────────────────────
