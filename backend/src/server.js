@@ -1277,7 +1277,7 @@ app.post("/api/inventory/snapshot", auth, allow("ADMIN", "MANAGER"), async (req,
     const { rows } = await pool.query(sql, params);
     const totalProducts = rows.length;
     const totalUnits = rows.reduce((s, r) => s + r.stock, 0);
-    const totalValue = rows.reduce((s, r) => s + (r.total_value || 0), 0);
+    const totalValue = rows.reduce((s, r) => s + Number(r.total_value || 0), 0);
     const byCategory = {};
     rows.forEach(r => {
       if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
@@ -1371,7 +1371,7 @@ app.post("/api/inventory/auto-snapshot", auth, allow("ADMIN"), async (req, res, 
     if (globalProducts.length > 0) {
       const totalProducts = globalProducts.length;
       const totalUnits = globalProducts.reduce((s, r) => s + r.stock, 0);
-      const totalValue = globalProducts.reduce((s, r) => s + (r.total_value || 0), 0);
+      const totalValue = globalProducts.reduce((s, r) => s + Number(r.total_value || 0), 0);
       const byCategory = {};
       globalProducts.forEach(r => {
         if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
@@ -1399,7 +1399,7 @@ app.post("/api/inventory/auto-snapshot", auth, allow("ADMIN"), async (req, res, 
       if (branchProducts.length > 0) {
         const totalProducts = branchProducts.length;
         const totalUnits = branchProducts.reduce((s, r) => s + r.stock, 0);
-        const totalValue = branchProducts.reduce((s, r) => s + (r.total_value || 0), 0);
+        const totalValue = branchProducts.reduce((s, r) => s + Number(r.total_value || 0), 0);
         const byCategory = {};
         branchProducts.forEach(r => {
           if (!byCategory[r.category]) byCategory[r.category] = { units: 0, value: 0 };
@@ -4709,7 +4709,10 @@ app.use((e, _q, r, _next) => {
   r.status(status).json({ message: e.message || "Unexpected server error." });
 });
 
+const { runMigrations } = require("./run-migrations");
+
 app.listen(port, async () => {
   console.log(`RHoSAM API running on http://localhost:${port}`);
+  try { await runMigrations(pool); } catch (e) { console.error("[MIGRATIONS] Error:", e.message); }
   await loadPaymentSettings();
 });

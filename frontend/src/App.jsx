@@ -438,8 +438,9 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt, verifyPayment, initializePayment, getGatewayStatus, user } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user } = useAuth();
   const [products, setProducts] = useState([]);
+  const [drawerOk, setDrawerOk] = useState(null); // null = loading, true = open, false = no drawer
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
@@ -488,6 +489,12 @@ function POSPage() {
   }, [playBeep]);
 
   useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); getGatewayStatus().then(setGatewayStatus).catch(() => {}); }, [fetchProducts, fetchCustomers, getGatewayStatus, user]);
+
+  // Check if cash drawer is open (required for cashiers)
+  useEffect(() => {
+    if (user?.role === 'ADMIN' || user?.role === 'MANAGER') { setDrawerOk(true); return; }
+    getActiveDrawer().then(d => setDrawerOk(!!d?.id)).catch(() => setDrawerOk(false));
+  }, [getActiveDrawer, user]);
 
   // Auto-focus search on mount and after cart changes
   useEffect(() => { searchRef.current?.focus(); }, [cart, receipt]);
@@ -655,6 +662,7 @@ function POSPage() {
           <h2>🛍️ RHoSAM Supermarket</h2>
           {user?.branch?.name && <p className="muted">Branch: {user.branch.name}</p>}
           <p className="muted">Receipt: {receipt.receiptNumber}</p>
+          <p className="muted">Date: {receipt.created_at ? new Date(receipt.created_at).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</p>
           <p className="muted">Payment: {receipt.paymentMethod}</p>
           <hr />
           <div style={{ padding: '16px 0' }}>
@@ -700,6 +708,7 @@ function POSPage() {
           <h2>🛍️ RHoSAM Supermarket</h2>
           {user?.branch?.name && <p className="muted">Branch: {user.branch.name}</p>}
           <p className="muted">Receipt: {receipt.receiptNumber}</p>
+          <p className="muted">Date: {receipt.created_at ? new Date(receipt.created_at).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</p>
           <p className="muted">Cashier: {receipt.cashierName}</p>
           <p className="muted">Customer: {receipt.customerName}</p>
           <p className="muted">Payment: {receipt.paymentMethod}</p>
@@ -737,6 +746,16 @@ function POSPage() {
       </div>
     );
   }
+
+  // Guard: cashier must have open cash drawer
+  if (drawerOk === null) return <div className="loading">Checking cash drawer…</div>;
+  if (drawerOk === false) return (
+    <div className="page-panel" style={{ textAlign: 'center', padding: 60 }}>
+      <h2>💵 Cash Drawer Required</h2>
+      <p style={{ margin: '16px 0', fontSize: '1.1rem' }}>You need to open a cash drawer before you can use the Point of Sale.</p>
+      <a href="/cashdrawer" className="btn primary" style={{ display: 'inline-block', padding: '12px 32px', fontSize: '1rem', textDecoration: 'none' }}>Open Cash Drawer →</a>
+    </div>
+  );
 
   return (
     <div className="pos-layout">
@@ -857,7 +876,13 @@ function POSPage() {
                 </div>
                 <div className="quantity-controls">
                   <button onClick={() => updateQty(item.productId, item.quantity - 1)}>−</button>
-                  <span>{item.quantity}</span>
+                  <input type="number" min="1" max={availableStock} value={item.quantity}
+                    onChange={e => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val) && val >= 1) updateQty(item.productId, val);
+                    }}
+                    style={{ width: 50, textAlign: 'center', border: '1.5px solid var(--border)', borderRadius: 6, padding: '4px 2px', fontWeight: 700, fontSize: '0.9rem', background: 'var(--card-bg, white)', color: 'var(--text)' }}
+                  />
                   <button onClick={() => updateQty(item.productId, item.quantity + 1)} disabled={isMaxed} style={isMaxed ? { opacity: 0.4, cursor: 'not-allowed' } : {}}>+</button>
                 </div>
                 <div className="cart-item-total">₦{Number(item.price * item.quantity).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
@@ -2904,7 +2929,7 @@ function AuditPage() {
 // CASH DRAWER
 // ═══════════════════════════════════════════════════════════════════
 function CashDrawerPage() {
-  const { getActiveDrawer, openDrawer, closeDrawer, fetchCashDrawers, user } = useAuth();
+  const { getActiveDrawer, openDrawer, closeDrawer, fetchCashDrawers, fetchBranches, user } = useAuth();
   const [activeDrawer, setActiveDrawer] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2915,6 +2940,9 @@ function CashDrawerPage() {
   const [drawerName, setDrawerName] = useState("Main Drawer");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const isAdmin = user?.role === 'ADMIN';
 
   const load = useCallback(async () => {
     try {
@@ -2923,6 +2951,10 @@ function CashDrawerPage() {
     } catch { }
     finally { setLoading(false); }
   }, [getActiveDrawer, fetchCashDrawers]);
+
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2950,6 +2982,16 @@ function CashDrawerPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 16, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem' }}>
+            <option value="">My Branch</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </div>
+      )}
       {activeDrawer ? (
         <div className="summary-grid">
           <div className="summary-card accent">
@@ -3224,6 +3266,13 @@ function BranchesPage() {
     try { await deleteBranch(id); load(); } catch (err) { alert(err.message); }
   }
 
+  async function toggleActive(branch) {
+    try {
+      await updateBranch(branch.id, { is_active: !branch.is_active });
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
   return (
     <div className="page-panel">
       <div className="panel-header"><button className="btn primary" onClick={startNew}>+ Add Branch</button></div>
@@ -3258,6 +3307,7 @@ function BranchesPage() {
                 <td>{new Date(b.created_at).toLocaleDateString()}</td>
                 <td>
                   <button className="btn-sm" onClick={() => startEdit(b)}>Edit</button>
+                  <button className="btn-sm" onClick={() => toggleActive(b)} style={{ color: b.is_active ? 'var(--warning, #f59e0b)' : 'var(--primary, #16a34a)' }}>{b.is_active ? 'Deactivate' : 'Activate'}</button>
                   <button className="btn-sm danger" onClick={() => handleDelete(b.id, b.name)}>Delete</button>
                 </td>
               </tr>
@@ -3411,6 +3461,7 @@ function StockTransfersPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ toBranchId: "", productId: "", quantity: "", notes: "" });
   const [detail, setDetail] = useState(null);
+  const [sourceProducts, setSourceProducts] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3422,6 +3473,18 @@ function StockTransfersPage() {
   }, [fetchStockTransfers, fetchBranches, fetchProducts, box, user]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Fetch products from source branch when selected
+  useEffect(() => {
+    if (form.toBranchId) {
+      fetchProducts(undefined, Number(form.toBranchId)).then(setSourceProducts).catch(() => setSourceProducts([]));
+    } else {
+      setSourceProducts([]);
+    }
+  }, [form.toBranchId, fetchProducts]);
+
+  // Use source products when a branch is selected, otherwise fall back to own branch products
+  const formProducts = form.toBranchId ? sourceProducts : products;
 
   async function handleRequest(e) {
     e.preventDefault();
@@ -3448,7 +3511,7 @@ function StockTransfersPage() {
 
   const statusColor = { PENDING: "warning", APPROVED: "info", COMPLETED: "active", REJECTED: "inactive", CANCELLED: "inactive" };
   const otherBranches = branches.filter(b => b.id !== user?.branchId);
-  const selectedProduct = products.find(p => p.id === Number(form.productId));
+  const selectedProduct = formProducts.find(p => p.id === Number(form.productId));
 
   return (
     <div className="page-panel">
@@ -3475,13 +3538,13 @@ function StockTransfersPage() {
               </label>
               <label>Product
                 <select value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} required>
-                  <option value="">Select product…</option>
-                  {products.filter(p => p.stock > 0).map(p => <option key={p.id} value={p.id}>{p.name} ({p.barcode}) — {p.stock} in stock</option>)}
+                  <option value="">{form.toBranchId ? 'Select product from source branch…' : 'Select product…'}</option>
+                  {formProducts.filter(p => p.stock > 0).map(p => <option key={p.id} value={p.id}>{p.name} ({p.barcode}) — {p.stock} in stock</option>)}
                 </select>
               </label>
               <label>Quantity
                 <input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required />
-                {selectedProduct && <small className="muted">Available: {selectedProduct.stock}</small>}
+                {selectedProduct && <small className="muted">Available: {selectedProduct.stock} at {form.toBranchId ? 'source branch' : 'your branch'}</small>}
               </label>
               <label>Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Reason for transfer…" /></label>
               <div className="form-actions">
