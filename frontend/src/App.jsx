@@ -1477,7 +1477,7 @@ function StockValuationPage() {
     } catch (err) { setSnapshotMsg(`Error: ${err.message}`); }
   }
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const filtered = categoryFilter ? (data?.products || []).filter(p => p.category === categoryFilter) : (data?.products || []);
   const categories = [...new Set((data?.products || []).map(p => p.category))].sort();
 
@@ -1545,7 +1545,7 @@ function StockValuationPage() {
                     <td><strong>{cat}</strong></td>
                     <td>{vals.units.toLocaleString()}</td>
                     <td>{fmt(vals.value)}</td>
-                    <td>{((vals.value / (data.summary.totalValue || 1)) * 100).toFixed(1)}%</td>
+                    <td>{((parseFloat(vals.value) || 0) / (parseFloat(data.summary.totalValue) || 1) * 100).toFixed(1)}%</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -2098,7 +2098,7 @@ function ProcurementPage() {
     } catch (err) { setPayMsg("Error: " + err.message); }
   }
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const statusColor = { PENDING: "warning", APPROVED: "info", RECEIVED: "active", CANCELLED: "inactive" };
 
   return (
@@ -2367,7 +2367,7 @@ function ForecastPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const riskColor = { CRITICAL: "inactive", HIGH: "warning", MEDIUM: "info", LOW: "active" };
   const filtered = filter === "all" ? forecast : forecast.filter(f => f.risk === filter.toUpperCase());
   const criticalCount = forecast.filter(f => f.risk === "CRITICAL").length;
@@ -2431,7 +2431,7 @@ function AutoReorderPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   function toggle(id) { setSelected(prev => ({ ...prev, [id]: !prev[id] })); }
 
@@ -2497,7 +2497,7 @@ function ExecutiveDashboard() {
 
   useEffect(() => { fetchExecutiveOverview().then(setData).catch(() => {}).finally(() => setLoading(false)); }, [fetchExecutiveOverview]);
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   if (loading) return <p className="loading">Loading executive dashboard...</p>;
   if (!data) return <div className="error-msg">Failed to load data.</div>;
@@ -2585,7 +2585,7 @@ function CustomerDisplayPage() {
     } catch (err) { setError(err.message); setSale(null); }
   }
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   return (
     <div className="page-panel">
@@ -2648,7 +2648,7 @@ function SupplierPortalPage() {
     catch (err) { alert(err.message); }
   }
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const statusColor = { PENDING: "warning", APPROVED: "info", RECEIVED: "active", CANCELLED: "inactive" };
 
   if (loading) return <p className="loading">Loading suppliers...</p>;
@@ -2727,7 +2727,7 @@ function ReportsPage() {
   const [sending, setSending] = useState(false);
   const [sendMsg, setSendMsg] = useState("");
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   // Load branches for admin
   useEffect(() => {
@@ -5355,7 +5355,7 @@ function TerminalPage() {
   const [polling, setPolling] = useState(false);
   const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role);
 
-  const fmt = (n) => "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   const load = useCallback(async () => {
     setLoading(true); setMsg(""); setError("");
