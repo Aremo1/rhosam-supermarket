@@ -221,6 +221,7 @@ export function AuthProvider({ children }) {
     smsReceipt: (saleId, phone) => request(`/sales/${saleId}/sms-receipt`, { method: "POST", body: JSON.stringify({ phone }) }),
     sendCustomerSms: (data) => request("/sms/send", { method: "POST", body: JSON.stringify(data) }),
     bulkSms: (data) => request("/sms/bulk", { method: "POST", body: JSON.stringify(data) }),
+    testSms: (phone) => request("/sms/test", { method: "POST", body: JSON.stringify({ phone }) }),
     // Offline Sync
     syncOfflineSales: (sales) => request("/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
     // Payment Verification

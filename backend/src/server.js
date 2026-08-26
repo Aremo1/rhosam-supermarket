@@ -4945,6 +4945,27 @@ async function sendExpirySmsAlert(product, daysLeft) {
   await sendRoleSmsAlert('MANAGER', msg);
 }
 
+// ── Dedicated SMS Test Endpoint ──────────────────────────────
+app.post('/api/sms/test', auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ message: 'phone number required.' });
+    if (!telnyx) return res.status(503).json({ message: 'SMS not configured. Add TELNYX_API_KEY to environment.' });
+
+    const testMessage = `✅ RHoSAM SMS Test\n\nSMS notifications are working correctly!\n\nSent at: ${new Date().toLocaleString('en-NG')}\nFrom: RHoSAM Supermarket POS`;
+    const result = await sendSMS(phone, testMessage);
+
+    await pool.query(
+      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+      [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'SMS Test', testMessage, result.ok ? 'SENT' : 'FAILED', result.error || null]
+    );
+
+    if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
+    await audit(pool, req.user.id, 'SMS_TEST', 'SYSTEM', null, { phone }, req);
+    res.json({ message: 'Test SMS sent successfully.', phone, timestamp: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ── Wire SMS into stock deduction (products update endpoint) ────
 // We hook into the product update to check stock levels after changes
 // This is called from the existing PUT /api/products/:id and POST /api/sales
