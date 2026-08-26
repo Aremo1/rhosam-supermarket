@@ -2536,6 +2536,29 @@ app.post("/api/stock-transfers", auth, allow("ADMIN", "MANAGER"), async (req, re
        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
       [fromBranchId, Number(toBranchId), productId, Number(quantity), req.user.id, notes || ""]
     );
+    // Get product and branch names for the notification
+    const { rows: pRows } = await pool.query(`SELECT name FROM products WHERE id=$1`, [productId]);
+    const { rows: fromRows } = await pool.query(`SELECT name FROM branches WHERE id=$1`, [fromBranchId]);
+    const { rows: toRows } = await pool.query(`SELECT name FROM branches WHERE id=$1`, [Number(toBranchId)]);
+    const productName = pRows[0]?.name || 'Unknown';
+    const fromBranchName = fromRows[0]?.name || 'Unknown';
+    const toBranchName = toRows[0]?.name || 'Unknown';
+    // Notify managers at the destination branch (they need to approve)
+    await notifyBranchManagers(pool, Number(toBranchId), {
+      eventType: 'TRANSFER_REQUEST',
+      title: `📦 Stock Transfer Request`,
+      body: `${fromBranchName} requests ${quantity} unit(s) of ${productName} to be sent to ${toBranchName}.${notes ? ' Notes: ' + notes : ''}`,
+      refType: 'stock_transfer',
+      refId: rows[0].id,
+    });
+    // Also notify managers at the source branch
+    await notifyBranchManagers(pool, fromBranchId, {
+      eventType: 'TRANSFER_REQUEST',
+      title: `📦 Outgoing Transfer Request`,
+      body: `${fromBranchName} requested ${quantity} unit(s) of ${productName} to be sent to ${toBranchName}.${notes ? ' Notes: ' + notes : ''}`,
+      refType: 'stock_transfer',
+      refId: rows[0].id,
+    });
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -2654,12 +2677,168 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
       );
     }
 
+    // Send notifications based on status change
+    try {
+      const { rows: pRows } = await pool.query(`SELECT name FROM products WHERE id=$1`, [transfer.product_id]);
+      const { rows: fromRows } = await pool.query(`SELECT name FROM branches WHERE id=$1`, [transfer.from_branch_id]);
+      const { rows: toRows } = await pool.query(`SELECT name FROM branches WHERE id=$1`, [transfer.to_branch_id]);
+      const productName = pRows[0]?.name || 'Unknown';
+      const fromBranchName = fromRows[0]?.name || 'Unknown';
+      const toBranchName = toRows[0]?.name || 'Unknown';
+      const notifMeta = { refType: 'stock_transfer', refId: id };
+      if (status === 'APPROVED') {
+        await notifyBranchManagers(pool, transfer.to_branch_id, {
+          eventType: 'TRANSFER_APPROVED',
+          title: `✅ Transfer Approved`,
+          body: `${fromBranchName} approved ${transfer.quantity} unit(s) of ${productName} for delivery to ${toBranchName}.`,
+          ...notifMeta,
+        });
+        await notifyBranchManagers(pool, transfer.from_branch_id, {
+          eventType: 'TRANSFER_APPROVED',
+          title: `✅ Transfer Approved`,
+          body: `Transfer of ${transfer.quantity} unit(s) of ${productName} to ${toBranchName} has been approved.`,
+          ...notifMeta,
+        });
+      } else if (status === 'REJECTED') {
+        await notifyBranchManagers(pool, transfer.to_branch_id, {
+          eventType: 'TRANSFER_REJECTED',
+          title: `❌ Transfer Rejected`,
+          body: `${fromBranchName} rejected transfer of ${transfer.quantity} unit(s) of ${productName}.${rejectionReason ? ' Reason: ' + rejectionReason : ''}`,
+          ...notifMeta,
+        });
+        await notifyBranchManagers(pool, transfer.from_branch_id, {
+          eventType: 'TRANSFER_REJECTED',
+          title: `❌ Transfer Rejected`,
+          body: `Transfer of ${transfer.quantity} unit(s) of ${productName} to ${toBranchName} has been rejected.${rejectionReason ? ' Reason: ' + rejectionReason : ''}`,
+          ...notifMeta,
+        });
+      } else if (status === 'COMPLETED') {
+        await notifyBranchManagers(pool, transfer.to_branch_id, {
+          eventType: 'TRANSFER_COMPLETED',
+          title: `📦 Transfer Completed`,
+          body: `${transfer.quantity} unit(s) of ${productName} have been received from ${fromBranchName}.`,
+          ...notifMeta,
+        });
+        await notifyBranchManagers(pool, transfer.from_branch_id, {
+          eventType: 'TRANSFER_COMPLETED',
+          title: `📦 Transfer Completed`,
+          body: `${transfer.quantity} unit(s) of ${productName} have been delivered to ${toBranchName}.`,
+          ...notifMeta,
+        });
+      } else if (status === 'CANCELLED') {
+        const otherBranch = branchId === transfer.from_branch_id ? transfer.to_branch_id : transfer.from_branch_id;
+        await notifyBranchManagers(pool, otherBranch, {
+          eventType: 'TRANSFER_CANCELLED',
+          title: `🚫 Transfer Cancelled`,
+          body: `Transfer of ${transfer.quantity} unit(s) of ${productName} between ${fromBranchName} and ${toBranchName} has been cancelled.`,
+          ...notifMeta,
+        });
+      }
+    } catch (notifErr) { console.error('[NOTIFICATIONS] Transfer status notify error:', notifErr.message); }
+
     await client.query("COMMIT");
     res.json(rows[0]);
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     next(e);
   } finally { client.release(); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// IN-APP NOTIFICATIONS (for stock transfers, alerts, etc.)
+// ═══════════════════════════════════════════════════════════════════
+
+async function ensureInAppNotificationsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS in_app_notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE CASCADE,
+        branch_id INT REFERENCES branches(id) ON DELETE SET NULL,
+        event_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        reference_type TEXT,
+        reference_id INT,
+        is_read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inapp_notif_user_unread ON in_app_notifications(user_id, is_read)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inapp_notif_branch ON in_app_notifications(branch_id)`);
+  } catch (e) { console.error("[NOTIFICATIONS] Table setup error:", e.message); }
+}
+ensureInAppNotificationsTable();
+
+// Helper: create an in-app notification for a user
+async function createInAppNotification(pool, { userId, branchId, eventType, title, body, refType, refId }) {
+  try {
+    await pool.query(
+      `INSERT INTO in_app_notifications(user_id, branch_id, event_type, title, body, reference_type, reference_id)
+       VALUES($1, $2, $3, $4, $5, $6, $7)`,
+      [userId, branchId || null, eventType, title, body || null, refType || null, refId || null]
+    );
+  } catch (e) { console.error("[NOTIFICATIONS] Create error:", e.message); }
+}
+
+// Helper: notify all managers/admins at a branch
+async function notifyBranchManagers(pool, branchId, notification) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM users WHERE branch_id = $1 AND role IN ('ADMIN','MANAGER') AND is_active = TRUE`,
+      [branchId]
+    );
+    for (const u of rows) {
+      await createInAppNotification(pool, { userId: u.id, branchId, ...notification });
+    }
+  } catch (e) { console.error("[NOTIFICATIONS] Branch notify error:", e.message); }
+}
+
+// GET in-app notifications for current user
+app.get("/api/in-app-notifications", auth, async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const unreadOnly = req.query.unread === 'true';
+    let sql = `SELECT n.*, b.name AS branch_name FROM in_app_notifications n
+               LEFT JOIN branches b ON b.id = n.branch_id
+               WHERE n.user_id = $1`;
+    const params = [req.user.id];
+    if (unreadOnly) { sql += ` AND n.is_read = FALSE`; }
+    sql += ` ORDER BY n.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    const { rows } = await pool.query(sql, params);
+    const { rows: counts } = await pool.query(
+      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER(WHERE is_read = FALSE)::int AS unread
+       FROM in_app_notifications WHERE user_id = $1`, [req.user.id]
+    );
+    res.json({ notifications: rows, total: counts[0].total, unread: counts[0].unread });
+  } catch (e) {
+    if (e.message && e.message.includes('does not exist')) return res.json({ notifications: [], total: 0, unread: 0 });
+    next(e);
+  }
+});
+
+// Mark notifications as read
+app.patch("/api/in-app-notifications/read", auth, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (Array.isArray(ids) && ids.length) {
+      await pool.query(
+        `UPDATE in_app_notifications SET is_read = TRUE WHERE id = ANY($1) AND user_id = $2`,
+        [ids, req.user.id]
+      );
+    } else {
+      // Mark all as read
+      await pool.query(
+        `UPDATE in_app_notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE`,
+        [req.user.id]
+      );
+    }
+    res.json({ message: "Notifications marked as read." });
+  } catch (e) {
+    if (e.message && e.message.includes('does not exist')) return res.json({ message: "Notifications marked as read." });
+    next(e);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════

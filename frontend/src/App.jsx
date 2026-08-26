@@ -39,7 +39,7 @@ const ICONS = {
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
   "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶", "payment-settings": "⚙️", terminals: "💳",
 };function Layout({ children }) {
-  const { user, logout, fetchStockAlerts } = useAuth();
+  const { user, logout, fetchStockAlerts, fetchInAppNotifications, markNotificationsRead } = useAuth();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,17 +48,55 @@ const ICONS = {
   const [isInstalled, setIsInstalled] = useState(false);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const [alertCount, setAlertCount] = useState(0);
+  const [notifCount, setNotifCount] = useState(0);
+  const [notifDropdown, setNotifDropdown] = useState(false);
+  const [notifications, setNotifications] = useState([]);
   const currentPage = location.pathname.slice(1) || "dashboard";
   const menuItems = MENUS[user?.role] || MENUS.CASHIER;
 
-  // Fetch unread alert count for sidebar badge
+  // Fetch unread alert count for sidebar badge + in-app notification count
   useEffect(() => {
     fetchStockAlerts(true).then(d => setAlertCount(d?.unread || 0)).catch(() => {});
+    fetchInAppNotifications({ unread: true }).then(d => setNotifCount(d?.unread || 0)).catch(() => {});
     const interval = setInterval(() => {
       fetchStockAlerts(true).then(d => setAlertCount(d?.unread || 0)).catch(() => {});
-    }, 60000);
+      fetchInAppNotifications({ unread: true }).then(d => setNotifCount(d?.unread || 0)).catch(() => {});
+    }, 30000);
     return () => clearInterval(interval);
-  }, [fetchStockAlerts]);
+  }, [fetchStockAlerts, fetchInAppNotifications]);
+
+  async function toggleNotifDropdown() {
+    if (!notifDropdown) {
+      try {
+        const d = await fetchInAppNotifications({ limit: 20 });
+        setNotifications(d?.notifications || []);
+        setNotifCount(d?.unread || 0);
+      } catch {}
+    }
+    setNotifDropdown(!notifDropdown);
+  }
+
+  async function handleNotifClick(notif) {
+    // Mark as read
+    if (!notif.is_read) {
+      await markNotificationsRead([notif.id]).catch(() => {});
+      setNotifCount(prev => Math.max(0, prev - 1));
+      setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, is_read: true } : n));
+    }
+    // Navigate to relevant page
+    if (notif.reference_type === 'stock_transfer') {
+      navigate('/transfers');
+    } else if (notif.reference_type === 'stock_alert') {
+      navigate('/alerts');
+    }
+    setNotifDropdown(false);
+  }
+
+  async function markAllNotifsRead() {
+    await markNotificationsRead().catch(() => {});
+    setNotifCount(0);
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+  }
 
   // Apply dark mode class to body
   useEffect(() => {
@@ -113,7 +151,7 @@ const ICONS = {
         </div>
       </aside>
 
-      <div className={`sidebar-overlay ${sidebarOpen ? "show" : ""}`} onClick={() => setSidebarOpen(false)} />
+      <div className={`sidebar-overlay ${sidebarOpen ? "show" : ""}`} onClick={() => { setSidebarOpen(false); setNotifDropdown(false); }} />
 
       <div className="main-content">
         {installPrompt && !isInstalled && (
@@ -130,6 +168,33 @@ const ICONS = {
             <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)} title={darkMode ? "Switch to light mode" : "Switch to dark mode"}>
               {darkMode ? "☀️" : "🌙"}
             </button>
+            {/* In-app notification bell */}
+            <div style={{ position: 'relative' }}>
+              <button onClick={toggleNotifDropdown} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', position: 'relative', padding: '4px 8px' }} title="Notifications">
+                🔔
+                {notifCount > 0 && (
+                  <span style={{ position: 'absolute', top: -2, right: -2, background: 'var(--danger, #ef4444)', color: '#fff', fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: 10, minWidth: 16, textAlign: 'center', lineHeight: '14px' }}>
+                    {notifCount > 99 ? '99+' : notifCount}
+                  </span>
+                )}
+              </button>
+              {notifDropdown && (
+                <div style={{ position: 'absolute', top: '100%', right: 0, width: 360, maxHeight: 420, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 1000, padding: 0 }}>
+                  <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ fontSize: '0.9rem', color: 'var(--text)' }}>Notifications</strong>
+                    {notifCount > 0 && <button onClick={markAllNotifsRead} style={{ background: 'none', border: 'none', color: 'var(--accent, #16a34a)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}>Mark all read</button>}
+                  </div>
+                  {notifications.length === 0 && <p style={{ padding: 20, textAlign: 'center', color: 'var(--muted)', fontSize: '0.85rem' }}>No notifications</p>}
+                  {notifications.map(n => (
+                    <div key={n.id} onClick={() => handleNotifClick(n)} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', cursor: 'pointer', background: n.is_read ? 'transparent' : 'rgba(22,163,74,0.04)', transition: 'background 0.15s' }}>
+                      <div style={{ fontSize: '0.85rem', fontWeight: n.is_read ? 400 : 600, color: 'var(--text)' }}>{n.title}</div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: 4 }}>{new Date(n.created_at).toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <span className="user-badge">
               {user?.branch?.name && <span className="branch-tag">🏢 {user.branch.name} · </span>}
               {user?.name} · <span className="role-tag">{user?.role}</span>

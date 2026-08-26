@@ -133,6 +133,9 @@ export function AuthProvider({ children }) {
     sendMessage: (data) => request("/messages", { method: "POST", body: JSON.stringify(data) }),
     markMessageRead: (id) => request(`/messages/${id}/read`, { method: "PATCH" }),
     deleteMessage: (id) => request(`/messages/${id}`, { method: "DELETE" }),
+    // In-app notifications
+    fetchInAppNotifications: (params) => request(`/in-app-notifications${params ? `?${new URLSearchParams(params)}` : ''}`),
+    markNotificationsRead: (ids) => request('/in-app-notifications/read', { method: 'PATCH', body: JSON.stringify({ ids: ids || [] }) }),
     // Inter-branch stock transfers
     fetchStockTransfers: (box) => request(`/stock-transfers${box ? `?box=${box}` : ""}`),
     createStockTransfer: (data) => request("/stock-transfers", { method: "POST", body: JSON.stringify(data) }),
