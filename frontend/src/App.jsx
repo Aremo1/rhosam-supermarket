@@ -16,7 +16,7 @@ function resolveApiUrl(val) {
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
+  ADMIN: ["dashboard","executive","pos","products","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
   MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","notification-prefs","change-password","wifiqr"],
 };
@@ -25,7 +25,7 @@ const LABELS = {
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
   expenses: "Expenses", finance: "Finance", forecast: "AI Forecast", reorder: "Auto Reorder",
   dailyreport: "Reports", users: "User Management", audit: "Audit Logs",
-  damages: "Damages", wastage: "Wastage", "stock-valuation": "Stock Valuation",
+  damages: "Damages", wastage: "Wastage", "stock-valuation": "Stock Valuation", "branch-inventory": "Branch Inventory",
   expiry: "Expiry Tracking", "import-export": "Import / Export", "audit-cycle": "Audit Cycle", alerts: "Stock Alerts", notifications: "Notification Center", "notification-prefs": "Notification Settings",
   cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR", "payment-settings": "Payment Settings", terminals: "Payment Terminals",
@@ -33,7 +33,7 @@ const LABELS = {
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
   suppliers: "🏭", procurement: "📥", expenses: "💸", finance: "🏦", forecast: "🤖", reorder: "🔄",
-  damages: "⚠️", wastage: "🗑️", "stock-valuation": "💎",
+  damages: "⚠️", wastage: "🗑️", "stock-valuation": "💎", "branch-inventory": "🏪",
   expiry: "⏰", "import-export": "📤", "audit-cycle": "🔍", alerts: "🔔", notifications: "📬", "notification-prefs": "⚙️",
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
@@ -1775,6 +1775,156 @@ function StockValuationPage() {
             </>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BRANCH INVENTORY MANAGEMENT (admin per-branch stock control)
+// ═══════════════════════════════════════════════════════════════════
+function BranchInventoryPage() {
+  const { fetchBranchInventory, updateBranchInventory, fetchBranches, notifyDataChange } = useAuth();
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [inventory, setInventory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(null); // productId being saved
+  const [search, setSearch] = useState("");
+  const [editModal, setEditModal] = useState(null);
+  const [editForm, setEditForm] = useState({ quantity: '', reorderLevel: '' });
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    fetchBranches().then(setBranches).catch(() => {});
+  }, [fetchBranches]);
+
+  const load = useCallback(async () => {
+    if (!selectedBranch) { setInventory([]); setLoading(false); return; }
+    setLoading(true);
+    try {
+      const data = await fetchBranchInventory(selectedBranch);
+      setInventory(data || []);
+    } catch { setInventory([]); }
+    finally { setLoading(false); }
+  }, [fetchBranchInventory, selectedBranch]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave(productId) {
+    setSaving(productId); setMsg("");
+    try {
+      const item = inventory.find(i => i.id === productId);
+      const data = {};
+      if (editForm.quantity !== '' && Number(editForm.quantity) !== item.quantity) data.quantity = Number(editForm.quantity);
+      if (editForm.reorderLevel !== '' && Number(editForm.reorderLevel) !== item.reorder_level) data.reorderLevel = Number(editForm.reorderLevel);
+      if (Object.keys(data).length === 0) { setEditModal(null); return; }
+      await updateBranchInventory(selectedBranch, productId, data);
+      setEditModal(null);
+      setMsg(`Updated ${item.name}`);
+      load();
+      notifyDataChange();
+    } catch (err) { setMsg(`Error: ${err.message}`); }
+    finally { setSaving(null); }
+  }
+
+  function openEdit(item) {
+    setEditForm({ quantity: String(item.quantity), reorderLevel: String(item.reorder_level) });
+    setEditModal(item);
+  }
+
+  const filtered = inventory.filter(i => !search || i.name.toLowerCase().includes(search.toLowerCase()) || (i.barcode || '').includes(search) || (i.category || '').toLowerCase().includes(search.toLowerCase()));
+  const totalValue = filtered.reduce((s, i) => s + (i.quantity * i.cost_price), 0);
+  const lowStockCount = filtered.filter(i => i.quantity <= i.reorder_level).length;
+
+  return (
+    <div className="page-panel">
+      {/* Branch selector */}
+      <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+        <select
+          value={selectedBranch}
+          onChange={e => { setSelectedBranch(e.target.value); setSearch(""); }}
+          style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+        >
+          <option value="">Select a branch…</option>
+          {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+        {selectedBranch && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>— Managing inventory for {branches.find(b => String(b.id) === String(selectedBranch))?.name}</span>}
+      </div>
+
+      {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
+
+      {selectedBranch && (
+        <>
+          <div className="summary-grid">
+            <div className="summary-card"><span>Total Products</span><strong>{inventory.length}</strong></div>
+            <div className="summary-card warning"><span>Low Stock</span><strong>{lowStockCount}</strong></div>
+            <div className="summary-card"><span>Inventory Value</span><strong>₦{totalValue.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></div>
+          </div>
+
+          {/* Search */}
+          <div style={{ marginBottom: 12 }}>
+            <input type="text" placeholder="Search by name, barcode, or category…" value={search} onChange={e => setSearch(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem' }} />
+          </div>
+
+          {loading ? <p className="loading">Loading…</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Product</th><th>Barcode</th><th>Category</th><th>Quantity</th><th>Reorder Level</th><th>Status</th><th>Value</th><th>Actions</th></tr></thead>
+                <tbody>{filtered.map(item => {
+                  const status = item.quantity === 0 ? 'OUT' : item.quantity <= item.reorder_level ? 'LOW' : 'OK';
+                  const statusColor = { OUT: 'inactive', LOW: 'warning', OK: 'active' };
+                  return (
+                    <tr key={item.id}>
+                      <td><strong>{item.name}</strong></td>
+                      <td><code>{item.barcode || '—'}</code></td>
+                      <td>{item.category}</td>
+                      <td className={status === 'OUT' ? 'low-stock' : status === 'LOW' ? 'low-stock' : ''} style={{ fontWeight: 600 }}>{item.quantity}</td>
+                      <td>{item.reorder_level}</td>
+                      <td><span className={`status-badge ${statusColor[status]}`}>{status === 'OUT' ? 'Out of Stock' : status === 'LOW' ? 'Low Stock' : 'In Stock'}</span></td>
+                      <td>₦{(item.quantity * item.cost_price).toLocaleString('en-NG', { minimumFractionDigits: 2 })}</td>
+                      <td>
+                        <button className="btn-sm" onClick={() => openEdit(item)} disabled={saving === item.id}>
+                          {saving === item.id ? 'Saving…' : 'Edit'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+              {!filtered.length && <p className="muted">{search ? 'No products match your search.' : 'No inventory data for this branch.'}</p>}
+            </div>
+          )}
+        </>
+      )}
+
+      {!selectedBranch && <p className="muted" style={{ textAlign: 'center', padding: 40 }}>Select a branch above to manage its inventory.</p>}
+
+      {/* Edit Modal */}
+      {editModal && (
+        <div className="modal-overlay" onClick={() => setEditModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
+            <h2>Edit: {editModal.name}</h2>
+            <p className="muted" style={{ marginBottom: 12 }}>Branch: {branches.find(b => String(b.id) === String(selectedBranch))?.name}</p>
+            <div className="form-grid">
+              <label>Quantity
+                <input type="number" min="0" value={editForm.quantity} onChange={e => setEditForm({ ...editForm, quantity: e.target.value })} />
+              </label>
+              <label>Reorder Level
+                <input type="number" min="0" value={editForm.reorderLevel} onChange={e => setEditForm({ ...editForm, reorderLevel: e.target.value })} />
+                <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>Global default: {editModal.global_reorder_level}</small>
+              </label>
+            </div>
+            <div className="form-actions" style={{ marginTop: 16 }}>
+              <button className="btn secondary" onClick={() => setEditModal(null)}>Cancel</button>
+              <button className="btn primary" onClick={() => handleSave(editModal.id)} disabled={saving === editModal.id}>
+                {saving === editModal.id ? 'Saving…' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -6281,6 +6431,7 @@ export default function App() {
           <Route path="/damages" element={<DamagesPage />} />
           <Route path="/wastage" element={<WastagePage />} />
           <Route path="/stock-valuation" element={<StockValuationPage />} />
+          <Route path="/branch-inventory" element={<BranchInventoryPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/customers" element={<CustomersPage />} />
           <Route path="/suppliers" element={<SuppliersPage />} />

@@ -2878,6 +2878,109 @@ app.patch("/api/in-app-notifications/read", auth, async (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// BRANCH INVENTORY MANAGEMENT (admin per-branch stock control)
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /api/branch-inventory — list all products for a branch with stock levels
+app.get("/api/branch-inventory", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const branchId = Number(req.query.branchId);
+    if (!branchId) return res.status(400).json({ message: "branchId required." });
+    const { rows } = await pool.query(
+      `SELECT p.id, p.barcode, p.name, p.category, p.unit,
+             p.price::float, p.cost_price::float,
+             COALESCE(bi.quantity, 0)::int AS quantity,
+             COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+             p.reorder_level AS global_reorder_level,
+             bi.updated_at AS last_updated
+       FROM products p
+       LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+       WHERE p.is_active = TRUE
+       ORDER BY p.category, p.name`, [branchId]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// PUT /api/branch-inventory/:branchId/:productId — update quantity or reorder level
+app.put("/api/branch-inventory/:branchId/:productId", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const branchId = Number(req.params.branchId);
+    const productId = Number(req.params.productId);
+    const { quantity, reorderLevel } = req.body;
+    if (quantity == null && reorderLevel == null)
+      return res.status(400).json({ message: "Provide quantity or reorderLevel." });
+    // Upsert branch_inventory row
+    if (quantity != null) {
+      await pool.query(
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($1, $2, $3, (SELECT reorder_level FROM products WHERE id = $2))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = $3, updated_at = NOW()`,
+        [branchId, productId, Number(quantity)]
+      );
+    }
+    if (reorderLevel != null) {
+      await pool.query(
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($1, $2, (SELECT COALESCE(quantity, 0) FROM branch_inventory WHERE branch_id = $1 AND product_id = $2), $3)
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET reorder_level = $3, updated_at = NOW()`,
+        [branchId, productId, Number(reorderLevel)]
+      );
+    }
+    // Return updated row
+    const { rows } = await pool.query(
+      `SELECT p.id, p.name, p.category, p.unit,
+             COALESCE(bi.quantity, 0)::int AS quantity,
+             COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+             bi.updated_at AS last_updated
+       FROM products p
+       LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+       WHERE p.id = $2`, [branchId, productId]
+    );
+    await audit(pool, req.user.id, "UPDATE", "BRANCH_INVENTORY", productId, { branchId, quantity, reorderLevel }, req);
+    res.json(rows[0] || {});
+  } catch (e) { next(e); }
+});
+
+// POST /api/branch-inventory/:branchId/bulk — bulk update multiple products
+app.post("/api/branch-inventory/:branchId/bulk", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const branchId = Number(req.params.branchId);
+    const { items } = req.body; // [{ productId, quantity, reorderLevel }]
+    if (!Array.isArray(items) || !items.length)
+      return res.status(400).json({ message: "items array required." });
+    const results = [];
+    for (const item of items) {
+      const productId = Number(item.productId);
+      if (!productId) continue;
+      if (item.quantity != null) {
+        await pool.query(
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($1, $2, $3, (SELECT reorder_level FROM products WHERE id = $2))
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET quantity = $3, updated_at = NOW()`,
+          [branchId, productId, Number(item.quantity)]
+        );
+        results.push({ productId, quantity: Number(item.quantity) });
+      }
+      if (item.reorderLevel != null) {
+        await pool.query(
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($1, $2, 0, $3)
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET reorder_level = $3, updated_at = NOW()`,
+          [branchId, productId, Number(item.reorderLevel)]
+        );
+      }
+    }
+    await audit(pool, req.user.id, "BULK_UPDATE", "BRANCH_INVENTORY", branchId, { count: results.length }, req);
+    res.json({ updated: results.length, message: `${results.length} product(s) updated.` });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // CATEGORY LIST (for dropdowns)
 // ═══════════════════════════════════════════════════════════════════
 
