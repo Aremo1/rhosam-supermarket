@@ -334,7 +334,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .filters input, .filters select { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; }
 
 /* ── POS ────────────────────────────────────────────────────── */
-.pos-layout { display: grid; grid-template-columns: 1fr 620px; gap: 16px; height: calc(100vh - 130px); position: relative; }
+.pos-layout { display: grid; grid-template-columns: 1fr 780px; gap: 16px; height: calc(100vh - 130px); position: relative; }
 .pos-products { overflow-y: auto; }
 .pos-search-wrapper { position: relative; margin-bottom: 14px; }
 .pos-search { width: 100%; padding: 14px 18px; border: 2px solid var(--border); border-radius: var(--radius); font-size: 1.05rem; font-weight: 500; background: var(--card-bg, white); color: var(--text); outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
@@ -472,11 +472,12 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .cart-list { display: grid; gap: 6px; max-height: calc(100vh - 340px); overflow-y: auto; }
 .empty-cart {
   border: 2px dashed var(--border); border-radius: var(--radius);
-  padding: 32px; text-align: center; color: var(--muted); font-weight: 500;
+  padding: 48px 32px; text-align: center; color: var(--muted); font-weight: 500;
+  font-size: 1.05rem;
 }
 .cart-item {
-  display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center;
-  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--card-bg, white);
 }
 .dark .cart-item { background: #0f172a; }
@@ -525,7 +526,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .receipt-view { display: flex; justify-content: center; padding: 24px; }
 .receipt {
   background: var(--card-bg, white); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 32px; max-width: 400px; width: 100%;
+  border-radius: var(--radius); padding: 32px; max-width: 600px; width: 100%;
   text-align: center; box-shadow: var(--shadow);
 }
 .receipt h2 { color: var(--text); font-weight: 700; font-size: 1.15rem; margin-bottom: 16px; }
