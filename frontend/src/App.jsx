@@ -3530,7 +3530,7 @@ function BranchesPage() {
 
   async function toggleActive(branch) {
     try {
-      await updateBranch(branch.id, { is_active: !branch.is_active });
+      await updateBranch(branch.id, { isActive: !branch.is_active });
       load();
     } catch (err) { alert(err.message); }
   }
