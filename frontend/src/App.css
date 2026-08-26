@@ -409,7 +409,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 }
 
 /* ── Product Grid & Cards ────────────────────────────────── */
-.product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .product-card {
   background: var(--card-bg, white); border: 1.5px solid var(--border); border-radius: var(--radius);
   padding: 0; cursor: pointer; transition: all 0.2s ease;
@@ -426,13 +426,13 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 }
 .dark .product-card.out-of-stock { opacity: 0.4; border-color: #7f1d1d; }
 .dark .product-card.out-of-stock::after { background: rgba(239,68,68,0.85); }
-.product-card-image { width: 100%; height: 130px; object-fit: cover; border-bottom: 1px solid var(--border); }
-.product-card-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.product-card-image { width: 100%; height: 90px; object-fit: cover; border-bottom: 1px solid var(--border); }
+.product-card-body { padding: 8px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .product-card-header { display: grid; gap: 2px; }
 .product-card-header strong {
-  font-size: 0.88rem; line-height: 1.3; color: var(--text); font-weight: 700;
+  font-size: 0.78rem; line-height: 1.2; color: var(--text); font-weight: 700;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  min-height: 2.4em;
+  min-height: 1.8em;
 }
 .product-card-header small { color: var(--muted); font-size: 0.72rem; font-family: monospace; letter-spacing: 0.02em; }
 .product-card-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
@@ -446,8 +446,8 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .dark .stock-tag { color: #94a3b8; }
 .dark .stock-tag.low { color: #f87171; font-weight: 800; }
 .product-card-price {
-  font-size: 1.15rem; font-weight: 800; color: var(--primary-dark);
-  padding: 10px 12px; margin-top: auto;
+  font-size: 0.9rem; font-weight: 800; color: var(--primary-dark);
+  padding: 6px 8px; margin-top: auto;
   background: linear-gradient(to top, rgba(22,163,74,0.04), transparent);
   border-top: 1px solid var(--border);
 }
