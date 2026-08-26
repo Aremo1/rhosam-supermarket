@@ -4,11 +4,13 @@ const fs = require("fs");
 const path = require("path");
 
 function splitStatements(sql) {
-  // Split on semicolons, ignoring semicolons inside strings/comments
+  // Split on semicolons, ignoring semicolons inside strings, dollar-quotes, and comments
   const statements = [];
   let current = "";
   let inSingleQuote = false;
   let inDoubleQuote = false;
+  let inDollarQuote = false;
+  let dollarTag = "";
   let inComment = false;
   let lineComment = false;
 
@@ -29,6 +31,34 @@ function splitStatements(sql) {
         inComment = false;
       }
       continue;
+    }
+
+    // Handle dollar-quoted strings (e.g. $$ ... $$ or $tag$ ... $tag$)
+    if (inDollarQuote) {
+      current += ch;
+      if (ch === dollarTag[0] && sql.substring(i, i + dollarTag.length) === dollarTag) {
+        current += sql.substring(i + 1, i + dollarTag.length);
+        i += dollarTag.length - 1;
+        inDollarQuote = false;
+      }
+      continue;
+    }
+    if (ch === "$" && !inSingleQuote && !inDoubleQuote) {
+      // Check for dollar tag opening
+      let tag = "$";
+      let j = i + 1;
+      while (j < sql.length && sql[j] !== "$" && sql[j] !== "\n" && sql[j] !== " ") {
+        tag += sql[j];
+        j++;
+      }
+      if (j < sql.length && sql[j] === "$") {
+        tag += "$";
+        current += tag;
+        i = j;
+        inDollarQuote = true;
+        dollarTag = tag;
+        continue;
+      }
     }
 
     if (ch === "\'" && !inDoubleQuote) {

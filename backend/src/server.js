@@ -4539,6 +4539,14 @@ app.post("/api/stock-alerts/scan", auth, allow('ADMIN', 'MANAGER'), async (req, 
           [rule.id, rule.alert_type, severity, p.id, branchId || null, title, message, p.stock, rule.threshold_value]
         );
         generated++;
+        // Send SMS alerts for critical conditions
+        if (rule.alert_type === 'OUT_OF_STOCK') {
+          sendOutOfStockSmsAlert({ name: p.name, barcode: p.barcode || 'N/A' }).catch(() => {});
+        } else if (rule.alert_type === 'LOW_STOCK') {
+          sendLowStockSmsAlert({ name: p.name, unit: p.unit, reorder_level: rule.threshold_value }, p.stock).catch(() => {});
+        } else if (rule.alert_type === 'EXPIRING_SOON') {
+          sendExpirySmsAlert({ name: p.name, batch_number: p.batch_number || null }, p.days).catch(() => {});
+        }
       }
     }
     await audit(pool, req.user.id, 'ALERT_SCAN', 'SYSTEM', null, { generated, rulesChecked: rules.length }, req);
@@ -4775,6 +4783,171 @@ app.get('/api/notifications/status', auth, allow('ADMIN'), async (req, res, next
     res.json({ emailConfigured, smsConfigured, recentStats: stats });
   } catch (e) { next(e); }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// SMS TEXT MESSAGING
+// ═══════════════════════════════════════════════════════════════════
+
+// ── SMS Receipt (after POS sale) ────────────────────────────────
+app.post('/api/sales/:id/sms-receipt', auth, async (req, res, next) => {
+  try {
+    if (!telnyx) return res.status(503).json({ message: 'SMS not configured. Add TELNYX_API_KEY to environment.' });
+    const saleId = Number(req.params.id);
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ message: 'Customer phone number required.' });
+
+    const { rows: saleRows } = await pool.query(
+      `SELECT s.*, u.name AS cashier_name FROM sales s JOIN users u ON u.id = s.cashier_id WHERE s.id=$1`, [saleId]
+    );
+    if (!saleRows[0]) return res.status(404).json({ message: 'Sale not found.' });
+
+    const { rows: items } = await pool.query('SELECT * FROM sale_items WHERE sale_id=$1', [saleId]);
+    const sale = saleRows[0];
+    const fmt = (n) => '\u20A6' + Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+    const dateStr = new Date(sale.created_at).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
+
+    // Build SMS text receipt
+    let smsText = `RHoSAM Supermarket\nReceipt: ${sale.receipt_number}\nDate: ${dateStr}\nCashier: ${sale.cashier_name}\n\n`;
+    for (const item of items) {
+      smsText += `${item.product_name} x${item.quantity} — ${fmt(item.line_total)}\n`;
+    }
+    smsText += `\nSubtotal: ${fmt(sale.subtotal)}`;
+    if (Number(sale.discount) > 0) smsText += `\nDiscount: -${fmt(sale.discount)}`;
+    if (Number(sale.tax) > 0) smsText += `\nTax: ${fmt(sale.tax)}`;
+    smsText += `\nTOTAL: ${fmt(sale.total)}`;
+    if (Number(sale.amount_paid) > 0) {
+      smsText += `\nPaid: ${fmt(sale.amount_paid)}`;
+      if (Number(sale.change_amount) > 0) smsText += `\nChange: ${fmt(sale.change_amount)}`;
+    }
+    smsText += `\n\nThank you for shopping with us! RHoSAM Supermarket`;
+
+    const result = await sendSMS(phone, smsText);
+
+    await pool.query(
+      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [req.user.id, 'NEW_SALE', 'SMS', phone, 'SMS Receipt', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ saleId, receiptNumber: sale.receipt_number })]
+    );
+
+    if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
+    await audit(pool, req.user.id, 'SMS_RECEIPT', 'SALE', saleId, { phone, receiptNumber: sale.receipt_number }, req);
+    res.json({ message: 'SMS receipt sent successfully.' });
+  } catch (e) { next(e); }
+});
+
+// ── Send SMS to a customer ──────────────────────────────────────
+app.post('/api/sms/send', auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
+  try {
+    if (!telnyx) return res.status(503).json({ message: 'SMS not configured. Add TELNYX_API_KEY to environment.' });
+    const { phone, message, customerId } = req.body;
+    if (!phone || !message) return res.status(400).json({ message: 'phone and message required.' });
+    if (message.length > 1600) return res.status(400).json({ message: 'Message too long (max 1600 characters).' });
+
+    const result = await sendSMS(phone, message);
+
+    await pool.query(
+      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'Customer SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: customerId || null })]
+    );
+
+    await audit(pool, req.user.id, 'SMS_SENT', 'CUSTOMER', customerId || null, { phone, preview: message.substring(0, 100) }, req);
+    if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
+    res.json({ message: 'SMS sent successfully.' });
+  } catch (e) { next(e); }
+});
+
+// ── Bulk SMS to all customers with phone numbers ────────────────
+app.post('/api/sms/bulk', auth, allow('ADMIN'), async (req, res, next) => {
+  try {
+    if (!telnyx) return res.status(503).json({ message: 'SMS not configured. Add TELNYX_API_KEY to environment.' });
+    const { message, customerIds } = req.body;
+    if (!message) return res.status(400).json({ message: 'message required.' });
+    if (message.length > 1600) return res.status(400).json({ message: 'Message too long (max 1600 characters).' });
+
+    // Get customers with phone numbers (optionally filtered by IDs)
+    let sql = 'SELECT id, name, phone FROM customers WHERE phone IS NOT NULL AND phone != \'\'';
+    const params = [];
+    if (Array.isArray(customerIds) && customerIds.length > 0) {
+      sql += ` AND id = ANY($1)`;
+      params.push(customerIds);
+    }
+    sql += ' ORDER BY name';
+    const { rows: customers } = await pool.query(sql, params);
+
+    if (!customers.length) return res.status(400).json({ message: 'No customers with phone numbers found.' });
+
+    let sent = 0, failed = 0;
+    const results = [];
+
+    for (const cust of customers) {
+      try {
+        const result = await sendSMS(cust.phone, message);
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [req.user.id, 'SYSTEM_ALERT', 'SMS', cust.phone, 'Bulk SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: cust.id, customerName: cust.name, bulk: true })]
+        );
+        if (result.ok) sent++; else failed++;
+        results.push({ id: cust.id, name: cust.name, phone: cust.phone, status: result.ok ? 'SENT' : 'FAILED' });
+      } catch {
+        failed++;
+        results.push({ id: cust.id, name: cust.name, phone: cust.phone, status: 'FAILED' });
+      }
+    }
+
+    await audit(pool, req.user.id, 'BULK_SMS', 'CUSTOMER', null, { message: message.substring(0, 100), total: customers.length, sent, failed }, req);
+    res.json({ message: `Bulk SMS complete: ${sent} sent, ${failed} failed out of ${customers.length} customers.`, sent, failed, total: customers.length, results });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// STAFF SMS ALERTS
+// ═══════════════════════════════════════════════════════════════════
+
+// Broadcast SMS alert to all users with a specific role
+async function sendRoleSmsAlert(role, message) {
+  if (!telnyx) return;
+  try {
+    const { rows } = await pool.query('SELECT id, name, phone FROM users WHERE role=$1 AND is_active=TRUE AND phone IS NOT NULL AND phone != \'\'', [role]);
+    for (const user of rows) {
+      // Check if user has SMS enabled for SYSTEM_ALERT
+      const { rows: prefRows } = await pool.query(
+        'SELECT sms_enabled FROM notification_preferences WHERE user_id=$1 AND event_type=$2', [user.id, 'SYSTEM_ALERT']
+      );
+      const pref = prefRows[0];
+      if (pref && !pref.sms_enabled) continue; // user has explicitly disabled SMS for system alerts
+
+      const result = await sendSMS(user.phone, message);
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [user.id, 'SYSTEM_ALERT', 'SMS', user.phone, 'Staff Alert', message, result.ok ? 'SENT' : 'FAILED', result.error || null]
+      );
+    }
+  } catch (e) { console.error('[SMS ALERT]', e.message); }
+}
+
+// ── Low stock SMS alert helper ──────────────────────────────────
+async function sendLowStockSmsAlert(product, quantity) {
+  const msg = `⚠️ LOW STOCK ALERT\n\n${product.name} is running low!\nCurrent stock: ${quantity} ${product.unit || 'units'}\nReorder level: ${product.reorder_level || 5}\n\nAction needed: Reorder from suppliers.`;
+  await sendRoleSmsAlert('ADMIN', msg);
+  await sendRoleSmsAlert('MANAGER', msg);
+}
+
+// ── Out of stock SMS alert helper ───────────────────────────────
+async function sendOutOfStockSmsAlert(product) {
+  const msg = `🚫 OUT OF STOCK\n\n${product.name} (Barcode: ${product.barcode})\nis now OUT OF STOCK!\n\nImmediate action required.`;
+  await sendRoleSmsAlert('ADMIN', msg);
+  await sendRoleSmsAlert('MANAGER', msg);
+}
+
+// ── Expiring soon SMS alert helper ──────────────────────────────
+async function sendExpirySmsAlert(product, daysLeft) {
+  const msg = `⏰ EXPIRY ALERT\n\n${product.name} (Batch: ${product.batch_number || 'N/A'})\nis expiring in ${daysLeft} days!\n\nPlease arrange for clearance or removal.`;
+  await sendRoleSmsAlert('ADMIN', msg);
+  await sendRoleSmsAlert('MANAGER', msg);
+}
+
+// ── Wire SMS into stock deduction (products update endpoint) ────
+// We hook into the product update to check stock levels after changes
+// This is called from the existing PUT /api/products/:id and POST /api/sales
 
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {

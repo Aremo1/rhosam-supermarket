@@ -47,11 +47,18 @@ CREATE INDEX IF NOT EXISTS idx_stock_alerts_read ON stock_alerts(is_read, is_dis
 CREATE INDEX IF NOT EXISTS idx_stock_alerts_branch ON stock_alerts(branch_id);
 CREATE INDEX IF NOT EXISTS idx_stock_alerts_created ON stock_alerts(created_at DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_rules_name_unique ON alert_rules(name);
+-- Remove duplicate names before inserting defaults
+DELETE FROM alert_rules a1 USING alert_rules a2 WHERE a1.name = a2.name AND a1.id > a2.id;
 
--- Insert default alert rules
-INSERT INTO alert_rules (name, alert_type, threshold_value, threshold_unit, notify_dashboard) VALUES
-  ('Default Low Stock', 'LOW_STOCK', 5, 'UNITS', TRUE),
-  ('Default Expiring Soon', 'EXPIRING_SOON', 30, 'DAYS', TRUE),
-  ('Out of Stock Alert', 'OUT_OF_STOCK', 0, 'UNITS', TRUE)
-ON CONFLICT (name) DO NOTHING;
+-- Insert default alert rules (safe upsert without dollar-quoted blocks)
+INSERT INTO alert_rules (name, alert_type, threshold_value, threshold_unit, notify_dashboard)
+SELECT 'Default Low Stock', 'LOW_STOCK', 5, 'UNITS', TRUE
+WHERE NOT EXISTS (SELECT 1 FROM alert_rules WHERE name = 'Default Low Stock');
+
+INSERT INTO alert_rules (name, alert_type, threshold_value, threshold_unit, notify_dashboard)
+SELECT 'Default Expiring Soon', 'EXPIRING_SOON', 30, 'DAYS', TRUE
+WHERE NOT EXISTS (SELECT 1 FROM alert_rules WHERE name = 'Default Expiring Soon');
+
+INSERT INTO alert_rules (name, alert_type, threshold_value, threshold_unit, notify_dashboard)
+SELECT 'Out of Stock Alert', 'OUT_OF_STOCK', 0, 'UNITS', TRUE
+WHERE NOT EXISTS (SELECT 1 FROM alert_rules WHERE name = 'Out of Stock Alert');

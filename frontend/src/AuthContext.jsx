@@ -217,6 +217,10 @@ export function AuthProvider({ children }) {
     confirmSupplierOrder: (id) => request(`/supplier-portal/order/${id}/confirm`, { method: "PATCH" }),
     // Email Receipt
     emailReceipt: (saleId, email) => request(`/sales/${saleId}/email-receipt`, { method: "POST", body: JSON.stringify({ email }) }),
+    // SMS
+    smsReceipt: (saleId, phone) => request(`/sales/${saleId}/sms-receipt`, { method: "POST", body: JSON.stringify({ phone }) }),
+    sendCustomerSms: (data) => request("/sms/send", { method: "POST", body: JSON.stringify(data) }),
+    bulkSms: (data) => request("/sms/bulk", { method: "POST", body: JSON.stringify(data) }),
     // Offline Sync
     syncOfflineSales: (sales) => request("/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
     // Payment Verification

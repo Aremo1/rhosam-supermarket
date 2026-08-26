@@ -438,7 +438,7 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, smsReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user } = useAuth();
   const [products, setProducts] = useState([]);
   const [drawerOk, setDrawerOk] = useState(null); // null = loading, true = open, false = no drawer
   const [cart, setCart] = useState([]);
@@ -452,6 +452,9 @@ function POSPage() {
   const [receiptEmail, setReceiptEmail] = useState("");
   const [emailSending, setEmailSending] = useState(false);
   const [emailMsg, setEmailMsg] = useState("");
+  const [receiptPhone, setReceiptPhone] = useState("");
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsMsg, setSmsMsg] = useState("");
   const [amountPaid, setAmountPaid] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState("");
@@ -654,6 +657,17 @@ function POSPage() {
     finally { setEmailSending(false); }
   }
 
+  async function handleSmsReceipt(e) {
+    e.preventDefault();
+    if (!receiptPhone || !receipt?.id) return;
+    setSmsSending(true); setSmsMsg("");
+    try {
+      await smsReceipt(receipt.id, receiptPhone);
+      setSmsMsg("SMS receipt sent!");
+    } catch (err) { setSmsMsg(`Error: ${err.message}`); }
+    finally { setSmsSending(false); }
+  }
+
   // Payment verification modal
   if (paymentModal && receipt) {
     return (
@@ -737,10 +751,20 @@ function POSPage() {
             </form>
             {emailMsg && <p className={emailMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 6, fontSize: '0.8rem' }}>{emailMsg}</p>}
           </div>
+          <div className="receipt-sms-form no-print">
+            <form onSubmit={handleSmsReceipt} style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <input type="tel" value={receiptPhone} onChange={e => setReceiptPhone(e.target.value)}
+                placeholder="📱 Phone number for SMS receipt" style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }} required />
+              <button type="submit" className="btn primary" disabled={smsSending || !receiptPhone} style={{ padding: '8px 16px', fontSize: '0.85rem' }}>
+                {smsSending ? 'Sending...' : '📱 SMS'}
+              </button>
+            </form>
+            {smsMsg && <p className={smsMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 6, fontSize: '0.8rem' }}>{smsMsg}</p>}
+          </div>
           <div className="receipt-actions no-print">
             <button onClick={() => generateReceiptPDF({ ...receipt, branchName: user?.branch?.name || "" })}>📄 Download PDF</button>
             <button onClick={() => window.print()}>🖨️ Print</button>
-            <button onClick={() => { setReceipt(null); setReceiptEmail(""); setEmailMsg(""); }}>🛒 New Sale</button>
+            <button onClick={() => { setReceipt(null); setReceiptEmail(""); setEmailMsg(""); setReceiptPhone(""); setSmsMsg(""); }}>🛒 New Sale</button>
           </div>
         </div>
       </div>
@@ -1723,12 +1747,23 @@ function SalesPage() {
 // CUSTOMERS (Phase 12)
 // ═══════════════════════════════════════════════════════════════════
 function CustomersPage() {
-  const { fetchCustomers, createCustomer, updateCustomer } = useAuth();
+  const { fetchCustomers, createCustomer, updateCustomer, sendCustomerSms, bulkSms } = useAuth();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editCust, setEditCust] = useState(null);
   const [form, setForm] = useState({ name: "", email: "", phone: "" });
+  // SMS state
+  const [smsModal, setSmsModal] = useState(null); // customer object for individual SMS
+  const [smsText, setSmsText] = useState("");
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsMsg, setSmsMsg] = useState("");
+  // Bulk SMS state
+  const [showBulkSms, setShowBulkSms] = useState(false);
+  const [bulkSmsText, setBulkSmsText] = useState("");
+  const [bulkSending, setBulkSending] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [selectedForBulk, setSelectedForBulk] = useState([]);
 
   const load = useCallback(async () => { try { setCustomers(await fetchCustomers()); } catch { } finally { setLoading(false); } }, [fetchCustomers]);
   useEffect(() => { load(); }, [load]);
@@ -1745,11 +1780,124 @@ function CustomersPage() {
     } catch (err) { alert(err.message); }
   }
 
+  // Send SMS to a single customer
+  async function handleSendSms(e) {
+    e.preventDefault();
+    if (!smsModal?.phone || !smsText.trim()) return;
+    setSmsSending(true); setSmsMsg("");
+    try {
+      await sendCustomerSms({ phone: smsModal.phone, message: smsText, customerId: smsModal.id });
+      setSmsMsg("SMS sent!"); setSmsText("");
+    } catch (err) { setSmsMsg(`Error: ${err.message}`); }
+    finally { setSmsSending(false); }
+  }
+
+  // Bulk SMS
+  async function handleBulkSms(e) {
+    e.preventDefault();
+    if (!bulkSmsText.trim()) return;
+    setBulkSending(true); setBulkResult(null);
+    try {
+      const ids = selectedForBulk.length > 0 ? selectedForBulk : undefined;
+      const r = await bulkSms({ message: bulkSmsText, customerIds: ids });
+      setBulkResult(r);
+      setBulkSmsText("");
+    } catch (err) { setBulkResult({ message: `Error: ${err.message}` }); }
+    finally { setBulkSending(false); }
+  }
+
+  function toggleBulkSelect(id) {
+    setSelectedForBulk(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+
   const tierColor = { BRONZE: "bronze", SILVER: "silver", GOLD: "gold", PLATINUM: "platinum" };
+  const customersWithPhone = customers.filter(c => c.phone);
 
   return (
     <div className="page-panel">
-      <div className="panel-header"><button className="btn primary" onClick={startNew}>+ Add Customer</button></div>
+      <div className="panel-header">
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" onClick={startNew}>+ Add Customer</button>
+          <button className="btn secondary" onClick={() => { setShowBulkSms(true); setBulkResult(null); setBulkSmsText(""); setSelectedForBulk([]); }}>📱 Bulk SMS</button>
+        </div>
+      </div>
+
+      {/* Individual SMS Modal */}
+      {smsModal && (
+        <div className="modal-overlay" onClick={() => setSmsModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 450 }}>
+            <h2>📱 Send SMS to {smsModal.name}</h2>
+            <p className="muted" style={{ marginBottom: 12 }}>To: {smsModal.phone}</p>
+            <form onSubmit={handleSendSms} className="form-grid">
+              <label>Message
+                <textarea value={smsText} onChange={e => setSmsText(e.target.value)} rows={4}
+                  placeholder="Type your message..." required style={{ resize: 'vertical' }} />
+              </label>
+              <p className="muted" style={{ fontSize: '0.8rem', marginTop: -8 }}>{smsText.length}/1600 characters</p>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setSmsModal(null)}>Cancel</button>
+                <button type="submit" className="btn primary" disabled={smsSending || !smsText.trim()}>
+                  {smsSending ? 'Sending...' : '📱 Send SMS'}
+                </button>
+              </div>
+            </form>
+            {smsMsg && <p className={smsMsg.startsWith('Error') ? 'error-msg' : 'muted'} style={{ marginTop: 8 }}>{smsMsg}</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Bulk SMS Modal */}
+      {showBulkSms && (
+        <div className="modal-overlay" onClick={() => setShowBulkSms(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 550 }}>
+            <h2>📱 Bulk SMS to Customers</h2>
+            <p className="muted" style={{ marginBottom: 12 }}>Send a text message to {selectedForBulk.length > 0 ? `${selectedForBulk.length} selected` : 'all'} customers with phone numbers ({customersWithPhone.length} total).</p>
+            {!bulkResult ? (
+              <form onSubmit={handleBulkSms} className="form-grid">
+                <label>Message
+                  <textarea value={bulkSmsText} onChange={e => setBulkSmsText(e.target.value)} rows={4}
+                    placeholder="Type your bulk message... (e.g. promotions, announcements)" required style={{ resize: 'vertical' }} />
+                </label>
+                <p className="muted" style={{ fontSize: '0.8rem', marginTop: -8 }}>{bulkSmsText.length}/1600 characters</p>
+                {customersWithPhone.length > 0 && (
+                  <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 8 }}>
+                    <label style={{ marginBottom: 8, display: 'block', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={selectedForBulk.length === customersWithPhone.length}
+                        onChange={() => setSelectedForBulk(selectedForBulk.length === customersWithPhone.length ? [] : customersWithPhone.map(c => c.id))} />
+                      {' '}Select all ({customersWithPhone.length})
+                    </label>
+                    {customersWithPhone.map(c => (
+                      <label key={c.id} style={{ display: 'block', padding: '4px 0', cursor: 'pointer', fontSize: '0.85rem' }}>
+                        <input type="checkbox" checked={selectedForBulk.includes(c.id)}
+                          onChange={() => toggleBulkSelect(c.id)} />
+                        {' '}{c.name} — {c.phone}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <div className="form-actions">
+                  <button type="button" className="btn secondary" onClick={() => setShowBulkSms(false)}>Cancel</button>
+                  <button type="submit" className="btn primary" disabled={bulkSending || !bulkSmsText.trim()}>
+                    {bulkSending ? 'Sending...' : `📱 Send to ${selectedForBulk.length > 0 ? selectedForBulk.length : customersWithPhone.length} customers`}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div>
+                <div className="summary-grid" style={{ marginTop: 12 }}>
+                  <div className="summary-card"><span>✅ Sent</span><strong>{bulkResult.sent || 0}</strong></div>
+                  <div className="summary-card"><span>❌ Failed</span><strong>{bulkResult.failed || 0}</strong></div>
+                  <div className="summary-card"><span>📋 Total</span><strong>{bulkResult.total || 0}</strong></div>
+                </div>
+                <p className="muted" style={{ marginTop: 12 }}>{bulkResult.message}</p>
+                <div className="form-actions" style={{ marginTop: 16 }}>
+                  <button className="btn primary" onClick={() => { setShowBulkSms(false); setBulkResult(null); }}>Done</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
@@ -1758,7 +1906,7 @@ function CustomersPage() {
             <form onSubmit={handleSubmit} className="form-grid">
               <label>Name<input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></label>
               <label>Email<input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></label>
-              <label>Phone<input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></label>
+              <label>Phone<input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+234..." /></label>
               <div className="form-actions">
                 <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
                 <button type="submit" className="btn primary">{editCust ? "Update" : "Create"}</button>
@@ -1779,7 +1927,10 @@ function CustomersPage() {
                 <td><span className={`tier-badge ${tierColor[c.membership_tier] || ""}`}>{c.membership_tier}</span></td>
                 <td>₦{Number(c.total_spent).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td>{c.visit_count}</td>
-                <td><button className="btn-sm" onClick={() => startEdit(c)}>Edit</button></td>
+                <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  <button className="btn-sm" onClick={() => startEdit(c)}>Edit</button>
+                  {c.phone && <button className="btn-sm" onClick={() => { setSmsModal(c); setSmsText(""); setSmsMsg(""); }}>📱 SMS</button>}
+                </td>
               </tr>
             ))}</tbody>
           </table>

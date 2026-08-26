@@ -22,12 +22,5 @@ CREATE INDEX IF NOT EXISTS idx_payment_verifications_sale ON payment_verificatio
 CREATE INDEX IF NOT EXISTS idx_payment_verifications_ref ON payment_verifications(reference);
 
 -- ── Device Identity in Audit Logs ───────────────────────────────
-DO $$ BEGIN
-  ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45);
-EXCEPTION WHEN duplicate_column THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT;
-EXCEPTION WHEN duplicate_column THEN NULL;
-END $$;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT;
