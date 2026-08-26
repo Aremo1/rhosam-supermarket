@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "node src/server.js",
+    "test": "jest --forceExit --detectOpenHandles",
+    "test:watch": "jest --watch --forceExit --detectOpenHandles",
     "create-admin": "node src/create-admin.js",
     "verify-password": "node src/verify-password.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "caniuse-lite": "^1.0.30001810",
     "cloudinary": "^2.10.1",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
@@ -23,5 +26,9 @@
     "pg": "^8.23.0",
     "resend": "^6.22.0",
     "telnyx": "^2.0.0"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2"
   }
 }
