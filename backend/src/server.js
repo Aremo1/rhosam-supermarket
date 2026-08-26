@@ -1673,12 +1673,13 @@ app.get("/api/dashboard/stats", auth, async (req, r, n) => {
     const userBranchFilter = buildBranchFilter(req, { tableAlias: "u", useCashierFallback: true });
     const targetBranchId = branchFilter.targetBranchId;
 
-    // When viewing a specific branch, scope products to those sold at that branch
+    // When viewing a specific branch, count all active products (not just those sold)
     let productFilterSql = "";
     let productFilterParams = [];
     if (targetBranchId) {
+      // Count all active products — branch_inventory or global stock
       productFilterParams = [targetBranchId];
-      productFilterSql = ` AND p.id IN (SELECT si.product_id FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.branch_id = $${productFilterParams.length})`;
+      productFilterSql = ` AND (p.stock > 0 OR EXISTS (SELECT 1 FROM branch_inventory bi WHERE bi.product_id = p.id AND bi.branch_id = $${productFilterParams.length} AND bi.quantity > 0))`;
     }
 
     // Build a branch-aware low-stock query
@@ -1769,7 +1770,8 @@ app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, 
        GROUP BY b.id, b.name
        ORDER BY total_revenue DESC`
     );
-    // Low stock per branch using branch_inventory
+    // Low stock per branch — count products where branch stock <= reorder level
+    // Use COALESCE so products without branch_inventory entries are also checked
     const branchIds = result.rows.map(r => r.id);
     let lowStockMap = {};
     if (branchIds.length) {
@@ -1777,10 +1779,26 @@ app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, 
         `SELECT bi.branch_id, COUNT(DISTINCT p.id)::int AS low_stock_count
          FROM branch_inventory bi
          JOIN products p ON p.id = bi.product_id
-         WHERE bi.quantity <= bi.reorder_level AND p.is_active = TRUE
+         WHERE bi.quantity <= COALESCE(bi.reorder_level, p.reorder_level)
+           AND p.is_active = TRUE
+           AND bi.quantity > 0
          GROUP BY bi.branch_id`
       );
       stockRows.forEach(r => { lowStockMap[r.branch_id] = r.low_stock_count; });
+      // Also count products with no branch_inventory entry but low global stock
+      const { rows: noEntryRows } = await pool.query(
+        `SELECT b.id AS branch_id, COUNT(DISTINCT p.id)::int AS low_stock_count
+         FROM branches b
+         CROSS JOIN products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = b.id
+         WHERE b.is_active = TRUE AND p.is_active = TRUE
+           AND bi.id IS NULL
+           AND p.stock <= p.reorder_level
+         GROUP BY b.id`
+      );
+      noEntryRows.forEach(r => {
+        lowStockMap[r.branch_id] = (lowStockMap[r.branch_id] || 0) + r.low_stock_count;
+      });
     }
     const enriched = result.rows.map(r => ({
       ...r,
@@ -2192,7 +2210,7 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
 // ═══════════════════════════════════════════════════════════════════
 
 app.get("/api/branches", auth, async (_q, r, n) => {
-  try { r.json((await pool.query("SELECT * FROM branches ORDER BY name")).rows); }
+  try { r.json((await pool.query("SELECT * FROM branches WHERE is_active = TRUE ORDER BY name")).rows); }
   catch (e) { n(e); }
 });
 
