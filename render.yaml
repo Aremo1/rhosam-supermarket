@@ -34,6 +34,10 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      - key: TELNYX_API_KEY
+        sync: false
+      - key: TELNYX_PHONE_NUMBER
+        sync: false
 
   # ── Frontend SPA ────────────────────────────────────────────────
   - type: web
