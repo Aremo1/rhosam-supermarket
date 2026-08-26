@@ -1117,6 +1117,7 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
   try {
     const productId = q.query.product_id;
     const branchId = q.query.branchId ? Number(q.query.branchId) : q.user.branchId;
+    const pageSize = Math.min(Number(q.query.limit) || 50, 200);
     let sql = `SELECT im.*, p.name AS product_name, u.name AS user_name
                FROM inventory_movements im
                JOIN products p ON p.id = im.product_id
@@ -1129,9 +1130,21 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
       params.push(branchId);
       conditions.push(`(im.product_id IN (SELECT product_id FROM branch_inventory WHERE branch_id = $${params.length}) OR im.user_id IN (SELECT id FROM users WHERE branch_id = $${params.length}))`);
     }
+    // Cursor-based pagination
+    if (q.query.cursor) {
+      const cursor = JSON.parse(q.query.cursor);
+      conditions.push(`(im.created_at, im.id) < ($${params.length + 1}, $${params.length + 2})`);
+      params.push(cursor.ts, cursor.id);
+    }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
-    sql += " ORDER BY im.created_at DESC LIMIT 200";
-    r.json((await pool.query(sql, params)).rows);
+    const fetchLimit = pageSize + 1;
+    sql += ` ORDER BY im.created_at DESC, im.id DESC LIMIT $${params.length + 1}`;
+    params.push(fetchLimit);
+    const { rows } = await pool.query(sql, params);
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { ts: data[data.length - 1].created_at, id: data[data.length - 1].id } : null;
+    r.json({ data, nextCursor, hasMore });
   } catch (e) { n(e); }
 });
 
@@ -1463,7 +1476,8 @@ app.get("/api/products/low-stock", auth, async (req, r, n) => {
 
 app.get("/api/sales", auth, async (req, res, next) => {
   try {
-    const { from, to } = req.query;
+    const { from, to, cursor } = req.query;
+    const pageSize = Math.min(Number(req.query.limit) || 50, 200);
     let where = [];
     let params = [];
     let paramIdx = 1;
@@ -1473,7 +1487,10 @@ app.get("/api/sales", auth, async (req, res, next) => {
     // ADMIN sees all branches (no branch filter)
     if (from) { where.push(`s.created_at >= $${paramIdx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${paramIdx++}`); params.push(to); }
+    // Cursor-based pagination: fetch one extra to determine hasMore
+    if (cursor) { where.push(`(s.created_at, s.id) < ($${paramIdx++}, $${paramIdx++})`); params.push(cursor.ts, cursor.id); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
+    const fetchLimit = pageSize + 1;
     const sql = `SELECT s.id,s.receipt_number,s.customer_name,s.payment_method,s.subtotal::float,s.discount::float,s.tax::float,
               s.total::float,s.amount_paid::float,s.status,s.created_at,s.branch_id,b.name AS branch_name,u.name AS cashier_name,
               COALESCE(SUM(si.quantity),0)::int AS item_count
@@ -1481,9 +1498,14 @@ app.get("/api/sales", auth, async (req, res, next) => {
        LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN sale_items si ON si.sale_id = s.id
        ${w}
-       GROUP BY s.id,u.name,b.name ORDER BY s.created_at DESC LIMIT 200`;
+       GROUP BY s.id,u.name,b.name ORDER BY s.created_at DESC, s.id DESC LIMIT $${params.length + 1}`;
+    params.push(fetchLimit);
     const result = await pool.query(sql, params);
-    res.json(result.rows);
+    const rows = result.rows;
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { ts: data[data.length - 1].created_at, id: data[data.length - 1].id } : null;
+    res.json({ data, nextCursor, hasMore });
   } catch (e) { console.error("[SALES ERROR]", e.message, e.code); next(e); }
 });
 
@@ -2202,17 +2224,31 @@ app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, 
 
 app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
   try {
-    const limit = Math.min(Number(q.query.limit) || 200, 500);
+    const pageSize = Math.min(Number(q.query.limit) || 50, 200);
     let sql = `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id`;
+    const conditions = [];
     const params = [];
+    let idx = 1;
     if (q.query.branchId) {
+      conditions.push(`u.branch_id = $${idx++}`);
       params.push(Number(q.query.branchId));
-      sql += ` WHERE u.branch_id = $${params.length}`;
     }
-    sql += ` ORDER BY a.created_at DESC LIMIT $${params.length + 1}`;
-    params.push(limit);
-    r.json((await pool.query(sql, params)).rows);
+    // Cursor-based pagination
+    if (q.query.cursor) {
+      const cursor = JSON.parse(q.query.cursor);
+      conditions.push(`(a.created_at, a.id) < ($${idx++}, $${idx++})`);
+      params.push(cursor.ts, cursor.id);
+    }
+    if (conditions.length) sql += ` WHERE ` + conditions.join(' AND ');
+    const fetchLimit = pageSize + 1;
+    sql += ` ORDER BY a.created_at DESC, a.id DESC LIMIT $${idx}`;
+    params.push(fetchLimit);
+    const { rows } = await pool.query(sql, params);
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { ts: data[data.length - 1].created_at, id: data[data.length - 1].id } : null;
+    r.json({ data, nextCursor, hasMore });
   } catch (e) { n(e); }
 });
 

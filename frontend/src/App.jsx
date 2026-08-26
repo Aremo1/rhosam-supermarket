@@ -1213,6 +1213,9 @@ function InventoryPage() {
   const [products, setProducts] = useState([]);
   const [lowStock, setLowStock] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [movementsCursor, setMovementsCursor] = useState(null);
+  const [movementsHasMore, setMovementsHasMore] = useState(false);
+  const [loadingMoreMovements, setLoadingMoreMovements] = useState(false);
   const [loading, setLoading] = useState(true);
   const [adjustModal, setAdjustModal] = useState(null);
   const [adjForm, setAdjForm] = useState({ quantity: "", type: "STOCK_IN", notes: "" });
@@ -1228,15 +1231,31 @@ function InventoryPage() {
     try {
       const bid = selectedBranch || user?.branchId || undefined;
       const params = bid ? { branchId: bid } : undefined;
-      const [p, ls, mv] = await Promise.all([
+      const [p, ls, mvResult] = await Promise.all([
         fetchProducts(undefined, bid),
         fetchLowStock(params),
         fetchInventoryMovements(undefined, bid)
       ]);
-      setProducts(p); setLowStock(ls); setMovements(mv);
+      setProducts(p); setLowStock(ls);
+      setMovements(mvResult.data || []);
+      setMovementsCursor(mvResult.nextCursor);
+      setMovementsHasMore(mvResult.hasMore);
     } catch { }
     finally { setLoading(false); }
   }, [fetchProducts, fetchLowStock, fetchInventoryMovements, user, selectedBranch]);
+
+  async function loadMoreMovements() {
+    if (!movementsCursor || loadingMoreMovements) return;
+    setLoadingMoreMovements(true);
+    try {
+      const bid = selectedBranch || user?.branchId || undefined;
+      const result = await fetchInventoryMovements(undefined, bid, { cursor: JSON.stringify(movementsCursor) });
+      setMovements(prev => [...prev, ...(result.data || [])]);
+      setMovementsCursor(result.nextCursor);
+      setMovementsHasMore(result.hasMore);
+    } catch { }
+    finally { setLoadingMoreMovements(false); }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -1334,6 +1353,13 @@ function InventoryPage() {
                 ))}</tbody>
               </table>
               {!movements.length && <p className="muted">No movements recorded.</p>}
+              {movementsHasMore && (
+                <div style={{ textAlign: 'center', padding: 16 }}>
+                  <button className="btn secondary" onClick={loadMoreMovements} disabled={loadingMoreMovements}>
+                    {loadingMoreMovements ? 'Loading…' : `Load More (${movements.length} loaded)`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>
@@ -1759,6 +1785,9 @@ function SalesPage() {
   const { fetchSales, getSale, returnSale, user, fetchBranches } = useAuth();
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
   const [detail, setDetail] = useState(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -1777,10 +1806,30 @@ function SalesPage() {
       if (dateFrom) params.from = dateFrom;
       if (dateTo) params.to = dateTo + "T23:59:59";
       if (selectedBranch) params.branchId = selectedBranch;
-      setSales(await fetchSales(Object.keys(params).length ? params : undefined));
+      const result = await fetchSales(Object.keys(params).length ? params : undefined);
+      setSales(result.data || []);
+      setNextCursor(result.nextCursor);
+      setHasMore(result.hasMore);
     } catch { }
     finally { setLoading(false); }
   }, [fetchSales, dateFrom, dateTo, selectedBranch]);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const params = {};
+      if (dateFrom) params.from = dateFrom;
+      if (dateTo) params.to = dateTo + "T23:59:59";
+      if (selectedBranch) params.branchId = selectedBranch;
+      params.cursor = JSON.stringify(nextCursor);
+      const result = await fetchSales(params);
+      setSales(prev => [...prev, ...(result.data || [])]);
+      setNextCursor(result.nextCursor);
+      setHasMore(result.hasMore);
+    } catch { }
+    finally { setLoadingMore(false); }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -1844,6 +1893,13 @@ function SalesPage() {
             ))}</tbody>
           </table>
           {!sales.length && <p className="muted">No sales found.</p>}
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 16 }}>
+              <button className="btn secondary" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : `Load More (${sales.length} loaded)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -3468,6 +3524,9 @@ function AuditPage() {
   const { fetchAuditLogs, user, fetchBranches } = useAuth();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
@@ -3478,12 +3537,31 @@ function AuditPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const params = { limit: 500 };
+    const params = { limit: 50 };
     if (selectedBranch) params.branchId = selectedBranch;
-    try { setLogs(await fetchAuditLogs(params)); }
+    try {
+      const result = await fetchAuditLogs(params);
+      setLogs(result.data || []);
+      setNextCursor(result.nextCursor);
+      setHasMore(result.hasMore);
+    }
     catch { setLogs([]); }
     finally { setLoading(false); }
   }, [fetchAuditLogs, selectedBranch]);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const params = { limit: 50, cursor: JSON.stringify(nextCursor) };
+      if (selectedBranch) params.branchId = selectedBranch;
+      const result = await fetchAuditLogs(params);
+      setLogs(prev => [...prev, ...(result.data || [])]);
+      setNextCursor(result.nextCursor);
+      setHasMore(result.hasMore);
+    } catch { }
+    finally { setLoadingMore(false); }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -3520,6 +3598,13 @@ function AuditPage() {
             ))}</tbody>
           </table>
           {!logs.length && <p className="muted">No audit logs found.</p>}
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 16 }}>
+              <button className="btn secondary" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : `Load More (${logs.length} loaded)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

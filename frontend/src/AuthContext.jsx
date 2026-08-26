@@ -75,13 +75,13 @@ export function AuthProvider({ children }) {
     deleteProduct: (id) => request(`/products/${id}`, { method: "DELETE" }),
     adjustStock: (id, data) => request(`/products/${id}/adjust`, { method: "POST", body: JSON.stringify(data) }),
     fetchLowStock: (params) => request(`/products/low-stock${params ? `?${new URLSearchParams(params)}` : ""}`),
-    fetchInventoryMovements: (productId, branchId) => request(`/inventory/movements?${new URLSearchParams({ ...(productId ? { product_id: productId } : {}), ...(branchId ? { branchId } : {}) })}`),
+    fetchInventoryMovements: (productId, branchId, params) => request(`/inventory/movements?${new URLSearchParams({ ...(productId ? { product_id: productId } : {}), ...(branchId ? { branchId } : {}), ...(params || {}) })}`),  // Returns { data, nextCursor, hasMore }
     reportDamage: (data) => request("/inventory/damage", { method: "POST", body: JSON.stringify(data) }),
     reportWastage: (data) => request("/inventory/wastage", { method: "POST", body: JSON.stringify(data) }),
     fetchValuation: (branchId) => request(`/inventory/valuation${branchId ? `?branchId=${branchId}` : ""}`),
     captureSnapshot: (branchId) => request(`/inventory/snapshot${branchId ? `?branchId=${branchId}` : ""}`, { method: "POST" }),
     fetchValuationTrend: (branchId, days) => request(`/inventory/trend${branchId ? `?branchId=${branchId}` : ""}${days ? `${branchId ? '&' : '?'}days=${days}` : ""}`),
-    fetchSales: (params) => request(`/sales${params ? `?${new URLSearchParams(params)}` : ""}`),
+    fetchSales: (params) => request(`/sales${params ? `?${new URLSearchParams(params)}` : ""}`),  // Returns { data, nextCursor, hasMore }
     getSale: (id) => request(`/sales/${id}`),
     createSale: (data) => request("/sales", { method: "POST", body: JSON.stringify(data) }),
     returnSale: (saleId, data) => request(`/sales/${saleId}/return`, { method: "POST", body: JSON.stringify(data) }),
@@ -117,7 +117,7 @@ export function AuthProvider({ children }) {
     fetchExpenses: (params) => request(`/expenses${params ? `?${new URLSearchParams(params)}` : ""}`),
     createExpense: (data) => request("/expenses", { method: "POST", body: JSON.stringify(data) }),
     fetchFinanceSummary: (params) => request(`/finance/summary${params ? `?${new URLSearchParams(params)}` : ""}`),
-    fetchAuditLogs: (params) => request(`/audit-logs${params ? `?${new URLSearchParams(params)}` : ""}`),
+    fetchAuditLogs: (params) => request(`/audit-logs${params ? `?${new URLSearchParams(params)}` : ""}`),  // Returns { data, nextCursor, hasMore }
     fetchLoginHistory: (params) => request(`/audit-logs/login-history${params ? `?${new URLSearchParams(params)}` : ""}`),
     fetchCategories: () => request("/categories"),
     createCategory: (data) => request("/categories", { method: "POST", body: JSON.stringify(data) }),
