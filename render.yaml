@@ -51,15 +51,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: VITE_API_URL
-        fromService:
-          name: rhosam-backend
-          property: host
-          type: web
+        value: rhosam-backend.onrender.com
       - key: API_TARGET
-        fromService:
-          name: rhosam-backend
-          property: host
-          type: web
+        value: rhosam-backend.onrender.com
 
 # ── Database ──────────────────────────────────────────────────────
 databases:
