@@ -225,7 +225,7 @@ function DashboardPage() {
   if (loading) return <div className="loading">Loading dashboard…</div>;
   if (!stats) return <div className="error-msg">Failed to load dashboard.</div>;
 
-  const fmt = (n) => "₦" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "₦" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const selectedBranchName = branches.find(b => String(b.id) === String(selectedBranch))?.name;
 
   return (
@@ -392,7 +392,7 @@ function DashboardPage() {
             const maxRev = Math.max(...(stats.salesChart || []).map(x => x.revenue || 1));
             const pct = ((d.revenue || 0) / maxRev) * 100;
             return (
-              <div key={i} className="bar-col" title={`${new Date(d.day).toLocaleDateString()}: ₦${Number(d.revenue).toLocaleString()} (${d.count} sales)`}>
+              <div key={i} className="bar-col" title={`${new Date(d.day).toLocaleDateString()}: ₦${(parseFloat(d.revenue) || 0).toLocaleString()} (${d.count} sales)`}>
                 <div className="bar" style={{ height: `${Math.max(pct, 4)}%` }} />
                 <small>{new Date(d.day).getDate()}</small>
               </div>
@@ -730,16 +730,16 @@ function POSPage() {
           {receipt.items?.map((item, i) => (
             <div key={i} className="receipt-line">
               <span>{item.name} × {item.quantity}</span>
-              <span>₦{Number(item.lineTotal).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
+              <span>₦{(parseFloat(item.lineTotal) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
             </div>
           ))}
           <hr />
-          <div className="receipt-line"><span>Subtotal</span><span>₦{Number(receipt.subtotal).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
-          {receipt.discount > 0 && <div className="receipt-line"><span>Discount</span><span>-₦{Number(receipt.discount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
-          {receipt.tax > 0 && <div className="receipt-line"><span>Tax</span><span>₦{Number(receipt.tax).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
-          <div className="receipt-line receipt-total"><span><strong>TOTAL</strong></span><strong>₦{Number(receipt.total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
-          {receipt.amountPaid > 0 && <div className="receipt-line"><span>Paid</span><span>₦{Number(receipt.amountPaid).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
-          {receipt.change_amount > 0 && <div className="receipt-line"><span>Change</span><span>₦{Number(receipt.change_amount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
+          <div className="receipt-line"><span>Subtotal</span><span>₦{(parseFloat(receipt.subtotal) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
+          {receipt.discount > 0 && <div className="receipt-line"><span>Discount</span><span>-₦{(parseFloat(receipt.discount) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
+          {receipt.tax > 0 && <div className="receipt-line"><span>Tax</span><span>₦{(parseFloat(receipt.tax) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
+          <div className="receipt-line receipt-total"><span><strong>TOTAL</strong></span><strong>₦{(parseFloat(receipt.total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
+          {receipt.amountPaid > 0 && <div className="receipt-line"><span>Paid</span><span>₦{(parseFloat(receipt.amountPaid) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
+          {receipt.change_amount > 0 && <div className="receipt-line"><span>Change</span><span>₦{(parseFloat(receipt.change_amount) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>}
           <p className="receipt-thanks">Thank you for shopping!</p>
           <div className="receipt-email-form no-print">
             <form onSubmit={handleEmailReceipt} style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -786,7 +786,7 @@ function POSPage() {
       {scanFeedback && (
         <div className="scan-toast" key={scanFeedback.id}>
           <span className="scan-toast-icon">✓</span>
-          <span className="scan-toast-text">{scanFeedback.name} — ₦{Number(scanFeedback.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
+          <span className="scan-toast-text">{scanFeedback.name} — ₦{(parseFloat(scanFeedback.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
         </div>
       )}
       <div className="pos-products">
@@ -847,7 +847,7 @@ function POSPage() {
                   <span className={`stock-tag ${p.stock <= p.reorder_level ? "low" : ""}`}>{p.stock} in stock</span>
                 </div>
               </div>
-              <div className="product-card-price">₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
+              <div className="product-card-price">₦{(parseFloat(p.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
             </div>
           ))}
           {!filtered.length && (
@@ -895,7 +895,7 @@ function POSPage() {
               <div key={item.productId} className="cart-item" style={isLow ? { borderLeft: '3px solid var(--warning, #f59e0b)' } : isMaxed ? { borderLeft: '3px solid var(--danger, #ef4444)' } : {}}>
                 <div>
                   <strong>{item.name}</strong>
-                  <small>₦{Number(item.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })} each</small>
+                  <small>₦{(parseFloat(item.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })} each</small>
                   {isLow && <small style={{ color: 'var(--warning, #f59e0b)', fontSize: '0.7rem' }}>⚠️ Low stock: {availableStock} left</small>}
                 </div>
                 <div className="quantity-controls">
@@ -909,7 +909,7 @@ function POSPage() {
                   />
                   <button onClick={() => updateQty(item.productId, item.quantity + 1)} disabled={isMaxed} style={isMaxed ? { opacity: 0.4, cursor: 'not-allowed' } : {}}>+</button>
                 </div>
-                <div className="cart-item-total">₦{Number(item.price * item.quantity).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
+                <div className="cart-item-total">₦{(parseFloat(item.price * item.quantity) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</div>
               </div>
             );
           })}
@@ -1114,8 +1114,8 @@ function ProductsPage() {
               <tr key={p.id}>
                 <td>{p.image_url ? <img src={`${API_BASE}${p.image_url}`} alt={p.name} className="product-thumb" /> : <span className="no-image">—</span>}</td>
                 <td><code>{p.barcode}</code></td><td>{p.name}</td><td>{p.category}</td>
-                <td>₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
-                <td>₦{Number(p.cost_price || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                <td>₦{(parseFloat(p.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                <td>₦{(parseFloat(p.cost_price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td className={p.stock <= p.reorder_level ? "low-stock" : ""}>{p.stock}</td>
                 <td>{p.expiry_date ? (() => { const d = new Date(p.expiry_date); const days = Math.ceil((d - new Date()) / 86400000); return <span style={{ color: days <= 0 ? 'var(--danger)' : days <= 30 ? 'var(--warning)' : 'var(--muted)' }}>{d.toLocaleDateString('en-NG', { dateStyle: 'short' })}{days <= 0 ? ' ⚠️' : days <= 30 ? ` (${days}d)` : ''}</span>; })() : '—'}</td>
                 <td>{p.unit}</td>
@@ -1209,7 +1209,7 @@ function InventoryPage() {
                     <tr key={p.id} className="low-stock-row">
                       <td>{p.name}</td><td>{p.barcode}</td>
                       <td className="low-stock">{p.stock}</td><td>{p.reorder_level}</td>
-                      <td>₦{Number(p.price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                      <td>₦{(parseFloat(p.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                     </tr>
                   ))}</tbody>
                 </table>
@@ -1669,7 +1669,7 @@ function SalesPage() {
                 <td>{new Date(s.created_at).toLocaleString()}</td>
                 <td>{s.customer_name}</td><td>{s.cashier_name}</td>
                 <td>{s.item_count}</td><td>{s.payment_method}</td>
-                <td><strong>₦{Number(s.total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></td>
+                <td><strong>₦{(parseFloat(s.total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></td>
                 <td>
                   <button className="btn-sm" onClick={() => viewDetail(s.id)}>View</button>
                 </td>
@@ -1697,10 +1697,10 @@ function SalesPage() {
                 <tbody>{detail.items?.map((item, i) => (
                   <tr key={i}>
                     <td>{item.product_name}</td>
-                    <td>₦{Number(item.unit_price).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                    <td>₦{(parseFloat(item.unit_price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                     <td>{item.quantity}</td>
-                    <td>{item.discount ? `₦${Number(item.discount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}` : "—"}</td>
-                    <td>₦{Number(item.line_total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                    <td>{item.discount ? `₦${(parseFloat(item.discount) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}` : "—"}</td>
+                    <td>₦{(parseFloat(item.line_total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                     <td>{["ADMIN", "MANAGER"].includes(user?.role) && (
                       <button className="btn-sm danger" onClick={() => handleReturn(detail.id, item.product_id, item.quantity)}>Return</button>
                     )}</td>
@@ -1709,10 +1709,10 @@ function SalesPage() {
               </table>
               <hr />
               <div className="sale-totals">
-                <p>Subtotal: ₦{Number(detail.subtotal).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>
-                {detail.discount > 0 && <p>Discount: -₦{Number(detail.discount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
-                {detail.tax > 0 && <p>Tax: ₦{Number(detail.tax).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
-                <p><strong>Total: ₦{Number(detail.total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></p>
+                <p>Subtotal: ₦{(parseFloat(detail.subtotal) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>
+                {detail.discount > 0 && <p>Discount: -₦{(parseFloat(detail.discount) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
+                {detail.tax > 0 && <p>Tax: ₦{(parseFloat(detail.tax) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</p>}
+                <p><strong>Total: ₦{(parseFloat(detail.total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></p>
               </div>
               <div className="no-print" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                 <button className="btn primary" onClick={() => {
@@ -1925,7 +1925,7 @@ function CustomersPage() {
                 <td>{c.name}</td><td>{c.email || "—"}</td><td>{c.phone || "—"}</td>
                 <td>{c.loyalty_points}</td>
                 <td><span className={`tier-badge ${tierColor[c.membership_tier] || ""}`}>{c.membership_tier}</span></td>
-                <td>₦{Number(c.total_spent).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                <td>₦{(parseFloat(c.total_spent) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td>{c.visit_count}</td>
                 <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   <button className="btn-sm" onClick={() => startEdit(c)}>Edit</button>
@@ -2150,7 +2150,7 @@ function ProcurementPage() {
             <tbody>{orders.map(o => (
               <tr key={o.id}>
                 <td><code>{o.po_number}</code></td><td>{o.supplier_name}</td>
-                <td>₦{Number(o.total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                <td>₦{(parseFloat(o.total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td><span className={`status-badge ${statusColor[o.status] || ""}`}>{o.status}</span></td>
                 <td>{new Date(o.created_at).toLocaleDateString()}</td>
                 <td>
@@ -2300,7 +2300,7 @@ function ExpensesPage() {
               <tr key={e.id}>
                 <td>{new Date(e.created_at).toLocaleString()}</td>
                 <td>{e.category}</td><td>{e.description || "—"}</td>
-                <td>₦{Number(e.amount).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
+                <td>₦{(parseFloat(e.amount) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</td>
                 <td>{e.payment_method}</td><td>{e.approved_by_name || "—"}</td>
               </tr>
             ))}</tbody>
@@ -2322,7 +2322,7 @@ function FinancePage() {
 
   useEffect(() => { fetchFinanceSummary().then(setSummary).catch(() => {}).finally(() => setLoading(false)); }, [fetchFinanceSummary]);
 
-  const fmt = (n) => "₦" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "₦" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   if (loading) return <p className="loading">Loading…</p>;
   if (!summary) return <p className="error-msg">Failed to load financial summary.</p>;
@@ -3238,7 +3238,7 @@ function CashDrawerPage() {
     finally { setBusy(false); }
   }
 
-  const fmt = (n) => "₦" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return "₦" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   if (loading) return <p className="loading">Loading…</p>;
 
@@ -4600,7 +4600,7 @@ function ExpiryTrackingPage() {
     } catch (err) { setMsg('Error: ' + err.message); }
   }
 
-  const fmt = (n) => '₦' + Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return '₦' + v.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
   return (
     <div className="page-panel">
@@ -4843,7 +4843,7 @@ function InventoryAuditPage() {
     try { await deleteAudit(id); load(); } catch (err) { alert(err.message); }
   }
 
-  const fmt = (n) => '₦' + Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const fmt = (n) => { const v = parseFloat(n) || 0; return '₦' + v.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const filteredItems = active?.items?.filter(i => !filter || i.product_name.toLowerCase().includes(filter.toLowerCase()) || (i.barcode || '').includes(filter)) || [];
   const countedCount = filteredItems.filter(i => i.counted_quantity !== null).length;
   const discrepancies = filteredItems.filter(i => i.counted_quantity !== null && i.discrepancy !== 0);

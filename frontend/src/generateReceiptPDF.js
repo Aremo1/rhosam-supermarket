@@ -4,8 +4,10 @@
  * No external libraries required — pure PDF spec.
  */
 
-const Naira = (n) =>
-  "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+const Naira = (n) => {
+  const v = parseFloat(n) || 0;
+  return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 // Minimal PDF builder — produces a valid PDF 1.4 file with text content
 function buildPDF(lines, opts = {}) {

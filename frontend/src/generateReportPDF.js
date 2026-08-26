@@ -4,8 +4,10 @@
  * No external libraries required — pure PDF spec.
  */
 
-const Naira = (n) =>
-  "\u20A6" + Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+const Naira = (n) => {
+  const v = parseFloat(n) || 0;
+  return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 // Multi-page PDF builder with automatic page breaks
 function buildReportPDF(sections, opts = {}) {
