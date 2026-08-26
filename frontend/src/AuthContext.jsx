@@ -74,8 +74,8 @@ export function AuthProvider({ children }) {
     updateProduct: (id, data) => request(`/products/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     deleteProduct: (id) => request(`/products/${id}`, { method: "DELETE" }),
     adjustStock: (id, data) => request(`/products/${id}/adjust`, { method: "POST", body: JSON.stringify(data) }),
-    fetchLowStock: () => request("/products/low-stock"),
-    fetchInventoryMovements: (productId) => request(`/inventory/movements${productId ? `?product_id=${productId}` : ""}`),
+    fetchLowStock: (params) => request(`/products/low-stock${params ? `?${new URLSearchParams(params)}` : ""}`),
+    fetchInventoryMovements: (productId, branchId) => request(`/inventory/movements?${new URLSearchParams({ ...(productId ? { product_id: productId } : {}), ...(branchId ? { branchId } : {}) })}`),
     reportDamage: (data) => request("/inventory/damage", { method: "POST", body: JSON.stringify(data) }),
     reportWastage: (data) => request("/inventory/wastage", { method: "POST", body: JSON.stringify(data) }),
     fetchValuation: (branchId) => request(`/inventory/valuation${branchId ? `?branchId=${branchId}` : ""}`),
@@ -160,7 +160,7 @@ export function AuthProvider({ children }) {
     // AI Forecasting
     fetchDemandForecast: (productId) => request(`/forecast/demand${productId ? `?product_id=${productId}` : ""}`),
     // Auto Reorder
-    fetchAutoReorderSuggestions: () => request("/auto-reorder/suggestions"),
+    fetchAutoReorderSuggestions: (params) => request(`/auto-reorder/suggestions${params ? `?${new URLSearchParams(params)}` : ""}`),
     createAutoReorder: (items) => request("/auto-reorder/create", { method: "POST", body: JSON.stringify({ items }) }),
     // Expiry tracking
     fetchExpiringProducts: (days) => request(`/inventory/expiring${days ? `?days=${days}` : ''}`),
@@ -184,7 +184,7 @@ export function AuthProvider({ children }) {
       const d = await r.json(); if (!r.ok) throw new Error(d.message || 'Import failed'); return d;
     },
     // Inventory audits
-    fetchAudits: () => request('/inventory-audits'),
+    fetchAudits: (params) => request(`/inventory-audits${params ? `?${new URLSearchParams(params)}` : ''}`),
     getAudit: (id) => request(`/inventory-audits/${id}`),
     createAudit: (data) => request('/inventory-audits', { method: 'POST', body: JSON.stringify(data) }),
     updateAuditStatus: (id, status) => request(`/inventory-audits/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
@@ -195,7 +195,7 @@ export function AuthProvider({ children }) {
     createAlertRule: (data) => request('/alert-rules', { method: 'POST', body: JSON.stringify(data) }),
     updateAlertRule: (id, data) => request(`/alert-rules/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     deleteAlertRule: (id) => request(`/alert-rules/${id}`, { method: 'DELETE' }),
-    fetchStockAlerts: (unreadOnly) => request(`/stock-alerts${unreadOnly ? '?unread=true' : ''}`),
+    fetchStockAlerts: (params) => request(`/stock-alerts${params ? `?${new URLSearchParams(params)}` : ''}`),
     scanStockAlerts: () => request('/stock-alerts/scan', { method: 'POST' }),
     markAlertsRead: (ids) => request('/stock-alerts/mark-read', { method: 'PATCH', body: JSON.stringify({ ids: ids || [] }) }),
     dismissAlerts: (ids) => request('/stock-alerts/dismiss', { method: 'PATCH', body: JSON.stringify({ ids }) }),
@@ -208,7 +208,7 @@ export function AuthProvider({ children }) {
     sendNotification: (data) => request('/notifications/send', { method: 'POST', body: JSON.stringify(data) }),
     getNotificationStatus: () => request('/notifications/status'),
     // Executive Dashboard
-    fetchExecutiveOverview: () => request("/executive/overview"),
+    fetchExecutiveOverview: (params) => request(`/executive/overview${params ? `?${new URLSearchParams(params)}` : ""}`),
     // Customer Display
     getCustomerDisplay: (saleId) => request(`/customer-display/${saleId}`),
     // Supplier Portal

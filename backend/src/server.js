@@ -1116,7 +1116,7 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
 app.get("/api/inventory/movements", auth, async (q, r, n) => {
   try {
     const productId = q.query.product_id;
-    const branchId = q.user.branchId;
+    const branchId = q.query.branchId ? Number(q.query.branchId) : q.user.branchId;
     let sql = `SELECT im.*, p.name AS product_name, u.name AS user_name
                FROM inventory_movements im
                JOIN products p ON p.id = im.product_id
@@ -1124,8 +1124,8 @@ app.get("/api/inventory/movements", auth, async (q, r, n) => {
     const conditions = [];
     const params = [];
     if (productId) { params.push(Number(productId)); conditions.push(`im.product_id = $${params.length}`); }
-    // Non-admin users: only show movements for products in their branch
-    if (q.user.role !== "ADMIN" && branchId) {
+    // Filter by branch (admin can select via query param, others scoped to their branch)
+    if (branchId) {
       params.push(branchId);
       conditions.push(`(im.product_id IN (SELECT product_id FROM branch_inventory WHERE branch_id = $${params.length}) OR im.user_id IN (SELECT id FROM users WHERE branch_id = $${params.length}))`);
     }
@@ -1438,7 +1438,7 @@ app.post("/api/inventory/auto-snapshot", auth, allow("ADMIN"), async (req, res, 
 
 app.get("/api/products/low-stock", auth, async (req, r, n) => {
   try {
-    const branchId = req.user.branchId;
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
     if (branchId) {
       // Branch-aware: show low stock products for this specific branch
       r.json((await pool.query(
@@ -3161,7 +3161,7 @@ app.get("/api/forecast/demand", auth, allow("ADMIN", "MANAGER"), async (req, res
 
 app.get("/api/auto-reorder/suggestions", auth, allow("ADMIN", "MANAGER"), async (req, res) => {
   try {
-    const branchId = req.user.branchId;
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
     let lowStock;
     if (branchId) {
       // Branch-aware: show low stock products for this specific branch
@@ -3254,6 +3254,10 @@ app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req
 
 app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
   try {
+    const branchId = req.query.branchId ? Number(req.query.branchId) : null;
+    const bf = branchId ? ` AND branch_id = $1` : '';
+    const bfParams = branchId ? [branchId] : [];
+    const siBf = branchId ? ` AND s.branch_id = $1` : '';
     const queries = [
       pool.query(`SELECT
         COALESCE(SUM(total),0)::float AS total_revenue,
@@ -3261,11 +3265,11 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
         COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN total END),0)::float AS month_revenue,
         COUNT(*)::int AS total_transactions,
         COALESCE(AVG(total),0)::float AS avg_transaction
-       FROM sales`),
+       FROM sales WHERE 1=1${bf}`, bfParams),
       pool.query(`SELECT
         COALESCE(SUM(amount),0)::float AS total_expenses,
         COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN amount END),0)::float AS month_expenses
-       FROM expenses`),
+       FROM expenses WHERE 1=1${bf}`, bfParams),
       pool.query(`SELECT
         COUNT(*)::int AS total,
         COUNT(CASE WHEN stock <= reorder_level THEN 1 END)::int AS low_stock,
@@ -3274,16 +3278,16 @@ app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
       pool.query(`SELECT COUNT(*)::int AS total, COALESCE(SUM(total_spent),0)::float AS total_spent, COALESCE(AVG(total_spent),0)::float AS avg_spent FROM customers`),
       pool.query(`SELECT date_trunc('day',created_at)::date AS day,
         COUNT(*)::int AS transactions, COALESCE(SUM(total),0)::float AS revenue
-       FROM sales WHERE created_at >= NOW() - INTERVAL '30 days'
-       GROUP BY 1 ORDER BY 1`),
+       FROM sales WHERE created_at >= NOW() - INTERVAL '30 days'${bf}
+       GROUP BY 1 ORDER BY 1`, bfParams),
       pool.query(`SELECT u.name, COUNT(s.id)::int AS transactions, COALESCE(SUM(s.total),0)::float AS revenue
        FROM sales s JOIN users u ON u.id = s.cashier_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'
-       GROUP BY u.id, u.name ORDER BY revenue DESC LIMIT 5`),
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${siBf}
+       GROUP BY u.id, u.name ORDER BY revenue DESC LIMIT 5`, bfParams),
       pool.query(`SELECT p.category, SUM(si.line_total)::float AS revenue, SUM(si.quantity)::int AS qty
        FROM sale_items si JOIN products p ON p.id = si.product_id JOIN sales s ON s.id = si.sale_id
-       WHERE s.created_at >= NOW() - INTERVAL '30 days'
-       GROUP BY p.category ORDER BY revenue DESC`),
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'${siBf}
+       GROUP BY p.category ORDER BY revenue DESC`, bfParams),
       pool.query(`SELECT p.name, p.stock, p.reorder_level
        FROM products p WHERE p.stock <= p.reorder_level AND p.is_active = TRUE
        ORDER BY p.stock ASC LIMIT 10`)
@@ -4319,7 +4323,7 @@ app.post("/api/inventory/import", auth, allow('ADMIN'), csvUpload.single('file')
 // List audits
 app.get("/api/inventory-audits", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
   try {
-    const branchId = req.user.branchId;
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
     let sql = `SELECT ia.*, u.name AS created_by_name, u2.name AS completed_by_name, b.name AS branch_name
                FROM inventory_audits ia
                LEFT JOIN users u ON u.id = ia.created_by
@@ -4526,7 +4530,7 @@ app.delete("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) 
 // Get active alerts (dashboard)
 app.get("/api/stock-alerts", auth, async (req, res, next) => {
   try {
-    const branchId = req.user.branchId;
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
     const unreadOnly = req.query.unread === 'true';
     let sql = `SELECT sa.*, p.name AS product_name, p.barcode, b.name AS branch_name
                FROM stock_alerts sa

@@ -1143,7 +1143,7 @@ function ProductsPage() {
 // INVENTORY (Phase 3)
 // ═══════════════════════════════════════════════════════════════════
 function InventoryPage() {
-  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements, user } = useAuth();
+  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements, user, fetchBranches } = useAuth();
   const [tab, setTab] = useState("stock");
   const [products, setProducts] = useState([]);
   const [lowStock, setLowStock] = useState([]);
@@ -1151,14 +1151,27 @@ function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [adjustModal, setAdjustModal] = useState(null);
   const [adjForm, setAdjForm] = useState({ quantity: "", type: "STOCK_IN", notes: "" });
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
-      const [p, ls, mv] = await Promise.all([fetchProducts(undefined, user?.branchId), fetchLowStock(), fetchInventoryMovements()]);
+      const bid = selectedBranch || user?.branchId || undefined;
+      const params = bid ? { branchId: bid } : undefined;
+      const [p, ls, mv] = await Promise.all([
+        fetchProducts(undefined, bid),
+        fetchLowStock(params),
+        fetchInventoryMovements(undefined, bid)
+      ]);
       setProducts(p); setLowStock(ls); setMovements(mv);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchProducts, fetchLowStock, fetchInventoryMovements, user]);
+  }, [fetchProducts, fetchLowStock, fetchInventoryMovements, user, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1173,6 +1186,27 @@ function InventoryPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Inventory across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Inventory filtered to your branch.
+        </div>
+      )}
       <div className="tabs">
         <button className={tab === "stock" ? "active" : ""} onClick={() => setTab("stock")}>Stock Levels</button>
         <button className={tab === "low" ? "active" : ""} onClick={() => setTab("low")}>Low Stock ({lowStock.length})</button>
@@ -1271,24 +1305,32 @@ function InventoryPage() {
 // DAMAGES PAGE
 // ═══════════════════════════════════════════════════════════════════
 function DamagesPage() {
-  const { fetchProducts, reportDamage, fetchInventoryMovements, user } = useAuth();
+  const { fetchProducts, reportDamage, fetchInventoryMovements, user, fetchBranches } = useAuth();
   const [products, setProducts] = useState([]);
   const [damages, setDamages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ productId: "", quantity: "", reason: "" });
   const [msg, setMsg] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
+      const bid = selectedBranch || user?.branchId || undefined;
       const [p, m] = await Promise.all([
-        fetchProducts(undefined, user?.branchId),
-        fetchInventoryMovements()
+        fetchProducts(undefined, bid),
+        fetchInventoryMovements(undefined, bid)
       ]);
       setProducts(p);
       setDamages(m.filter(mv => mv.movement_type === "DAMAGED"));
     } catch { } finally { setLoading(false); }
-  }, [fetchProducts, fetchInventoryMovements, user]);
+  }, [fetchProducts, fetchInventoryMovements, user, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1304,6 +1346,16 @@ function DamagesPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Damages across all branches'}</span>
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card"><span>Total Damage Reports</span><strong>{damages.length}</strong></div>
         <div className="summary-card"><span>Units Lost</span><strong>{damages.reduce((s, d) => s + Math.abs(d.quantity), 0)}</strong></div>
@@ -1361,25 +1413,32 @@ function DamagesPage() {
 // WASTAGE PAGE
 // ═══════════════════════════════════════════════════════════════════
 function WastagePage() {
-  const { fetchProducts, reportWastage, fetchInventoryMovements, user } = useAuth();
+  const { fetchProducts, reportWastage, fetchInventoryMovements, user, fetchBranches } = useAuth();
   const [products, setProducts] = useState([]);
   const [wastage, setWastage] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ productId: "", quantity: "", reason: "" });
   const [msg, setMsg] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
+      const bid = selectedBranch || user?.branchId || undefined;
       const [p, m] = await Promise.all([
-        fetchProducts(undefined, user?.branchId),
-        fetchInventoryMovements()
+        fetchProducts(undefined, bid),
+        fetchInventoryMovements(undefined, bid)
       ]);
       setProducts(p);
       setWastage(m.filter(mv => mv.movement_type === "WASTAGE"));
     } catch { } finally { setLoading(false); }
-  }, [fetchProducts, fetchInventoryMovements, user]);
+  }, [fetchProducts, fetchInventoryMovements, user, selectedBranch]);
 
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
   useEffect(() => { load(); }, [load]);
 
   async function handleSubmit(e) {
@@ -1394,6 +1453,16 @@ function WastagePage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Wastage across all branches'}</span>
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card"><span>Total Wastage Records</span><strong>{wastage.length}</strong></div>
         <div className="summary-card"><span>Units Wasted</span><strong>{wastage.reduce((s, w) => s + Math.abs(w.quantity), 0)}</strong></div>
@@ -2547,19 +2616,26 @@ function ForecastPage() {
 // AUTO REORDER (Phase 16)
 // ═══════════════════════════════════════════════════════════════════
 function AutoReorderPage() {
-  const { fetchAutoReorderSuggestions, createAutoReorder } = useAuth();
+  const { fetchAutoReorderSuggestions, createAutoReorder, user, fetchBranches } = useAuth();
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState({});
   const [msg, setMsg] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setSuggestions(await fetchAutoReorderSuggestions()); }
+    const params = {};
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { setSuggestions(await fetchAutoReorderSuggestions(Object.keys(params).length ? params : undefined)); }
     catch { setSuggestions([]); }
     finally { setLoading(false); }
-  }, [fetchAutoReorderSuggestions]);
+  }, [fetchAutoReorderSuggestions, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2583,6 +2659,16 @@ function AutoReorderPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Auto-reorder across all branches'}</span>
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card warning"><span>Need Reorder</span><strong>{suggestions.length}</strong></div>
         <div className="summary-card"><span>Selected</span><strong>{Object.values(selected).filter(Boolean).length}</strong></div>
@@ -2623,11 +2709,25 @@ function AutoReorderPage() {
 // EXECUTIVE DASHBOARD (Phase 16)
 // ═══════════════════════════════════════════════════════════════════
 function ExecutiveDashboard() {
-  const { fetchExecutiveOverview } = useAuth();
+  const { fetchExecutiveOverview, user, fetchBranches } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
 
-  useEffect(() => { fetchExecutiveOverview().then(setData).catch(() => {}).finally(() => setLoading(false)); }, [fetchExecutiveOverview]);
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const params = {};
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { await fetchExecutiveOverview(Object.keys(params).length ? params : undefined).then(setData); }
+    catch { setData(null); }
+    finally { setLoading(false); }
+  }, [fetchExecutiveOverview, selectedBranch]);
+
+  useEffect(() => { load(); }, [load]);
 
   const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
@@ -2636,6 +2736,16 @@ function ExecutiveDashboard() {
 
   return (
     <div className="dashboard">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Executive overview across all branches'}</span>
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card accent"><span>Total Revenue</span><strong>{fmt(data.revenue?.total)}</strong><small>Last 30 days: {fmt(data.revenue?.month)}</small></div>
         <div className="summary-card"><span>Total Profit</span><strong className={data.profit?.total >= 0 ? "profit" : "loss"}>{fmt(data.profit?.total)}</strong><small>Month: {fmt(data.profit?.month)}</small></div>
@@ -4956,7 +5066,7 @@ function BulkImportExportPage() {
 // INVENTORY AUDIT PAGE (Stock-Taking)
 // ═══════════════════════════════════════════════════════════════════
 function InventoryAuditPage() {
-  const { fetchAudits, getAudit, createAudit, updateAuditStatus, updateAuditItem, deleteAudit, user } = useAuth();
+  const { fetchAudits, getAudit, createAudit, updateAuditStatus, updateAuditItem, deleteAudit, user, fetchBranches } = useAuth();
   const [audits, setAudits] = useState([]);
   const [active, setActive] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -4966,10 +5076,16 @@ function InventoryAuditPage() {
   const [countVal, setCountVal] = useState('');
   const [countNotes, setCountNotes] = useState('');
   const [filter, setFilter] = useState('');
-  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === 'ADMIN';
+
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
-    try { setAudits(await fetchAudits()); } catch {} finally { setLoading(false); }
+    const params = {};
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { setAudits(await fetchAudits(Object.keys(params).length ? params : undefined)); } catch {} finally { setLoading(false); }
   }, [fetchAudits]);
 
   useEffect(() => { load(); }, [load]);
@@ -5014,6 +5130,16 @@ function InventoryAuditPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && !active && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Audits across all branches'}</span>
+        </div>
+      )}
       <div className="panel-header">
         <h2 style={{ margin: 0 }}>{active ? `📋 Audit: ${active.title}` : 'Inventory Audits'}</h2>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -5131,24 +5257,31 @@ function InventoryAuditPage() {
 // STOCK ALERTS PAGE
 // ═══════════════════════════════════════════════════════════════════
 function StockAlertsPage() {
-  const { fetchStockAlerts, scanStockAlerts, markAlertsRead, dismissAlerts, fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, user } = useAuth();
+  const { fetchStockAlerts, scanStockAlerts, markAlertsRead, dismissAlerts, fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, user, fetchBranches } = useAuth();
   const [tab, setTab] = useState('alerts');
   const [alerts, setAlerts] = useState({ alerts: [], total: 0, unread: 0 });
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === 'ADMIN';
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [ruleForm, setRuleForm] = useState({ name: '', alertType: 'LOW_STOCK', thresholdValue: 5, thresholdUnit: 'UNITS', notifyDashboard: true });
   const [msg, setMsg] = useState('');
-  const isAdmin = user?.role === 'ADMIN';
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [a, r] = await Promise.all([fetchStockAlerts(), fetchAlertRules()]);
+      const params = {};
+      if (selectedBranch) params.branchId = selectedBranch;
+      const alertParams = Object.keys(params).length ? params : undefined;
+      const [a, r] = await Promise.all([fetchStockAlerts(alertParams), fetchAlertRules()]);
       setAlerts(a); setRules(r);
     } catch {} finally { setLoading(false); }
-  }, [fetchStockAlerts, fetchAlertRules]);
+  }, [fetchStockAlerts, fetchAlertRules, selectedBranch]);
+
+  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -5185,6 +5318,16 @@ function StockAlertsPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Alerts across all branches'}</span>
+        </div>
+      )}
       <div className="panel-header">
         <div className="tabs" style={{ marginBottom: 0 }}>
           <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}>🔔 Active Alerts ({alerts.unread || 0})</button>
