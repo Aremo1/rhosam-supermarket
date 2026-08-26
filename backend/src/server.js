@@ -1467,7 +1467,8 @@ app.get("/api/sales", auth, async (req, res, next) => {
               COALESCE(SUM(si.quantity),0)::int AS item_count
        FROM sales s JOIN users u ON u.id = s.cashier_id
        LEFT JOIN branches b ON b.id = s.branch_id
-       LEFT JOIN sale_items si ON si.sale_id = s.id ${w}
+       LEFT JOIN sale_items si ON si.sale_id = s.id
+       ${w}
        GROUP BY s.id,u.name,b.name ORDER BY s.created_at DESC LIMIT 200`;
     const result = await pool.query(sql, params);
     res.json(result.rows);
@@ -2116,7 +2117,11 @@ app.get("/api/expenses", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Admin can filter by branch via query param; non-admin scoped to their branch
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE e.branch_id = $1";
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
       whereClause = " WHERE e.branch_id = $1";
       params.push(req.user.branchId);
     }
@@ -2144,10 +2149,13 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 
 app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
-    // Branch-scoped for managers
+    // Branch-scoped: Admin can filter by branch via query param
     const params = [];
     let branchFilter = "";
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      params.push(Number(req.query.branchId));
+      branchFilter = ` AND branch_id = $${params.length}`;
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
       params.push(req.user.branchId);
       branchFilter = ` AND branch_id = $${params.length}`;
     }
@@ -2772,7 +2780,8 @@ app.get("/api/reports/product-sales", auth, allow("ADMIN", "MANAGER"), async (re
 // Low Stock Report
 app.get("/api/reports/low-stock", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
-    const branchId = req.user.branchId;
+    // Support admin branch selection via query param, fallback to user's branch
+    const branchId = req.query.branchId ? Number(req.query.branchId) : req.user.branchId;
     if (branchId) {
       // Branch-aware: use branch_inventory for per-branch stock levels
       r.json((await pool.query(
