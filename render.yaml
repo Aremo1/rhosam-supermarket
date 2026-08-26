@@ -55,6 +55,11 @@ services:
           name: rhosam-backend
           property: host
           type: web
+      - key: API_TARGET
+        fromService:
+          name: rhosam-backend
+          property: host
+          type: web
 
 # ── Database ──────────────────────────────────────────────────────
 databases:
