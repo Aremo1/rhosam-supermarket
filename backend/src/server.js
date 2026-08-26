@@ -777,14 +777,18 @@ app.post("/api/auth/mfa/email-backup", auth, async (req, res, next) => {
 // PHASE 8: USER MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/users", auth, allow("ADMIN"), async (_q, r, n) => {
+app.get("/api/users", auth, allow("ADMIN"), async (q, r, n) => {
   try {
-    r.json((await pool.query(
-      `SELECT u.id,u.name,u.email,u.role,u.is_active,u.failed_login_attempts,u.locked_until,u.last_login_at,u.created_at,
+    let sql = `SELECT u.id,u.name,u.email,u.role,u.is_active,u.failed_login_attempts,u.locked_until,u.last_login_at,u.created_at,
               u.branch_id, b.name AS branch_name
-       FROM users u LEFT JOIN branches b ON b.id = u.branch_id
-       ORDER BY u.name`
-    )).rows);
+       FROM users u LEFT JOIN branches b ON b.id = u.branch_id`;
+    const params = [];
+    if (q.query.branchId) {
+      params.push(Number(q.query.branchId));
+      sql += ` WHERE u.branch_id = $${params.length}`;
+    }
+    sql += ` ORDER BY u.name`;
+    r.json((await pool.query(sql, params)).rows);
   } catch (e) { n(e); }
 });
 
@@ -1112,12 +1116,20 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
 app.get("/api/inventory/movements", auth, async (q, r, n) => {
   try {
     const productId = q.query.product_id;
+    const branchId = q.user.branchId;
     let sql = `SELECT im.*, p.name AS product_name, u.name AS user_name
                FROM inventory_movements im
                JOIN products p ON p.id = im.product_id
                LEFT JOIN users u ON u.id = im.user_id`;
+    const conditions = [];
     const params = [];
-    if (productId) { sql += " WHERE im.product_id = $1"; params.push(Number(productId)); }
+    if (productId) { params.push(Number(productId)); conditions.push(`im.product_id = $${params.length}`); }
+    // Non-admin users: only show movements for products in their branch
+    if (q.user.role !== "ADMIN" && branchId) {
+      params.push(branchId);
+      conditions.push(`(im.product_id IN (SELECT product_id FROM branch_inventory WHERE branch_id = $${params.length}) OR im.user_id IN (SELECT id FROM users WHERE branch_id = $${params.length}))`);
+    }
+    if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY im.created_at DESC LIMIT 200";
     r.json((await pool.query(sql, params)).rows);
   } catch (e) { n(e); }
@@ -1871,7 +1883,10 @@ app.get("/api/purchase-orders", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE po.branch_id = $1";
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
       whereClause = " WHERE po.branch_id = $1";
       params.push(req.user.branchId);
     }
@@ -1891,6 +1906,9 @@ app.get("/api/purchase-orders/:id", auth, async (req, res, next) => {
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id WHERE po.id=$1`, [id]
     );
     if (!poRows[0]) return res.status(404).json({ message: "Purchase order not found." });
+    // Non-admins can only view POs from their branch
+    if (req.user.role !== "ADMIN" && req.user.branchId && poRows[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: "Access denied." });
     const { rows: items } = await pool.query(
       `SELECT poi.*, p.name AS product_name FROM purchase_order_items poi JOIN products p ON p.id = poi.product_id WHERE poi.po_id=$1`, [id]
     );
@@ -2022,6 +2040,9 @@ app.get("/api/purchase-orders/:id/payments", auth, async (req, res, next) => {
        WHERE po.id = $1`, [id]
     );
     if (!po[0]) return res.status(404).json({ message: "Purchase order not found." });
+    // Non-admins can only view payments for POs from their branch
+    if (req.user.role !== "ADMIN" && req.user.branchId && po[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: "Access denied." });
     const { rows: payments } = await pool.query(
       `SELECT pp.*, u.name AS paid_by_name
        FROM purchase_order_payments pp
@@ -2054,6 +2075,11 @@ app.post("/api/purchase-orders/:id/payments", auth, allow("ADMIN", "MANAGER"), a
        WHERE po.id = $1`, [id]
     );
     if (!po[0]) { await client.query("ROLLBACK").catch(() => {}); client.release(); return res.status(404).json({ message: "Purchase order not found." }); }
+    // Non-managers can only make payments for POs from their branch
+    if (req.user.role !== "ADMIN" && req.user.branchId && po[0].branch_id !== req.user.branchId) {
+      await client.query("ROLLBACK").catch(() => {}); client.release();
+      return res.status(403).json({ message: "Access denied." });
+    }
 
     const totalPaid = Number(po[0].total_paid);
     const poTotal = Number(po[0].total);
@@ -2190,10 +2216,16 @@ app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, 
 app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
   try {
     const limit = Math.min(Number(q.query.limit) || 200, 500);
-    r.json((await pool.query(
-      `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
-       FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT $1`, [limit]
-    )).rows);
+    let sql = `SELECT a.id,u.name AS user_name,a.action,a.entity_type,a.entity_id,a.details,a.ip_address,a.user_agent,a.created_at
+       FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id`;
+    const params = [];
+    if (q.query.branchId) {
+      params.push(Number(q.query.branchId));
+      sql += ` WHERE u.branch_id = $${params.length}`;
+    }
+    sql += ` ORDER BY a.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    r.json((await pool.query(sql, params)).rows);
   } catch (e) { n(e); }
 });
 
@@ -2201,12 +2233,14 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
   try {
     const limit = Math.min(Number(q.query.limit) || 100, 500);
     const userId = q.query.user_id;
+    const branchId = q.query.branchId;
     let sql = `
       SELECT a.id, u.name AS user_name, u.email, a.action, a.details, a.ip_address, a.user_agent, a.created_at
       FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
       WHERE a.action IN ('LOGIN','FORGOT_PASSWORD','RESET_PASSWORD','CHANGE_PASSWORD','MFA_ENABLED','MFA_DISABLED')`;
     const params = [];
     if (userId) { params.push(Number(userId)); sql += ` AND a.user_id = $${params.length}`; }
+    if (branchId) { params.push(Number(branchId)); sql += ` AND u.branch_id = $${params.length}`; }
     sql += ` ORDER BY a.created_at DESC LIMIT $${params.length + 1}`;
     params.push(limit);
     r.json((await pool.query(sql, params)).rows);
@@ -2230,7 +2264,10 @@ app.get("/api/cash-drawer", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    if (req.user.role !== "ADMIN" && req.user.branchId) {
+    if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE cd.branch_id = $1";
+      params.push(Number(req.query.branchId));
+    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
       whereClause = " WHERE cd.branch_id = $1";
       params.push(req.user.branchId);
     }
