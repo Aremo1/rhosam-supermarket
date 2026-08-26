@@ -20,6 +20,8 @@ async function parse(r) {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => { try { return JSON.parse(localStorage.getItem("rhosam_user") || "null"); } catch { return null; } });
   const [loading, setLoading] = useState(true);
+  const [dataVersion, setDataVersion] = useState(0);
+  const notifyDataChange = useCallback(() => setDataVersion(v => v + 1), []);
 
   const logout = useCallback(() => {
     localStorage.removeItem("rhosam_token");
@@ -66,7 +68,7 @@ export function AuthProvider({ children }) {
   }
 
   const value = useMemo(() => ({
-    user, loading, login, logout, request,
+    user, loading, login, logout, request, notifyDataChange,
     // Convenience wrappers
     fetchProducts: (q, branchId) => request(`/products${(q || branchId) ? `?${new URLSearchParams({ ...(q ? { search: q } : {}), ...(branchId ? { branchId } : {}) })}` : ""}`),
     checkProductDuplicate: (field, value, excludeId) => request(`/products/check-duplicate?field=${field}&value=${encodeURIComponent(value)}${excludeId ? `&excludeId=${excludeId}` : ""}`),
@@ -100,7 +102,7 @@ export function AuthProvider({ children }) {
     fetchDashboard: (branchId) => request(`/dashboard/stats${branchId ? `?branchId=${branchId}` : ""}`),
     fetchTopProducts: (branchId) => request(`/dashboard/top-products${branchId ? `?branchId=${branchId}` : ""}`),
     fetchCategorySales: (branchId) => request(`/dashboard/category-sales${branchId ? `?branchId=${branchId}` : ""}`),
-    fetchBranchSummary: () => request("/dashboard/branch-summary"),
+    fetchBranchSummary: () => request(`/dashboard/branch-summary?_v=${dataVersion}`),
     fetchSuppliers: () => request("/suppliers"),
     createSupplier: (data) => request("/suppliers", { method: "POST", body: JSON.stringify(data) }),
     updateSupplier: (id, data) => request(`/suppliers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
@@ -267,7 +269,7 @@ export function AuthProvider({ children }) {
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.message || "Upload failed"); }
       return r.json();
     },
-  }), [user, loading, login, logout, request]);
+  }), [user, loading, login, logout, request, notifyDataChange, dataVersion]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

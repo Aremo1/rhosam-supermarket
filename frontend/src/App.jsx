@@ -507,7 +507,7 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt, smsReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, smsReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user, notifyDataChange } = useAuth();
   const [products, setProducts] = useState([]);
   const [drawerOk, setDrawerOk] = useState(null); // null = loading, true = open, false = no drawer
   const [cart, setCart] = useState([]);
@@ -695,6 +695,7 @@ function POSPage() {
       setCart([]); setCustomerName("Walk-in Customer"); setCustomerId(null);
       setDiscount(0); setTax(0); setAmountPaid("");
       fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {});
+      notifyDataChange(); // Bust cache so dashboard/branch summary refreshes
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
@@ -1208,7 +1209,7 @@ function ProductsPage() {
 // INVENTORY (Phase 3)
 // ═══════════════════════════════════════════════════════════════════
 function InventoryPage() {
-  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements, user, fetchBranches } = useAuth();
+  const { fetchProducts, fetchLowStock, adjustStock, fetchInventoryMovements, user, fetchBranches, notifyDataChange } = useAuth();
   const [tab, setTab] = useState("stock");
   const [products, setProducts] = useState([]);
   const [lowStock, setLowStock] = useState([]);
@@ -1265,6 +1266,7 @@ function InventoryPage() {
       await adjustStock(adjustModal.id, { ...adjForm, quantity: Number(adjForm.quantity) });
       setAdjustModal(null); setAdjForm({ quantity: "", type: "STOCK_IN", notes: "" });
       load();
+      notifyDataChange();
     } catch (err) { alert(err.message); }
   }
 
@@ -1396,7 +1398,7 @@ function InventoryPage() {
 // DAMAGES PAGE
 // ═══════════════════════════════════════════════════════════════════
 function DamagesPage() {
-  const { fetchProducts, reportDamage, fetchInventoryMovements, user, fetchBranches } = useAuth();
+  const { fetchProducts, reportDamage, fetchInventoryMovements, user, fetchBranches, notifyDataChange } = useAuth();
   const [products, setProducts] = useState([]);
   const [damages, setDamages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1431,7 +1433,7 @@ function DamagesPage() {
       await reportDamage({ productId: Number(form.productId), quantity: Number(form.quantity), reason: form.reason });
       setMsg("Damage reported and stock deducted!");
       setForm({ productId: "", quantity: "", reason: "" });
-      setShowForm(false); load();
+      setShowForm(false); load(); notifyDataChange();
     } catch (err) { setMsg(`Error: ${err.message}`); }
   }
 
@@ -1504,7 +1506,7 @@ function DamagesPage() {
 // WASTAGE PAGE
 // ═══════════════════════════════════════════════════════════════════
 function WastagePage() {
-  const { fetchProducts, reportWastage, fetchInventoryMovements, user, fetchBranches } = useAuth();
+  const { fetchProducts, reportWastage, fetchInventoryMovements, user, fetchBranches, notifyDataChange } = useAuth();
   const [products, setProducts] = useState([]);
   const [wastage, setWastage] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1538,7 +1540,7 @@ function WastagePage() {
       await reportWastage({ productId: Number(form.productId), quantity: Number(form.quantity), reason: form.reason });
       setMsg("Wastage recorded and stock deducted!");
       setForm({ productId: "", quantity: "", reason: "" });
-      setShowForm(false); load();
+      setShowForm(false); load(); notifyDataChange();
     } catch (err) { setMsg(`Error: ${err.message}`); }
   }
 
