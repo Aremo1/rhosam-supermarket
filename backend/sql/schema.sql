@@ -233,6 +233,39 @@ CREATE TABLE IF NOT EXISTS payment_verifications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── Notifications: Preferences & Log ────────────────────────────
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_type VARCHAR(50) NOT NULL,
+  email_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  sms_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, event_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_prefs_user ON notification_preferences(user_id);
+
+CREATE TABLE IF NOT EXISTS notification_log (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  event_type VARCHAR(50) NOT NULL,
+  channel VARCHAR(10) NOT NULL CHECK(channel IN ('EMAIL','SMS')),
+  recipient VARCHAR(200) NOT NULL,
+  subject VARCHAR(300),
+  body TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'SENT' CHECK(status IN ('SENT','FAILED','PENDING')),
+  error_message TEXT,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_log_user ON notification_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_notif_log_type ON notification_log(event_type);
+CREATE INDEX IF NOT EXISTS idx_notif_log_created ON notification_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_log_status ON notification_log(status);
+
 -- ── Indexes ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);

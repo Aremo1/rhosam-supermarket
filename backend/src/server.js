@@ -4647,19 +4647,23 @@ async function notifyUser(userId, eventType, { subject, emailHtml, smsText, meta
     // Send email
     if (pref.email_enabled && user.email && emailHtml) {
       const result = await sendEmail(user.email, subject, emailHtml);
-      await pool.query(
-        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        [userId, eventType, 'EMAIL', user.email, subject, 'HTML email', result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
-      );
+      try {
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [userId, eventType, 'EMAIL', user.email, subject, 'HTML email', result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
+        );
+      } catch (_) { /* log table may not exist yet */ }
     }
 
     // Send SMS
     if (pref.sms_enabled && user.phone && smsText) {
       const result = await sendSMS(user.phone, smsText);
-      await pool.query(
-        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        [userId, eventType, 'SMS', user.phone, subject || 'RHoSAM', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
-      );
+      try {
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [userId, eventType, 'SMS', user.phone, subject || 'RHoSAM', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify(metadata)]
+        );
+      } catch (_) { /* log table may not exist yet */ }
     }
   } catch (e) { console.error('[NOTIFY]', e.message); }
 }
@@ -4729,7 +4733,11 @@ app.get('/api/notifications/log', auth, async (req, res, next) => {
     params.push(limit);
     const { rows } = await pool.query(sql, params);
     res.json(rows);
-  } catch (e) { next(e); }
+  } catch (e) {
+    // If notification_log table doesn't exist, return empty array
+    if (e.message && e.message.includes('does not exist')) return res.json([]);
+    next(e);
+  }
 });
 
 // ── Send test notification ─────────────────────────────────────
@@ -4741,18 +4749,22 @@ app.post('/api/notifications/test', auth, allow('ADMIN'), async (req, res, next)
       const result = await sendEmail(recipient, 'RHoSAM Test Notification',
         `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:20px"><div style="background:#16a34a;color:white;padding:20px;border-radius:12px 12px 0 0;text-align:center"><h1 style="margin:0">📧 Test Email</h1></div><div style="background:#f9fafb;padding:20px;border:1px solid #e5e7eb;border-radius:0 0 12px 12px"><p>This is a test notification from RHoSAM Supermarket POS.</p><p style="color:#666;font-size:13px">If you received this, email notifications are working correctly.</p><p style="color:#9ca3af;font-size:12px;margin-top:16px">Sent at ${new Date().toLocaleString('en-NG')}</p></div></div>`
       );
-      await pool.query(
-        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-        [req.user.id, 'SYSTEM_ALERT', 'EMAIL', recipient, 'Test Email', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
-      );
+      try {
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+          [req.user.id, 'SYSTEM_ALERT', 'EMAIL', recipient, 'Test Email', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
+        );
+      } catch (_) { /* log table may not exist yet */ }
       return result.ok ? res.json({ message: 'Test email sent!' }) : res.status(500).json({ message: result.error });
     }
     if (channel === 'SMS') {
       const result = await sendSMS(recipient, 'RHoSAM Test: SMS notifications are working! 🛍️');
-      await pool.query(
-        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-        [req.user.id, 'SYSTEM_ALERT', 'SMS', recipient, 'Test SMS', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
-      );
+      try {
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+          [req.user.id, 'SYSTEM_ALERT', 'SMS', recipient, 'Test SMS', 'Test notification', result.ok ? 'SENT' : 'FAILED', result.error || null]
+        );
+      } catch (_) { /* log table may not exist yet */ }
       return result.ok ? res.json({ message: 'Test SMS sent!' }) : res.status(500).json({ message: result.error });
     }
     res.status(400).json({ message: 'Invalid channel. Use EMAIL or SMS.' });
@@ -4774,12 +4786,16 @@ app.get('/api/notifications/status', auth, allow('ADMIN'), async (req, res, next
   try {
     const emailConfigured = !!resend;
     const smsConfigured = !!telnyx;
-    const { rows: stats } = await pool.query(
-      `SELECT channel, status, COUNT(*)::int AS count
-       FROM notification_log
-       WHERE created_at >= NOW() - INTERVAL '7 days'
-       GROUP BY channel, status`
-    );
+    let stats = [];
+    try {
+      const result = await pool.query(
+        `SELECT channel, status, COUNT(*)::int AS count
+         FROM notification_log
+         WHERE created_at >= NOW() - INTERVAL '7 days'
+         GROUP BY channel, status`
+      );
+      stats = result.rows;
+    } catch (_) { /* notification_log table may not exist yet */ }
     res.json({ emailConfigured, smsConfigured, recentStats: stats });
   } catch (e) { next(e); }
 });
@@ -4823,10 +4839,12 @@ app.post('/api/sales/:id/sms-receipt', auth, async (req, res, next) => {
 
     const result = await sendSMS(phone, smsText);
 
-    await pool.query(
-      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-      [req.user.id, 'NEW_SALE', 'SMS', phone, 'SMS Receipt', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ saleId, receiptNumber: sale.receipt_number })]
-    );
+    try {
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [req.user.id, 'NEW_SALE', 'SMS', phone, 'SMS Receipt', smsText, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ saleId, receiptNumber: sale.receipt_number })]
+      );
+    } catch (_) { /* log table may not exist yet */ }
 
     if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
     await audit(pool, req.user.id, 'SMS_RECEIPT', 'SALE', saleId, { phone, receiptNumber: sale.receipt_number }, req);
@@ -4844,10 +4862,12 @@ app.post('/api/sms/send', auth, allow('ADMIN', 'MANAGER'), async (req, res, next
 
     const result = await sendSMS(phone, message);
 
-    await pool.query(
-      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-      [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'Customer SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: customerId || null })]
-    );
+    try {
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'Customer SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: customerId || null })]
+      );
+    } catch (_) { /* log table may not exist yet */ }
 
     await audit(pool, req.user.id, 'SMS_SENT', 'CUSTOMER', customerId || null, { phone, preview: message.substring(0, 100) }, req);
     if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
@@ -4881,10 +4901,12 @@ app.post('/api/sms/bulk', auth, allow('ADMIN'), async (req, res, next) => {
     for (const cust of customers) {
       try {
         const result = await sendSMS(cust.phone, message);
-        await pool.query(
-          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-          [req.user.id, 'SYSTEM_ALERT', 'SMS', cust.phone, 'Bulk SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: cust.id, customerName: cust.name, bulk: true })]
-        );
+        try {
+          await pool.query(
+            'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+            [req.user.id, 'SYSTEM_ALERT', 'SMS', cust.phone, 'Bulk SMS', message, result.ok ? 'SENT' : 'FAILED', result.error || null, JSON.stringify({ customerId: cust.id, customerName: cust.name, bulk: true })]
+          );
+        } catch (_) { /* log table may not exist yet */ }
         if (result.ok) sent++; else failed++;
         results.push({ id: cust.id, name: cust.name, phone: cust.phone, status: result.ok ? 'SENT' : 'FAILED' });
       } catch {
@@ -4916,10 +4938,12 @@ async function sendRoleSmsAlert(role, message) {
       if (pref && !pref.sms_enabled) continue; // user has explicitly disabled SMS for system alerts
 
       const result = await sendSMS(user.phone, message);
-      await pool.query(
-        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        [user.id, 'SYSTEM_ALERT', 'SMS', user.phone, 'Staff Alert', message, result.ok ? 'SENT' : 'FAILED', result.error || null]
-      );
+      try {
+        await pool.query(
+          'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [user.id, 'SYSTEM_ALERT', 'SMS', user.phone, 'Staff Alert', message, result.ok ? 'SENT' : 'FAILED', result.error || null]
+        );
+      } catch (_) { /* log table may not exist yet */ }
     }
   } catch (e) { console.error('[SMS ALERT]', e.message); }
 }
@@ -4955,10 +4979,12 @@ app.post('/api/sms/test', auth, allow('ADMIN'), async (req, res, next) => {
     const testMessage = `✅ RHoSAM SMS Test\n\nSMS notifications are working correctly!\n\nSent at: ${new Date().toLocaleString('en-NG')}\nFrom: RHoSAM Supermarket POS`;
     const result = await sendSMS(phone, testMessage);
 
-    await pool.query(
-      'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-      [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'SMS Test', testMessage, result.ok ? 'SENT' : 'FAILED', result.error || null]
-    );
+    try {
+      await pool.query(
+        'INSERT INTO notification_log(user_id,event_type,channel,recipient,subject,body,status,error_message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+        [req.user.id, 'SYSTEM_ALERT', 'SMS', phone, 'SMS Test', testMessage, result.ok ? 'SENT' : 'FAILED', result.error || null]
+      );
+    } catch (_) { /* log table may not exist yet */ }
 
     if (!result.ok) return res.status(500).json({ message: result.error || 'Failed to send SMS.' });
     await audit(pool, req.user.id, 'SMS_TEST', 'SYSTEM', null, { phone }, req);
