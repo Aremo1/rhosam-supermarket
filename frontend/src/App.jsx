@@ -1618,12 +1618,19 @@ function StockValuationPage() {
 // SALES (Phase 5)
 // ═══════════════════════════════════════════════════════════════════
 function SalesPage() {
-  const { fetchSales, getSale, returnSale, user } = useAuth();
+  const { fetchSales, getSale, returnSale, user, fetchBranches } = useAuth();
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1631,10 +1638,11 @@ function SalesPage() {
       const params = {};
       if (dateFrom) params.from = dateFrom;
       if (dateTo) params.to = dateTo + "T23:59:59";
+      if (selectedBranch) params.branchId = selectedBranch;
       setSales(await fetchSales(Object.keys(params).length ? params : undefined));
     } catch { }
     finally { setLoading(false); }
-  }, [fetchSales, dateFrom, dateTo]);
+  }, [fetchSales, dateFrom, dateTo, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1652,6 +1660,27 @@ function SalesPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Sales across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Sales are filtered to your branch.
+        </div>
+      )}
       <div className="panel-header">
         <div className="filters">
           <label>From<input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></label>
@@ -2022,7 +2051,7 @@ function SuppliersPage() {
 // PURCHASE ORDERS (Phase 10)
 // ═══════════════════════════════════════════════════════════════════
 function ProcurementPage() {
-  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts, getPOPayments, createPOPayment, user } = useAuth();
+  const { fetchPurchaseOrders, createPurchaseOrder, updatePOStatus, fetchSuppliers, fetchProducts, getPOPayments, createPOPayment, user, fetchBranches } = useAuth();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -2034,14 +2063,23 @@ function ProcurementPage() {
   const [payForm, setPayForm] = useState({ amount: "", paymentMethod: "Cash", reference: "", notes: "" });
   const [payDetail, setPayDetail] = useState(null);
   const [payMsg, setPayMsg] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
+
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
-      const [o, s, p] = await Promise.all([fetchPurchaseOrders(), fetchSuppliers(), fetchProducts(undefined, user?.branchId)]);
+      const params = {};
+      if (selectedBranch) params.branchId = selectedBranch;
+      const [o, s, p] = await Promise.all([fetchPurchaseOrders(Object.keys(params).length ? params : undefined), fetchSuppliers(), fetchProducts(undefined, user?.branchId)]);
       setOrders(o); setSuppliers(s); setProducts(p);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchPurchaseOrders, fetchSuppliers, fetchProducts, user]);
+  }, [fetchPurchaseOrders, fetchSuppliers, fetchProducts, user, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2103,6 +2141,27 @@ function ProcurementPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Purchase orders across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Purchase orders are filtered to your branch.
+        </div>
+      )}
       <div className="panel-header"><button className="btn primary" onClick={() => { setShowForm(true); setForm({ supplierId: suppliers[0]?.id || "", notes: "", expectedDate: "", items: [{ productId: "", quantity: "", unitCost: "" }] }); }}>+ New Purchase Order</button></div>
 
       {showForm && (
@@ -2250,13 +2309,24 @@ function ProcurementPage() {
 // EXPENSES (Phase 13)
 // ═══════════════════════════════════════════════════════════════════
 function ExpensesPage() {
-  const { fetchExpenses, createExpense } = useAuth();
+  const { fetchExpenses, createExpense, user, fetchBranches } = useAuth();
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ category: "", description: "", amount: "", paymentMethod: "Cash", reference: "" });
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
 
-  const load = useCallback(async () => { try { setExpenses(await fetchExpenses()); } catch { } finally { setLoading(false); } }, [fetchExpenses]);
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
+
+  const load = useCallback(async () => {
+    const params = {};
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { setExpenses(await fetchExpenses(Object.keys(params).length ? params : undefined)); } catch { } finally { setLoading(false); }
+  }, [fetchExpenses, selectedBranch]);
   useEffect(() => { load(); }, [load]);
 
   async function handleSubmit(e) {
@@ -2267,6 +2337,27 @@ function ExpensesPage() {
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Expenses across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Expenses are filtered to your branch.
+        </div>
+      )}
       <div className="panel-header"><button className="btn primary" onClick={() => setShowForm(true)}>+ Add Expense</button></div>
 
       {showForm && (
@@ -2316,11 +2407,27 @@ function ExpensesPage() {
 // FINANCE (Phase 13)
 // ═══════════════════════════════════════════════════════════════════
 function FinancePage() {
-  const { fetchFinanceSummary } = useAuth();
+  const { fetchFinanceSummary, user, fetchBranches } = useAuth();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
 
-  useEffect(() => { fetchFinanceSummary().then(setSummary).catch(() => {}).finally(() => setLoading(false)); }, [fetchFinanceSummary]);
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const params = {};
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { setSummary(await fetchFinanceSummary(Object.keys(params).length ? params : undefined)); }
+    catch { setSummary(null); }
+    finally { setLoading(false); }
+  }, [fetchFinanceSummary, selectedBranch]);
+
+  useEffect(() => { load(); }, [load]);
 
   const fmt = (n) => { const v = parseFloat(n) || 0; return "₦" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
@@ -2329,6 +2436,27 @@ function FinancePage() {
 
   return (
     <div className="finance-page">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Finance across all branches'}
+          </span>
+        </div>
+      )}
+      {!isAdmin && user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Finance data is filtered to your branch.
+        </div>
+      )}
       <div className="summary-grid">
         <div className="summary-card accent"><span>Total Revenue</span><strong>{fmt(summary.revenue)}</strong></div>
         <div className="summary-card warning"><span>Total Expenses</span><strong>{fmt(summary.expenses)}</strong></div>
@@ -3158,14 +3286,46 @@ function UsersPage() {
 // AUDIT LOGS (Phase 8)
 // ═══════════════════════════════════════════════════════════════════
 function AuditPage() {
-  const { fetchAuditLogs } = useAuth();
+  const { fetchAuditLogs, user, fetchBranches } = useAuth();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [branches, setBranches] = useState([]);
+  const isAdmin = user?.role === "ADMIN";
 
-  useEffect(() => { fetchAuditLogs(500).then(setLogs).catch(() => {}).finally(() => setLoading(false)); }, [fetchAuditLogs]);
+  useEffect(() => {
+    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isAdmin, fetchBranches]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const params = { limit: 500 };
+    if (selectedBranch) params.branchId = selectedBranch;
+    try { setLogs(await fetchAuditLogs(params)); }
+    catch { setLogs([]); }
+    finally { setLoading(false); }
+  }, [fetchAuditLogs, selectedBranch]);
+
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="page-panel">
+      {isAdmin && branches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+            {selectedBranch ? `— Viewing: ${branches.find(b => String(b.id) === String(selectedBranch))?.name}` : '— Audit logs across all branches'}
+          </span>
+        </div>
+      )}
       {loading ? <p className="loading">Loading…</p> : (
         <div className="table-wrap">
           <table>
