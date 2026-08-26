@@ -263,7 +263,11 @@ if (!secret) {
   process.exit(1);
 }
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173").split(',').map(s => s.trim());
+app.use(cors({ origin: (origin, cb) => {
+  if (!origin || allowedOrigins.includes(origin) || origin.includes('onrender.com')) cb(null, true);
+  else cb(null, true); // allow all in production for now
+}}));
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: "2mb" }));
 

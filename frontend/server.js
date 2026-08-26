@@ -1,4 +1,5 @@
 import http from "http";
+import https from "https";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -9,6 +10,9 @@ const PORT = process.env.PORT || 3001;
 const RAW_TARGET = process.env.API_TARGET || process.env.VITE_API_URL || "http://localhost:5000";
 const API_TARGET = /^https?:\/\//.test(RAW_TARGET) ? RAW_TARGET : `https://${RAW_TARGET}`;
 const API_BASE = API_TARGET.replace(/\/api$/, "");
+const API_URL = new URL(API_BASE);
+const IS_HTTPS = API_URL.protocol === "https:";
+const proxyModule = IS_HTTPS ? https : http;
 
 const MIME = {
   ".html": "text/html",
@@ -28,15 +32,14 @@ const MIME = {
 };
 
 function proxyRequest(req, res) {
-  const targetUrl = `${API_BASE}${req.url}`;
   const opts = {
-    hostname: new URL(API_BASE).hostname,
-    port: new URL(API_BASE).port || 80,
+    hostname: API_URL.hostname,
+    port: API_URL.port || (IS_HTTPS ? 443 : 80),
     path: req.url,
     method: req.method,
-    headers: { ...req.headers, host: new URL(API_BASE).host },
+    headers: { ...req.headers, host: API_URL.host },
   };
-  const proxy = http.request(opts, (proxyRes) => {
+  const proxy = proxyModule.request(opts, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.pipe(res, { end: true });
   });
