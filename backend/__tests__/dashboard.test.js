@@ -429,10 +429,8 @@ describe('GET /api/dashboard/branch-summary', () => {
       { ...sampleBranches[1], low_stock: 0 },
     ];
     mockQueryResults({ rows: sampleBranches });
-    // low stock from branch_inventory
+    // low stock from branch_inventory only
     mockQueryResults({ rows: [{ branch_id: 1, low_stock_count: 3 }, { branch_id: 2, low_stock_count: 1 }] });
-    // low stock from global stock (no branch_inventory entry)
-    mockQueryResults({ rows: [{ branch_id: 2, low_stock_count: 2 }] });
 
     const res = await request(app)
       .get('/api/dashboard/branch-summary')
@@ -440,10 +438,10 @@ describe('GET /api/dashboard/branch-summary', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.branches[0].low_stock).toBe(3);
-    expect(res.body.branches[1].low_stock).toBe(3); // 1 + 2
+    expect(res.body.branches[1].low_stock).toBe(1);
 
     // Verify totals include low_stock
-    expect(res.body.totals.low_stock).toBe(6); // 3 + 3
+    expect(res.body.totals.low_stock).toBe(4); // 3 + 1
   });
 
   test('handles zero branches gracefully', async () => {

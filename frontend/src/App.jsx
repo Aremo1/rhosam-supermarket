@@ -211,14 +211,18 @@ function DashboardPage() {
   const load = useCallback(async (branchId) => {
     try {
       const bid = branchId || undefined;
-      const [s, tp, cs, exp] = await Promise.allSettled([fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid), fetchExpiringProducts(30)]);
-      if (s.status === 'fulfilled') setStats(s.value);
-      if (tp.status === 'fulfilled') setTopProducts(tp.value);
-      if (cs.status === 'fulfilled') setCatSales(cs.value);
-      if (exp.status === 'fulfilled') setExpiringData(exp.value);
+      const promises = [fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid), fetchExpiringProducts(30)];
+      // Also refresh branch summary when loading (stays current)
+      if (isAdmin) promises.push(fetchBranchSummary());
+      const results = await Promise.allSettled(promises);
+      if (results[0].status === 'fulfilled') setStats(results[0].value);
+      if (results[1].status === 'fulfilled') setTopProducts(results[1].value);
+      if (results[2].status === 'fulfilled') setCatSales(results[2].value);
+      if (results[3].status === 'fulfilled') setExpiringData(results[3].value);
+      if (isAdmin && results[4]?.status === 'fulfilled') setBranchSummary(results[4].value);
     } catch (err) { console.error('[Dashboard]', err); }
     finally { setLoading(false); }
-  }, [fetchDashboard, fetchTopProducts, fetchCategorySales, fetchExpiringProducts]);
+  }, [fetchDashboard, fetchTopProducts, fetchCategorySales, fetchExpiringProducts, fetchBranchSummary, isAdmin]);
 
   useEffect(() => { load(selectedBranch || undefined); }, [load, selectedBranch]);
 
