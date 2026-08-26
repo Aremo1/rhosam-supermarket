@@ -334,7 +334,7 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .filters input, .filters select { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; }
 
 /* ── POS ────────────────────────────────────────────────────── */
-.pos-layout { display: grid; grid-template-columns: 1fr 480px; gap: 16px; height: calc(100vh - 130px); position: relative; }
+.pos-layout { display: grid; grid-template-columns: 1fr 400px; gap: 16px; height: calc(100vh - 130px); position: relative; }
 .pos-products { overflow-y: auto; }
 .pos-search-wrapper { position: relative; margin-bottom: 14px; }
 .pos-search { width: 100%; padding: 14px 18px; border: 2px solid var(--border); border-radius: var(--radius); font-size: 1.05rem; font-weight: 500; background: var(--card-bg, white); color: var(--text); outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
