@@ -2125,6 +2125,9 @@ function CustomersPage() {
   const { fetchCustomers, createCustomer, updateCustomer, sendCustomerSms, bulkSms } = useAuth();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editCust, setEditCust] = useState(null);
   const [form, setForm] = useState({ name: "", email: "", phone: "" });
@@ -2140,8 +2143,19 @@ function CustomersPage() {
   const [bulkResult, setBulkResult] = useState(null);
   const [selectedForBulk, setSelectedForBulk] = useState([]);
 
-  const load = useCallback(async () => { try { setCustomers(await fetchCustomers()); } catch { } finally { setLoading(false); } }, [fetchCustomers]);
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (reset) => {
+    try {
+      const c = reset ? null : cursor;
+      const params = { limit: 50 };
+      if (c) params.cursor = JSON.stringify(c);
+      const result = await fetchCustomers(params);
+      if (reset || !c) { setCustomers(result.data || []); }
+      else { setCustomers(prev => [...prev, ...(result.data || [])]); }
+      setHasMore(result.hasMore);
+      setCursor(result.nextCursor);
+    } catch { } finally { setLoading(false); setLoadingMore(false); }
+  }, [fetchCustomers, cursor]);
+  useEffect(() => { load(true); }, [fetchCustomers]);
 
   function startEdit(c) { setEditCust(c); setForm({ name: c.name, email: c.email || "", phone: c.phone || "" }); setShowForm(true); }
   function startNew() { setEditCust(null); setForm({ name: "", email: "", phone: "" }); setShowForm(true); }
@@ -2151,7 +2165,7 @@ function CustomersPage() {
     try {
       if (editCust) await updateCustomer(editCust.id, form);
       else await createCustomer(form);
-      setShowForm(false); load();
+      setShowForm(false); load(true);
     } catch (err) { alert(err.message); }
   }
 
@@ -2310,6 +2324,13 @@ function CustomersPage() {
             ))}</tbody>
           </table>
           {!customers.length && <p className="muted">No customers yet.</p>}
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <button className="btn secondary" onClick={() => { setLoadingMore(true); load(false); }} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : `Load More (${customers.length} loaded)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -2323,12 +2344,26 @@ function SuppliersPage() {
   const { fetchSuppliers, createSupplier, updateSupplier, deleteSupplier } = useAuth();
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editSup, setEditSup] = useState(null);
   const [form, setForm] = useState({ name: "", contactPerson: "", email: "", phone: "", address: "" });
 
-  const load = useCallback(async () => { try { setSuppliers(await fetchSuppliers()); } catch { } finally { setLoading(false); } }, [fetchSuppliers]);
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (reset) => {
+    try {
+      const c = reset ? null : cursor;
+      const params = { limit: 50 };
+      if (c) params.cursor = JSON.stringify(c);
+      const result = await fetchSuppliers(params);
+      if (reset || !c) { setSuppliers(result.data || []); }
+      else { setSuppliers(prev => [...prev, ...(result.data || [])]); }
+      setHasMore(result.hasMore);
+      setCursor(result.nextCursor);
+    } catch { } finally { setLoading(false); setLoadingMore(false); }
+  }, [fetchSuppliers, cursor]);
+  useEffect(() => { load(true); }, [fetchSuppliers]);
 
   function startEdit(s) { setEditSup(s); setForm({ name: s.name, contactPerson: s.contact_person || "", email: s.email || "", phone: s.phone || "", address: s.address || "" }); setShowForm(true); }
   function startNew() { setEditSup(null); setForm({ name: "", contactPerson: "", email: "", phone: "", address: "" }); setShowForm(true); }
@@ -2338,13 +2373,13 @@ function SuppliersPage() {
     try {
       if (editSup) await updateSupplier(editSup.id, form);
       else await createSupplier(form);
-      setShowForm(false); load();
+      setShowForm(false); load(true);
     } catch (err) { alert(err.message); }
   }
 
   async function handleDelete(id, name) {
     if (!confirm(`Delete supplier "${name}"?`)) return;
-    try { await deleteSupplier(id); load(); } catch (err) { alert(err.message); }
+    try { await deleteSupplier(id); load(true); } catch (err) { alert(err.message); }
   }
 
   return (
@@ -2387,6 +2422,13 @@ function SuppliersPage() {
             ))}</tbody>
           </table>
           {!suppliers.length && <p className="muted">No suppliers yet.</p>}
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <button className="btn secondary" onClick={() => { setLoadingMore(true); load(false); }} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : `Load More (${suppliers.length} loaded)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -4080,12 +4122,26 @@ function BranchesPage() {
   const { fetchBranches, createBranch, updateBranch, deleteBranch } = useAuth();
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editBranch, setEditBranch] = useState(null);
   const [form, setForm] = useState({ name: "", address: "", phone: "" });
 
-  const load = useCallback(async () => { try { setBranches(await fetchBranches()); } catch { } finally { setLoading(false); } }, [fetchBranches]);
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (reset) => {
+    try {
+      const c = reset ? null : cursor;
+      const params = { limit: 100 };
+      if (c) params.cursor = JSON.stringify(c);
+      const result = await fetchBranches(params);
+      if (reset || !c) { setBranches(result.data || []); }
+      else { setBranches(prev => [...prev, ...(result.data || [])]); }
+      setHasMore(result.hasMore);
+      setCursor(result.nextCursor);
+    } catch { } finally { setLoading(false); setLoadingMore(false); }
+  }, [fetchBranches, cursor]);
+  useEffect(() => { load(true); }, [fetchBranches]);
 
   function startEdit(b) { setEditBranch(b); setForm({ name: b.name, address: b.address || "", phone: b.phone || "" }); setShowForm(true); }
   function startNew() { setEditBranch(null); setForm({ name: "", address: "", phone: "" }); setShowForm(true); }
@@ -4095,19 +4151,19 @@ function BranchesPage() {
     try {
       if (editBranch) await updateBranch(editBranch.id, form);
       else await createBranch(form);
-      setShowForm(false); load();
+      setShowForm(false); load(true);
     } catch (err) { alert(err.message); }
   }
 
   async function handleDelete(id, name) {
     if (!confirm(`Delete branch "${name}"?`)) return;
-    try { await deleteBranch(id); load(); } catch (err) { alert(err.message); }
+    try { await deleteBranch(id); load(true); } catch (err) { alert(err.message); }
   }
 
   async function toggleActive(branch) {
     try {
       await updateBranch(branch.id, { isActive: !branch.is_active });
-      load();
+      load(true);
     } catch (err) { alert(err.message); }
   }
 
@@ -4152,6 +4208,13 @@ function BranchesPage() {
             ))}</tbody>
           </table>
           {!branches.length && <p className="muted">No branches yet.</p>}
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <button className="btn secondary" onClick={() => { setLoadingMore(true); load(false); }} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : `Load More (${branches.length} loaded)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -1845,9 +1845,28 @@ app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, 
 // PHASE 10: PROCUREMENT — Suppliers & Purchase Orders
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/suppliers", auth, async (_q, r, n) => {
-  try { r.json((await pool.query("SELECT * FROM suppliers ORDER BY name")).rows); }
-  catch (e) { n(e); }
+app.get("/api/suppliers", auth, async (q, r, n) => {
+  try {
+    const pageSize = Math.min(Number(q.query.limit) || 50, 200);
+    let cursor = null;
+    if (q.query.cursor) { try { cursor = JSON.parse(q.query.cursor); } catch {} }
+    const params = [];
+    let where = "";
+    if (cursor && cursor.name != null && cursor.id != null) {
+      params.push(cursor.name, cursor.id);
+      where = `WHERE (s.name, s.id) > ($1, $2)`;
+    }
+    params.push(pageSize + 1);
+    const result = await pool.query(
+      `SELECT s.* FROM suppliers s ${where} ORDER BY s.name, s.id LIMIT $${params.length}`,
+      params
+    );
+    const rows = result.rows;
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { name: data[data.length - 1].name, id: data[data.length - 1].id } : null;
+    r.json({ data, nextCursor, hasMore });
+  } catch (e) { n(e); }
 });
 
 app.post("/api/suppliers", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
@@ -2114,9 +2133,28 @@ app.post("/api/purchase-orders/:id/payments", auth, allow("ADMIN", "MANAGER"), a
 // PHASE 12: CUSTOMERS / CRM
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/customers", auth, async (_q, r, n) => {
-  try { r.json((await pool.query("SELECT * FROM customers ORDER BY name")).rows); }
-  catch (e) { n(e); }
+app.get("/api/customers", auth, async (q, r, n) => {
+  try {
+    const pageSize = Math.min(Number(q.query.limit) || 50, 200);
+    let cursor = null;
+    if (q.query.cursor) { try { cursor = JSON.parse(q.query.cursor); } catch {} }
+    const params = [];
+    let where = "";
+    if (cursor && cursor.name != null && cursor.id != null) {
+      params.push(cursor.name, cursor.id);
+      where = `WHERE (c.name, c.id) > ($1, $2)`;
+    }
+    params.push(pageSize + 1);
+    const result = await pool.query(
+      `SELECT c.* FROM customers c ${where} ORDER BY c.name, c.id LIMIT $${params.length}`,
+      params
+    );
+    const rows = result.rows;
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { name: data[data.length - 1].name, id: data[data.length - 1].id } : null;
+    r.json({ data, nextCursor, hasMore });
+  } catch (e) { n(e); }
 });
 
 app.post("/api/customers", auth, async (req, res, next) => {
@@ -2274,9 +2312,28 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
 // PHASE 14: BRANCHES
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/branches", auth, async (_q, r, n) => {
-  try { r.json((await pool.query("SELECT * FROM branches WHERE is_active = TRUE ORDER BY name")).rows); }
-  catch (e) { n(e); }
+app.get("/api/branches", auth, async (q, r, n) => {
+  try {
+    const pageSize = Math.min(Number(q.query.limit) || 100, 200);
+    let cursor = null;
+    if (q.query.cursor) { try { cursor = JSON.parse(q.query.cursor); } catch {} }
+    const params = [];
+    let where = "WHERE is_active = TRUE";
+    if (cursor && cursor.name != null && cursor.id != null) {
+      params.push(cursor.name, cursor.id);
+      where += ` AND (b.name, b.id) > ($1, $2)`;
+    }
+    params.push(pageSize + 1);
+    const result = await pool.query(
+      `SELECT b.* FROM branches b ${where} ORDER BY b.name, b.id LIMIT $${params.length}`,
+      params
+    );
+    const rows = result.rows;
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const nextCursor = hasMore ? { name: data[data.length - 1].name, id: data[data.length - 1].id } : null;
+    r.json({ data, nextCursor, hasMore });
+  } catch (e) { n(e); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
