@@ -1945,36 +1945,47 @@ function SalesPage() {
   const [dateTo, setDateTo] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
+  // New filter state
+  const [searchText, setSearchText] = useState("");
+  const [paymentFilter, setPaymentFilter] = useState("");
+  const [minAmount, setMinAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
   const isAdmin = user?.role === "ADMIN";
 
   useEffect(() => {
     if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
   }, [isAdmin, fetchBranches]);
 
+  // Build filter params object (used by both load and loadMore)
+  const buildParams = useCallback((extra) => {
+    const params = { ...extra };
+    if (dateFrom) params.from = dateFrom;
+    if (dateTo) params.to = dateTo + "T23:59:59";
+    if (selectedBranch) params.branchId = selectedBranch;
+    if (searchText) params.search = searchText;
+    if (paymentFilter) params.payment = paymentFilter;
+    if (minAmount) params.minAmount = minAmount;
+    if (maxAmount) params.maxAmount = maxAmount;
+    return params;
+  }, [dateFrom, dateTo, selectedBranch, searchText, paymentFilter, minAmount, maxAmount]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = {};
-      if (dateFrom) params.from = dateFrom;
-      if (dateTo) params.to = dateTo + "T23:59:59";
-      if (selectedBranch) params.branchId = selectedBranch;
+      const params = buildParams();
       const result = await fetchSales(Object.keys(params).length ? params : undefined);
       setSales(result.data || []);
       setNextCursor(result.nextCursor);
       setHasMore(result.hasMore);
     } catch { }
     finally { setLoading(false); }
-  }, [fetchSales, dateFrom, dateTo, selectedBranch]);
+  }, [fetchSales, buildParams]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const params = {};
-      if (dateFrom) params.from = dateFrom;
-      if (dateTo) params.to = dateTo + "T23:59:59";
-      if (selectedBranch) params.branchId = selectedBranch;
-      params.cursor = JSON.stringify(nextCursor);
+      const params = buildParams({ cursor: JSON.stringify(nextCursor) });
       const result = await fetchSales(params);
       setSales(prev => [...prev, ...(result.data || [])]);
       setNextCursor(result.nextCursor);
@@ -1983,7 +1994,29 @@ function SalesPage() {
     finally { setLoadingMore(false); }
   }
 
+  // Debounced search: reset to first page when filters change
+  const searchTimer = useRef(null);
+  function handleSearchChange(val) {
+    setSearchText(val);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => { setLoading(true); }, 300);
+  }
+
   useEffect(() => { load(); }, [load]);
+
+  // Quick-apply filter presets
+  function applyPreset(label) {
+    const today = new Date();
+    const fmt = d => d.toISOString().slice(0, 10);
+    if (label === 'Today') { setDateFrom(fmt(today)); setDateTo(fmt(today)); }
+    else if (label === 'Yesterday') { const y = new Date(today); y.setDate(y.getDate() - 1); setDateFrom(fmt(y)); setDateTo(fmt(y)); }
+    else if (label === 'This Week') {
+      const start = new Date(today); start.setDate(today.getDate() - today.getDay());
+      setDateFrom(fmt(start)); setDateTo(fmt(today));
+    }
+    else if (label === 'This Month') { setDateFrom(fmt(new Date(today.getFullYear(), today.getMonth(), 1))); setDateTo(fmt(today)); }
+    else if (label === 'Clear') { setDateFrom(''); setDateTo(''); setSearchText(''); setPaymentFilter(''); setMinAmount(''); setMaxAmount(''); }
+  }
 
   async function viewDetail(id) {
     try { setDetail(await getSale(id)); } catch (err) { alert(err.message); }
@@ -2020,13 +2053,73 @@ function SalesPage() {
           🏢 <strong>Branch:</strong> {user.branch.name} — Sales are filtered to your branch.
         </div>
       )}
-      <div className="panel-header">
-        <div className="filters">
-          <label>From<input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></label>
-          <label>To<input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></label>
+      <div style={{ marginBottom: 12, padding: '12px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+          {/* Quick presets */}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {['Today', 'Yesterday', 'This Week', 'This Month', 'Clear'].map(p => (
+              <button key={p} className="btn-sm" onClick={() => applyPreset(p)} style={{ fontSize: '0.75rem', padding: '4px 10px' }}>{p}</button>
+            ))}
+          </div>
+          <div style={{ width: 1, height: 24, background: 'var(--border)', margin: '0 4px' }} />
+          {/* Search */}
+          <div style={{ position: 'relative', flex: '1 1 200px', minWidth: 180 }}>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: '0.85rem' }}>🔍</span>
+            <input
+              type="text"
+              placeholder="Search receipt or customer..."
+              value={searchText}
+              onChange={e => handleSearchChange(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px 8px 30px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }}
+            />
+          </div>
+          {/* Date range */}
+          <label style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>From
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              style={{ marginLeft: 4, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }} />
+          </label>
+          <label style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>To
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              style={{ marginLeft: 4, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }} />
+          </label>
+          <div style={{ width: 1, height: 24, background: 'var(--border)', margin: '0 4px' }} />
+          {/* Payment method */}
+          <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }}>
+            <option value="">All Payments</option>
+            <option value="Cash">Cash</option>
+            <option value="Card">Card</option>
+            <option value="Transfer">Transfer</option>
+            <option value="POS">POS</option>
+            <option value="Credit">Credit</option>
+          </select>
+          {/* Amount range */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>₦</span>
+            <input type="number" placeholder="Min" value={minAmount} onChange={e => setMinAmount(e.target.value)} min="0"
+              style={{ width: 80, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }} />
+            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>–</span>
+            <input type="number" placeholder="Max" value={maxAmount} onChange={e => setMaxAmount(e.target.value)} min="0"
+              style={{ width: 80, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--input-bg, var(--card-bg))', color: 'var(--text)', fontSize: '0.85rem' }} />
+          </div>
         </div>
+        {/* Active filter count */}
+        {[searchText, dateFrom, dateTo, paymentFilter, minAmount, maxAmount].filter(Boolean).length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--primary, #16a34a)', fontWeight: 600 }}>
+              {[searchText, dateFrom, dateTo, paymentFilter, minAmount, maxAmount].filter(Boolean).length} active filter(s)
+            </span>
+            <button className="btn-sm" onClick={() => applyPreset('Clear')} style={{ fontSize: '0.7rem', padding: '2px 8px' }}>Clear all</button>
+          </div>
+        )}
       </div>
 
+      {!loading && (
+        <div style={{ padding: '6px 0', fontSize: '0.8rem', color: 'var(--muted)' }}>
+          {sales.length > 0 ? `${sales.length} sale${sales.length !== 1 ? 's' : ''} loaded` : ''}
+          {[searchText, dateFrom, dateTo, paymentFilter, minAmount, maxAmount].filter(Boolean).length > 0 && sales.length > 0 && ' — filtered results'}
+        </div>
+      )}
       {loading ? <p className="loading">Loading…</p> : (
         <div className="table-wrap">
           <table>

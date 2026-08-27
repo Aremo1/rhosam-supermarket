@@ -1476,7 +1476,7 @@ app.get("/api/products/low-stock", auth, async (req, r, n) => {
 
 app.get("/api/sales", auth, async (req, res, next) => {
   try {
-    const { from, to, cursor } = req.query;
+    const { from, to, cursor, search, payment, minAmount, maxAmount } = req.query;
     const pageSize = Math.min(Number(req.query.limit) || 50, 200);
     let where = [];
     let params = [];
@@ -1487,6 +1487,10 @@ app.get("/api/sales", auth, async (req, res, next) => {
     // ADMIN sees all branches (no branch filter)
     if (from) { where.push(`s.created_at >= $${paramIdx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${paramIdx++}`); params.push(to); }
+    if (search) { where.push(`(s.customer_name ILIKE $${paramIdx} OR s.receipt_number ILIKE $${paramIdx})`); params.push(`%${search}%`); paramIdx++; }
+    if (payment) { where.push(`s.payment_method = $${paramIdx++}`); params.push(payment); }
+    if (minAmount) { where.push(`s.total >= $${paramIdx++}`); params.push(Number(minAmount)); }
+    if (maxAmount) { where.push(`s.total <= $${paramIdx++}`); params.push(Number(maxAmount)); }
     // Cursor-based pagination: fetch one extra to determine hasMore
     if (cursor) { where.push(`(s.created_at, s.id) < ($${paramIdx++}, $${paramIdx++})`); params.push(cursor.ts, cursor.id); }
     const w = where.length ? "WHERE " + where.join(" AND ") : "";
