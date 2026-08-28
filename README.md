@@ -22,7 +22,8 @@ A full-stack supermarket Point of Sale (POS) platform built with **React** (Vite
 | **User Management** | Admin CRUD, role assignment (ADMIN/MANAGER/CASHIER), account activation/deactivation |
 | **Audit Logs** | Complete audit trail for all system actions |
 | **Cash Drawer** | Open/close drawer, variance tracking, drawer history |
-| **Multi-Branch** | Branch CRUD, multi-location support |
+| **Multi-Branch** | Branch CRUD, multi-location support, branch-scoped access control |
+| **RBAC** | 4-tier access control: Super Admin, Branch Admin, Branch Manager, Branch Cashier |
 
 ---
 
@@ -89,6 +90,9 @@ createdb rhosam_db
 # Run the schema
 psql -d rhosam_db -f sql/schema.sql
 
+# Apply RBAC documentation (recommended)
+psql -d rhosam_db -f sql/migration-rbac-documentation.sql
+
 # (Optional) Seed sample products
 psql -d rhosam_db -f sql/seed.sql
 ```
@@ -119,27 +123,110 @@ Navigate to **http://localhost:5173** and log in with your admin credentials.
 
 ---
 
-## 🔐 Default Roles
+## 🔐 Role-Based Access Control (RBAC)
 
-| Role | Access |
-|------|--------|
-| **ADMIN** | Full access to all modules including user management, audit logs, and branches |
-| **MANAGER** | POS, products, inventory, sales, customers, suppliers, procurement, expenses, finance, cash drawer |
-| **CASHIER** | POS, cash drawer, sales history, dashboard |
+The platform implements a **4-tier access control system** based on the combination of `role` and `branch_id` in the users table.
+
+### Access Levels
+
+| Access Level | Role | branch_id | Description |
+|--------------|------|-----------|-------------|
+| **🔑 Super Admin** | ADMIN | NULL | Full access to ALL branches. Can manage branches, users, payment settings, and system configuration. |
+| **🏢 Branch Admin** | ADMIN | \<branch\> | Scoped to their assigned branch only. Can manage products, inventory, sales, and users within their branch. |
+| **👔 Branch Manager** | MANAGER | \<branch\> | Scoped to their branch. Can manage products, inventory, and sales. Cannot manage users. |
+| **🛒 Branch Cashier** | CASHIER | \<branch\> | POS only. Can process transactions and view their own sales. |
+
+### Key Rules
+
+1. **Branch Scoping**: ADMIN users with a `branch_id` are **branch-scoped** (not super-admins). They can only see and manage data for their assigned branch.
+
+2. **Super Admin**: Only ADMIN users **without** a `branch_id` have full access across all branches.
+
+3. **Product Management**: Branch Admins and Managers can create/edit products, but only Super Admins can delete them.
+
+4. **User Management**: Branch Admins can manage users within their branch only. They cannot create other ADMIN users.
+
+5. **System Settings**: Only Super Admins can manage branches, payment settings, terminals, alert rules, and database backups.
+
+### Permissions Matrix
+
+| Feature | Super Admin | Branch Admin | Branch Manager | Cashier |
+|---------|:-----------:|:------------:|:--------------:|:-------:|
+| Dashboard (all branches) | ✅ | ❌ | ❌ | ❌ |
+| Dashboard (own branch) | ✅ | ✅ | ✅ | ✅ |
+| Executive Overview | ✅ | ❌ | ❌ | ❌ |
+| Point of Sale | ✅ | ✅ | ✅ | ✅ |
+| Products (view/edit) | ✅ | ✅ | ✅ | ❌ |
+| Products (delete) | ✅ | ❌ | ❌ | ❌ |
+| Branch Inventory (own) | ✅ | ✅ | ✅ | ❌ |
+| Branch Inventory (all) | ✅ | ❌ | ❌ | ❌ |
+| Sales (own branch) | ✅ | ✅ | ✅ | own |
+| Sales (all branches) | ✅ | ❌ | ❌ | ❌ |
+| Users (own branch) | ✅ | ✅ | ❌ | ❌ |
+| Users (all branches) | ✅ | ❌ | ❌ | ❌ |
+| Branch Management | ✅ | ❌ | ❌ | ❌ |
+| Payment Settings | ✅ | ❌ | ❌ | ❌ |
+| Database Backup | ✅ | ❌ | ❌ | ❌ |
+| Audit Logs (own branch) | ✅ | ✅ | ❌ | ❌ |
+| Audit Logs (all branches) | ✅ | ❌ | ❌ | ❌ |
+| Cash Drawer | ✅ | ✅ | ✅ | ✅ |
+| Change Password | ✅ | ✅ | ✅ | ✅ |
+
+### Managing User Access
+
+```sql
+-- View all users with their access level
+SELECT * FROM v_user_access_levels;
+
+-- Check a user's access level
+SELECT get_user_access_level(5);
+
+-- Promote a branch admin to super-admin
+UPDATE users SET branch_id = NULL WHERE id = <user_id>;
+
+-- Demote a super-admin to branch admin
+UPDATE users SET branch_id = <branch_id> WHERE id = <user_id>;
+
+-- See branches without an admin
+SELECT * FROM v_branches_without_admin;
+```
+
+See `sql/migration-rbac-documentation.sql` for the complete RBAC documentation migration with views, functions, and helper queries.
 
 ---
 
-## 🧪 API Testing
+## 🧪 Testing
 
-The project includes a comprehensive test suite covering all 46 endpoints:
+The project includes comprehensive unit and integration tests:
 
 ```bash
-# Start the backend first, then:
+cd backend
+npm test
+```
+
+### Test Suites
+
+| Suite | Tests | Coverage |
+|-------|-------|----------|
+| `dashboard.test.js` | 25 | Dashboard stats, top products, category sales, branch summary |
+| `branch-scoping.test.js` | 39 | Branch-scoped access control for all endpoints |
+| `integration-branch-admin-flow.test.js` | 45 | Full lifecycle: create user → login → verify scoping |
+
+**Total: 109 tests** covering:
+- Authentication and JWT token generation
+- Role-based access control (RBAC) enforcement
+- Branch-scoped data isolation
+- Super-admin vs branch-admin permissions
+- Cross-branch isolation verification
+- CRUD operations with permission checks
+
+### Manual Testing
+
+```bash
+# Run the 46-endpoint test suite (requires running server)
 cd backend
 node test-all-endpoints.js
 ```
-
-This tests authentication, CRUD operations, RBAC enforcement, and business logic.
 
 ---
 
@@ -174,9 +261,9 @@ See `backend/.env.example` for all required variables:
 
 ## 📊 Database Schema
 
-The schema covers 12 tables:
+### Tables (12)
 
-- `users` — Authentication and role management
+- `users` — Authentication and role management with branch assignment
 - `products` — Product catalog with pricing and stock
 - `inventory_movements` — Stock change audit trail
 - `sales` / `sale_items` — Transaction records
@@ -188,6 +275,15 @@ The schema covers 12 tables:
 - `cash_drawer` — Cash register management with variance tracking
 - `audit_logs` — System-wide activity logging
 - `branches` — Multi-location support
+- `branch_inventory` — Per-branch stock levels
+
+### RBAC Views & Functions
+
+- `get_user_access_level(user_id)` — Returns the effective access level
+- `v_user_access_levels` — All users with access levels and permissions
+- `v_permissions_matrix` — Complete permissions reference (51 features × 4 roles)
+- `v_branch_user_summary` — User counts per branch
+- `v_branches_without_admin` — Branches needing an admin assigned
 
 ---
 

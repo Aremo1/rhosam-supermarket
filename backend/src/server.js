@@ -326,6 +326,22 @@ const auth = (req, res, next) => {
 const allow = (...roles) => (req, res, next) =>
   roles.includes(req.user.role) ? next() : res.status(403).json({ message: "Permission denied." });
 
+// Helper: Check if user is a super-admin (ADMIN role with no branch assignment)
+// Super-admins have full access across all branches.
+// ADMIN users with a branch_id are "branch admins" — scoped to their own branch.
+function isSuperAdmin(req) {
+  return req.user && req.user.role === "ADMIN" && !req.user.branchId;
+}
+
+// Middleware: Only super-admins (ADMIN without branch_id) can proceed
+const requireSuperAdmin = (req, res, next) =>
+  isSuperAdmin(req) ? next() : res.status(403).json({ message: "Super-admin access required. Only users with ADMIN role and no branch assignment can access this." });
+
+// Helper: Check if user is a branch-scoped admin (ADMIN with a branch_id)
+function isBranchAdmin(req) {
+  return req.user && req.user.role === "ADMIN" && !!req.user.branchId;
+}
+
 async function audit(c, u, a, e, id, d = {}, req = null) {
   const ip = req ? (req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() : null;
   const ua = req ? req.headers["user-agent"] || null : null;
@@ -783,10 +799,16 @@ app.get("/api/users", auth, allow("ADMIN"), async (q, r, n) => {
               u.branch_id, b.name AS branch_name
        FROM users u LEFT JOIN branches b ON b.id = u.branch_id`;
     const params = [];
-    if (q.query.branchId) {
+    const conditions = [];
+    // Branch admins can only see users in their branch; super-admin sees all (with optional filter)
+    if (q.user.branchId) {
+      params.push(q.user.branchId);
+      conditions.push(`u.branch_id = $${params.length}`);
+    } else if (q.query.branchId) {
       params.push(Number(q.query.branchId));
-      sql += ` WHERE u.branch_id = $${params.length}`;
+      conditions.push(`u.branch_id = $${params.length}`);
     }
+    if (conditions.length) sql += ` WHERE ` + conditions.join(` AND `);
     sql += ` ORDER BY u.name`;
     r.json((await pool.query(sql, params)).rows);
   } catch (e) { n(e); }
@@ -797,12 +819,19 @@ app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
     const { name, email, password, role, branchId } = req.body;
     if (!name || !email || String(password).length < 8 || !["ADMIN", "MANAGER", "CASHIER"].includes(role))
       return res.status(400).json({ message: "Name, valid email, role and password (min 8 chars) required." });
+    // Branch admins can only create users in their own branch
+    const effectiveBranchId = req.user.branchId || branchId || null;
+    if (req.user.branchId && branchId && Number(branchId) !== req.user.branchId)
+      return res.status(403).json({ message: "Branch admins can only create users for their own branch." });
+    // Branch admins cannot create other ADMIN users
+    if (req.user.branchId && role === "ADMIN")
+      return res.status(403).json({ message: "Branch admins cannot create other admin users. Contact super-admin." });
     const hash = await bcrypt.hash(password, saltRounds);
     const { rows } = await pool.query(
       "INSERT INTO users(name,email,password_hash,role,branch_id) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,is_active,branch_id",
-      [name, String(email).trim().toLowerCase(), hash, role, branchId || null]
+      [name, String(email).trim().toLowerCase(), hash, role, effectiveBranchId]
     );
-    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { name: rows[0].name, email: rows[0].email, role, branchId }, req);
+    await audit(pool, req.user.id, "CREATE", "USER", rows[0].id, { name: rows[0].name, email: rows[0].email, role, branchId: effectiveBranchId }, req);
     res.status(201).json(rows[0]);
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Email already exists." }) : next(e); }
 });
@@ -810,6 +839,16 @@ app.post("/api/users", auth, allow("ADMIN"), async (req, res, next) => {
 app.patch("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    // Branch admins can only modify users in their own branch
+    if (req.user.branchId) {
+      const { rows: targetUser } = await pool.query("SELECT branch_id, role FROM users WHERE id=$1", [id]);
+      if (!targetUser[0]) return res.status(404).json({ message: "User not found." });
+      if (targetUser[0].branch_id !== req.user.branchId)
+        return res.status(403).json({ message: "Branch admins can only modify users in their own branch." });
+      // Branch admins cannot promote users to ADMIN
+      if (req.body.role === "ADMIN" && targetUser[0].role !== "ADMIN")
+        return res.status(403).json({ message: "Branch admins cannot promote users to admin. Contact super-admin." });
+    }
     const { name, email, password, role, isActive, unlock, branchId } = req.body;
     if (id === req.user.id && isActive === false)
       return res.status(400).json({ message: "You cannot deactivate your own account." });
@@ -867,6 +906,13 @@ app.delete("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (id === req.user.id) return res.status(400).json({ message: "Cannot delete your own account." });
+    // Branch admins can only delete users in their own branch
+    if (req.user.branchId) {
+      const { rows: targetUser } = await pool.query("SELECT branch_id FROM users WHERE id=$1", [id]);
+      if (!targetUser[0]) return res.status(404).json({ message: "User not found." });
+      if (targetUser[0].branch_id !== req.user.branchId)
+        return res.status(403).json({ message: "Branch admins can only delete users in their own branch." });
+    }
     // Fetch user details before deletion for audit log
     const { rows: userRows } = await pool.query("SELECT name, email, role FROM users WHERE id=$1", [id]);
     if (!userRows[0]) return res.status(404).json({ message: "User not found." });
@@ -910,7 +956,8 @@ app.get("/api/products/check-duplicate", auth, async (req, res, next) => {
 app.get("/api/products", auth, async (q, r, n) => {
   try {
     const search = q.query.search;
-    const branchId = q.query.branchId ? Number(q.query.branchId) : null;
+    // Branch admins/managers are auto-scoped to their branch; super-admin can filter via query param
+    const branchId = q.user.branchId || (q.query.branchId ? Number(q.query.branchId) : null);
     // When a branch is selected, LEFT JOIN branch_inventory for per-branch stock
     let sql, params;
     if (branchId) {
@@ -1481,10 +1528,11 @@ app.get("/api/sales", auth, async (req, res, next) => {
     let where = [];
     let params = [];
     let paramIdx = 1;
-    // Cashiers only see their own sales; MANAGERs/ADMINs see branch-wide sales
+    // Cashiers only see their own sales; branch-scoped users see branch-wide sales; super-admin sees all
     if (req.user.role === "CASHIER") { where.push(`s.cashier_id = $${paramIdx++}`); params.push(req.user.id); }
-    else if (req.user.role === "MANAGER" && req.user.branchId) { where.push(`s.branch_id = $${paramIdx++}`); params.push(req.user.branchId); }
-    // ADMIN sees all branches (no branch filter)
+    else if (req.user.branchId) { where.push(`s.branch_id = $${paramIdx++}`); params.push(req.user.branchId); }
+    else if (req.user.role === "ADMIN" && req.query.branchId) { where.push(`s.branch_id = $${paramIdx++}`); params.push(Number(req.query.branchId)); }
+    // Super-admin (ADMIN without branch_id, no query param) sees all branches
     if (from) { where.push(`s.created_at >= $${paramIdx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${paramIdx++}`); params.push(to); }
     if (search) { where.push(`(s.customer_name ILIKE $${paramIdx} OR s.receipt_number ILIKE $${paramIdx})`); params.push(`%${search}%`); paramIdx++; }
@@ -1688,22 +1736,31 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
 // Returns { sql, params, nextIdx } where sql is the WHERE clause fragment and params is the param array
 function buildBranchFilter(req, opts = {}) {
   const { tableAlias = "s", userAlias, useCashierFallback = false } = opts;
-  const adminBranchId = req.user.role === "ADMIN" ? (req.query.branchId ? Number(req.query.branchId) : null) : null;
   const params = [];
   let sql = "";
-  if (adminBranchId) {
-    params.push(adminBranchId);
-    sql = ` AND ${tableAlias}.branch_id = $${params.length}`;
-  } else if (req.user.role === "ADMIN") {
-    sql = "";
-  } else if (req.user.branchId) {
+
+  // Super-admin (ADMIN without branch_id): can view all or filter by query param
+  if (req.user.role === "ADMIN" && !req.user.branchId) {
+    if (req.query.branchId) {
+      params.push(Number(req.query.branchId));
+      sql = ` AND ${tableAlias}.branch_id = $${params.length}`;
+    }
+    // else: no filter — super-admin sees all branches
+  }
+  // Branch-scoped users (ADMIN or MANAGER with branch_id): always scoped to their branch
+  else if (req.user.branchId) {
     params.push(req.user.branchId);
     sql = ` AND ${tableAlias}.branch_id = $${params.length}`;
-  } else if (useCashierFallback && req.user.id) {
+  }
+  // Cashier without branch: fallback to cashier_id
+  else if (useCashierFallback && req.user.id) {
     params.push(req.user.id);
     sql = ` AND ${tableAlias}.cashier_id = $${params.length}`;
   }
-  return { sql, params, targetBranchId: adminBranchId || req.user.branchId || null };
+  const targetBranchId = (req.user.role === "ADMIN" && !req.user.branchId)
+    ? (req.query.branchId ? Number(req.query.branchId) : null)
+    : (req.user.branchId || null);
+  return { sql, params, targetBranchId };
 }
 
 app.get("/api/dashboard/stats", auth, async (req, r, n) => {
@@ -1794,7 +1851,7 @@ app.get("/api/dashboard/category-sales", auth, async (req, r, n) => {
 // BRANCH SUMMARY — Admin overview of all branches
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/dashboard/branch-summary", auth, allow("ADMIN"), async (req, res, next) => {
+app.get("/api/dashboard/branch-summary", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT b.id, b.name,
@@ -1915,12 +1972,13 @@ app.get("/api/purchase-orders", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      whereClause = " WHERE po.branch_id = $1";
-      params.push(Number(req.query.branchId));
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Branch-scoped users see only their branch's POs; super-admin can filter or see all
+    if (req.user.branchId) {
       whereClause = " WHERE po.branch_id = $1";
       params.push(req.user.branchId);
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE po.branch_id = $1";
+      params.push(Number(req.query.branchId));
     }
     r.json((await pool.query(
       `SELECT po.*, s.name AS supplier_name, u.name AS created_by_name
@@ -1938,9 +1996,9 @@ app.get("/api/purchase-orders/:id", auth, async (req, res, next) => {
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id WHERE po.id=$1`, [id]
     );
     if (!poRows[0]) return res.status(404).json({ message: "Purchase order not found." });
-    // Non-admins can only view POs from their branch
-    if (req.user.role !== "ADMIN" && req.user.branchId && poRows[0].branch_id !== req.user.branchId)
-      return res.status(403).json({ message: "Access denied." });
+    // Branch-scoped users can only view POs from their branch
+    if (req.user.branchId && poRows[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: "Access denied. Purchase order belongs to another branch." });
     const { rows: items } = await pool.query(
       `SELECT poi.*, p.name AS product_name FROM purchase_order_items poi JOIN products p ON p.id = poi.product_id WHERE poi.po_id=$1`, [id]
     );
@@ -2072,9 +2130,9 @@ app.get("/api/purchase-orders/:id/payments", auth, async (req, res, next) => {
        WHERE po.id = $1`, [id]
     );
     if (!po[0]) return res.status(404).json({ message: "Purchase order not found." });
-    // Non-admins can only view payments for POs from their branch
-    if (req.user.role !== "ADMIN" && req.user.branchId && po[0].branch_id !== req.user.branchId)
-      return res.status(403).json({ message: "Access denied." });
+    // Branch-scoped users can only view payments for POs from their branch
+    if (req.user.branchId && po[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: "Access denied. Purchase order belongs to another branch." });
     const { rows: payments } = await pool.query(
       `SELECT pp.*, u.name AS paid_by_name
        FROM purchase_order_payments pp
@@ -2107,10 +2165,10 @@ app.post("/api/purchase-orders/:id/payments", auth, allow("ADMIN", "MANAGER"), a
        WHERE po.id = $1`, [id]
     );
     if (!po[0]) { await client.query("ROLLBACK").catch(() => {}); client.release(); return res.status(404).json({ message: "Purchase order not found." }); }
-    // Non-managers can only make payments for POs from their branch
-    if (req.user.role !== "ADMIN" && req.user.branchId && po[0].branch_id !== req.user.branchId) {
+    // Branch-scoped users can only make payments for POs from their branch
+    if (req.user.branchId && po[0].branch_id !== req.user.branchId) {
       await client.query("ROLLBACK").catch(() => {}); client.release();
-      return res.status(403).json({ message: "Access denied." });
+      return res.status(403).json({ message: "Access denied. Purchase order belongs to another branch." });
     }
 
     const totalPaid = Number(po[0].total_paid);
@@ -2194,13 +2252,13 @@ app.get("/api/expenses", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    // Admin can filter by branch via query param; non-admin scoped to their branch
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      whereClause = " WHERE e.branch_id = $1";
-      params.push(Number(req.query.branchId));
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Super-admin can filter by branch via query param; branch-scoped users see only their branch
+    if (req.user.branchId) {
       whereClause = " WHERE e.branch_id = $1";
       params.push(req.user.branchId);
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE e.branch_id = $1";
+      params.push(Number(req.query.branchId));
     }
     r.json((await pool.query(
       `SELECT e.*, u.name AS approved_by_name FROM expenses e LEFT JOIN users u ON u.id = e.approved_by${whereClause} ORDER BY e.created_at DESC LIMIT 200`,
@@ -2226,14 +2284,14 @@ app.post("/api/expenses", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 
 app.get("/api/finance/summary", auth, allow("ADMIN", "MANAGER"), async (req, r, n) => {
   try {
-    // Branch-scoped: Admin can filter by branch via query param
+    // Branch-scoped: branch admins see only their branch; super-admin can filter or see all
     const params = [];
     let branchFilter = "";
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      params.push(Number(req.query.branchId));
-      branchFilter = ` AND branch_id = $${params.length}`;
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    if (req.user.branchId) {
       params.push(req.user.branchId);
+      branchFilter = ` AND branch_id = $${params.length}`;
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      params.push(Number(req.query.branchId));
       branchFilter = ` AND branch_id = $${params.length}`;
     }
     const [salesRev, totalExpenses, todaySales] = await Promise.all([
@@ -2272,7 +2330,11 @@ app.get("/api/audit-logs", auth, allow("ADMIN"), async (q, r, n) => {
     const conditions = [];
     const params = [];
     let idx = 1;
-    if (q.query.branchId) {
+    // Branch admins can only see audit logs for their branch; super-admin sees all
+    if (q.user.branchId) {
+      conditions.push(`u.branch_id = $${idx++}`);
+      params.push(q.user.branchId);
+    } else if (q.query.branchId) {
       conditions.push(`u.branch_id = $${idx++}`);
       params.push(Number(q.query.branchId));
     }
@@ -2298,7 +2360,9 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
   try {
     const limit = Math.min(Number(q.query.limit) || 100, 500);
     const userId = q.query.user_id;
-    const branchId = q.query.branchId;
+    let branchId = q.query.branchId;
+    // Branch admins can only see login history for their branch
+    if (q.user.branchId) branchId = q.user.branchId;
     let sql = `
       SELECT a.id, u.name AS user_name, u.email, a.action, a.details, a.ip_address, a.user_agent, a.created_at
       FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
@@ -2318,6 +2382,14 @@ app.get("/api/audit-logs/login-history", auth, allow("ADMIN"), async (q, r, n) =
 
 app.get("/api/branches", auth, async (q, r, n) => {
   try {
+    // Branch admins/managers can only see their own branch — NOT all branches
+    if (q.user.branchId) {
+      const { rows } = await pool.query(
+        `SELECT b.* FROM branches b WHERE b.id = $1 AND b.is_active = TRUE`, [q.user.branchId]
+      );
+      return r.json({ data: rows, nextCursor: null, hasMore: false });
+    }
+    // Super-admin (ADMIN without branch_id) sees all branches
     const pageSize = Math.min(Number(q.query.limit) || 100, 200);
     let cursor = null;
     if (q.query.cursor) { try { cursor = JSON.parse(q.query.cursor); } catch {} }
@@ -2348,12 +2420,13 @@ app.get("/api/cash-drawer", auth, async (req, r, n) => {
   try {
     let whereClause = "";
     const params = [];
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      whereClause = " WHERE cd.branch_id = $1";
-      params.push(Number(req.query.branchId));
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Branch-scoped users see only their branch; super-admin can filter or see all
+    if (req.user.branchId) {
       whereClause = " WHERE cd.branch_id = $1";
       params.push(req.user.branchId);
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      whereClause = " WHERE cd.branch_id = $1";
+      params.push(Number(req.query.branchId));
     }
     r.json((await pool.query(
       `SELECT cd.*, uo.name AS opened_by_name, uc.name AS closed_by_name
@@ -2427,7 +2500,7 @@ app.post("/api/cash-drawer/close", auth, allow("ADMIN", "MANAGER"), async (req, 
 // BRANCH MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════
 
-app.post("/api/branches", auth, allow("ADMIN"), async (req, res, next) => {
+app.post("/api/branches", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { name, address, phone, managerId } = req.body;
     if (!name) return res.status(400).json({ message: "Branch name required." });
@@ -2440,7 +2513,7 @@ app.post("/api/branches", auth, allow("ADMIN"), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-app.put("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => {
+app.put("/api/branches/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { name, address, phone, managerId, isActive } = req.body;
@@ -2455,7 +2528,7 @@ app.put("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-app.delete("/api/branches/:id", auth, allow("ADMIN"), async (req, res, next) => {
+app.delete("/api/branches/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { rowCount } = await pool.query("DELETE FROM branches WHERE id=$1", [Number(req.params.id)]);
     if (rowCount === 0) return res.status(404).json({ message: "Branch not found." });
@@ -2943,9 +3016,11 @@ app.patch("/api/in-app-notifications/read", auth, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════
 
 // GET /api/branch-inventory — list all products for a branch with stock levels
-app.get("/api/branch-inventory", auth, allow("ADMIN"), async (req, res, next) => {
+// Branch admins can only view their own branch; super-admin can view any branch
+app.get("/api/branch-inventory", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const branchId = Number(req.query.branchId);
+    // Branch-scoped users are forced to their own branch
+    const branchId = req.user.branchId || Number(req.query.branchId);
     if (!branchId) return res.status(400).json({ message: "branchId required." });
     const { rows } = await pool.query(
       `SELECT p.id, p.barcode, p.name, p.category, p.unit,
@@ -2964,10 +3039,15 @@ app.get("/api/branch-inventory", auth, allow("ADMIN"), async (req, res, next) =>
 });
 
 // PUT /api/branch-inventory/:branchId/:productId — update quantity or reorder level
-app.put("/api/branch-inventory/:branchId/:productId", auth, allow("ADMIN"), async (req, res, next) => {
+// Branch admins can only update their own branch; super-admin can update any branch
+app.put("/api/branch-inventory/:branchId/:productId", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const branchId = Number(req.params.branchId);
+    let branchId = Number(req.params.branchId);
     const productId = Number(req.params.productId);
+    // Branch-scoped users are forced to their own branch
+    if (req.user.branchId && branchId !== req.user.branchId)
+      return res.status(403).json({ message: "Branch admins can only update inventory for their own branch." });
+    if (req.user.branchId) branchId = req.user.branchId;
     const { quantity, reorderLevel } = req.body;
     if (quantity == null && reorderLevel == null)
       return res.status(400).json({ message: "Provide quantity or reorderLevel." });
@@ -3006,9 +3086,14 @@ app.put("/api/branch-inventory/:branchId/:productId", auth, allow("ADMIN"), asyn
 });
 
 // POST /api/branch-inventory/:branchId/bulk — bulk update multiple products
-app.post("/api/branch-inventory/:branchId/bulk", auth, allow("ADMIN"), async (req, res, next) => {
+// Branch admins can only bulk-update their own branch; super-admin can update any branch
+app.post("/api/branch-inventory/:branchId/bulk", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
-    const branchId = Number(req.params.branchId);
+    let branchId = Number(req.params.branchId);
+    // Branch-scoped users are forced to their own branch
+    if (req.user.branchId && branchId !== req.user.branchId)
+      return res.status(403).json({ message: "Branch admins can only bulk-update inventory for their own branch." });
+    if (req.user.branchId) branchId = req.user.branchId;
     const { items } = req.body; // [{ productId, quantity, reorderLevel }]
     if (!Array.isArray(items) || !items.length)
       return res.status(400).json({ message: "items array required." });
@@ -3156,13 +3241,13 @@ app.get("/api/reports/product-sales", auth, allow("ADMIN", "MANAGER"), async (re
     let where = [];
     let params = [];
     let idx = 1;
-    // Branch-scoped: ADMIN can pick a branch
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      where.push(`s.branch_id = $${idx++}`);
-      params.push(Number(req.query.branchId));
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Branch-scoped: branch admins see only their branch; super-admin can filter or see all
+    if (req.user.branchId) {
       where.push(`s.branch_id = $${idx++}`);
       params.push(req.user.branchId);
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(Number(req.query.branchId));
     }
     if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
@@ -3219,13 +3304,13 @@ app.get("/api/reports/cashier-sales", auth, allow("ADMIN", "MANAGER"), async (re
     let where = [];
     let params = [];
     let idx = 1;
-    // Branch-scoped: ADMIN can pick a branch
-    if (req.user.role === "ADMIN" && req.query.branchId) {
-      where.push(`s.branch_id = $${idx++}`);
-      params.push(Number(req.query.branchId));
-    } else if (req.user.role !== "ADMIN" && req.user.branchId) {
+    // Branch-scoped: branch admins see only their branch; super-admin can filter or see all
+    if (req.user.branchId) {
       where.push(`s.branch_id = $${idx++}`);
       params.push(req.user.branchId);
+    } else if (req.user.role === "ADMIN" && req.query.branchId) {
+      where.push(`s.branch_id = $${idx++}`);
+      params.push(Number(req.query.branchId));
     }
     if (from) { where.push(`s.created_at >= $${idx++}`); params.push(from); }
     if (to) { where.push(`s.created_at <= $${idx++}`); params.push(to + "T23:59:59"); }
@@ -3631,7 +3716,7 @@ app.post("/api/auto-reorder/create", auth, allow("ADMIN", "MANAGER"), async (req
 // PHASE 16: EXECUTIVE DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/executive/overview", auth, allow("ADMIN"), async (req, res) => {
+app.get("/api/executive/overview", auth, requireSuperAdmin, async (req, res) => {
   try {
     const branchId = req.query.branchId ? Number(req.query.branchId) : null;
     const bf = branchId ? ` AND branch_id = $1` : '';
@@ -4056,8 +4141,8 @@ app.get("/api/payments/gateway-status", auth, async (_req, res) => {
   });
 });
 
-// ── Payment Settings (Admin) ───────────────────────────────────
-app.get("/api/payment-settings", auth, allow("ADMIN"), async (_req, res, next) => {
+// ── Payment Settings (Super-Admin only) ───────────────────────────────────
+app.get("/api/payment-settings", auth, requireSuperAdmin, async (_req, res, next) => {
   try {
     const { rows } = await pool.query("SELECT * FROM payment_settings WHERE is_active=TRUE ORDER BY id DESC LIMIT 1");
     if (!rows[0]) return res.json({ gateway: "INTERNAL", testMode: true });
@@ -4081,7 +4166,7 @@ app.get("/api/payment-settings", auth, allow("ADMIN"), async (_req, res, next) =
   } catch (e) { next(e); }
 });
 
-app.put("/api/payment-settings", auth, allow("ADMIN"), async (req, res, next) => {
+app.put("/api/payment-settings", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { gateway, paystackSecretKey, paystackPublicKey, flutterwaveSecretKey, flutterwavePublicKey, webhookSecret, testMode } = req.body;
     if (!gateway || !["INTERNAL", "PAYSTACK", "FLUTTERWAVE"].includes(gateway))
@@ -4167,8 +4252,8 @@ app.get("/api/terminals/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, 
   } catch (e) { next(e); }
 });
 
-// Register a terminal device (from Paystack sync or manual entry)
-app.post("/api/terminals", auth, allow("ADMIN"), async (req, res, next) => {
+// Register a terminal device (Super-Admin only)
+app.post("/api/terminals", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { paystackTerminalId, serialNumber, name, branchId } = req.body;
     if (!name) return res.status(400).json({ message: "Terminal name is required." });
@@ -4203,8 +4288,8 @@ app.post("/api/terminals", auth, allow("ADMIN"), async (req, res, next) => {
   } catch (e) { e.code === "23505" ? res.status(409).json({ message: "Terminal already registered." }) : next(e); }
 });
 
-// Update terminal (name, branch assignment)
-app.put("/api/terminals/:id", auth, allow("ADMIN"), async (req, res, next) => {
+// Update terminal (Super-Admin only)
+app.put("/api/terminals/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { name, branchId, address } = req.body;
@@ -4226,8 +4311,8 @@ app.put("/api/terminals/:id", auth, allow("ADMIN"), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Delete terminal
-app.delete("/api/terminals/:id", auth, allow("ADMIN"), async (req, res, next) => {
+// Delete terminal (Super-Admin only)
+app.delete("/api/terminals/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { rowCount } = await pool.query("DELETE FROM terminal_devices WHERE id=$1", [id]);
@@ -4488,7 +4573,7 @@ app.post("/api/webhooks/flutterwave", async (req, res) => {
 // DATABASE BACKUP (Admin)
 // ═══════════════════════════════════════════════════════════════════
 
-app.get("/api/admin/backup", auth, allow("ADMIN"), async (req, res, next) => {
+app.get("/api/admin/backup", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const tables = [
       "users", "products", "inventory_movements", "sales", "sale_items",
@@ -4858,8 +4943,8 @@ app.get("/api/alert-rules", auth, allow('ADMIN', 'MANAGER'), async (req, res, ne
   } catch (e) { next(e); }
 });
 
-// Create alert rule
-app.post("/api/alert-rules", auth, allow('ADMIN'), async (req, res, next) => {
+// Create alert rule (Super-Admin only — global settings)
+app.post("/api/alert-rules", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { name, alertType, category, thresholdValue, thresholdUnit, notifyEmail, notifyDashboard, emailRecipients } = req.body;
     if (!name || !alertType) return res.status(400).json({ message: 'Name and type required.' });
@@ -4872,8 +4957,8 @@ app.post("/api/alert-rules", auth, allow('ADMIN'), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Update alert rule
-app.patch("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) => {
+// Update alert rule (Super-Admin only — global settings)
+app.patch("/api/alert-rules/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { name, category, thresholdValue, thresholdUnit, isActive, notifyEmail, notifyDashboard, emailRecipients } = req.body;
@@ -4897,8 +4982,8 @@ app.patch("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) =
   } catch (e) { next(e); }
 });
 
-// Delete alert rule
-app.delete("/api/alert-rules/:id", auth, allow('ADMIN'), async (req, res, next) => {
+// Delete alert rule (Super-Admin only — global settings)
+app.delete("/api/alert-rules/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const { rowCount } = await pool.query('DELETE FROM alert_rules WHERE id=$1', [Number(req.params.id)]);
     if (!rowCount) return res.status(404).json({ message: 'Rule not found.' });

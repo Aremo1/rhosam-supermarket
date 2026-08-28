@@ -15,11 +15,15 @@ function resolveApiUrl(val) {
 // ═══════════════════════════════════════════════════════════════════
 // LAYOUT
 // ═══════════════════════════════════════════════════════════════════
+// Super-admin (ADMIN without branch_id) gets full access to all management features
+// Branch-admin (ADMIN with branch_id) gets operational access but no cross-branch management
 const MENUS = {
   ADMIN: ["dashboard","executive","pos","products","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
   MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
   CASHIER: ["dashboard","pos","cashdrawer","sales","notification-prefs","change-password","wifiqr"],
 };
+// Items restricted to super-admin only (ADMIN without branch_id)
+const SUPER_ADMIN_ONLY = ["executive","branches","users","audit","loginhistory","payment-settings"];
 const LABELS = {
   dashboard: "Dashboard", executive: "Executive", pos: "Point of Sale", products: "Products", categories: "Categories", inventory: "Inventory",
   sales: "Sales History", customers: "Customers", suppliers: "Suppliers", procurement: "Purchase Orders",
@@ -52,7 +56,10 @@ const ICONS = {
   const [notifDropdown, setNotifDropdown] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const currentPage = location.pathname.slice(1) || "dashboard";
-  const menuItems = MENUS[user?.role] || MENUS.CASHIER;
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+  // Branch admins (ADMIN with branch_id) don't see super-admin-only menu items
+  const baseMenu = MENUS[user?.role] || MENUS.CASHIER;
+  const menuItems = isSuperAdmin ? baseMenu : baseMenu.filter(item => !SUPER_ADMIN_ONLY.includes(item));
 
   // Fetch unread alert count for sidebar badge + in-app notification count
   useEffect(() => {
@@ -263,31 +270,32 @@ function DashboardPage() {
   const [branchSummary, setBranchSummary] = useState(null);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [expiringData, setExpiringData] = useState(null);
-  const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
-  // Load branches list for admin selector
+  // Load branches list for super-admin selector only
   useEffect(() => {
-    if (isAdmin) {
+    if (isSuperAdmin) {
       fetchBranches().then(setBranches).catch(() => {});
       fetchBranchSummary().then(setBranchSummary).catch(() => {});
     }
-  }, [isAdmin, fetchBranches, fetchBranchSummary]);
+  }, [isSuperAdmin, fetchBranches, fetchBranchSummary]);
 
   const load = useCallback(async (branchId) => {
     try {
-      const bid = branchId || undefined;
+      // For branch admins/managers, always use their branchId (ignore empty selectedBranch)
+      const bid = isSuperAdmin ? (branchId || undefined) : (user?.branchId || undefined);
       const promises = [fetchDashboard(bid), fetchTopProducts(bid), fetchCategorySales(bid), fetchExpiringProducts(30)];
       // Also refresh branch summary when loading (stays current)
-      if (isAdmin) promises.push(fetchBranchSummary());
+      if (isSuperAdmin) promises.push(fetchBranchSummary());
       const results = await Promise.allSettled(promises);
       if (results[0].status === 'fulfilled') setStats(results[0].value);
       if (results[1].status === 'fulfilled') setTopProducts(results[1].value);
       if (results[2].status === 'fulfilled') setCatSales(results[2].value);
       if (results[3].status === 'fulfilled') setExpiringData(results[3].value);
-      if (isAdmin && results[4]?.status === 'fulfilled') setBranchSummary(results[4].value);
+      if (isSuperAdmin && results[4]?.status === 'fulfilled') setBranchSummary(results[4].value);
     } catch (err) { console.error('[Dashboard]', err); }
     finally { setLoading(false); }
-  }, [fetchDashboard, fetchTopProducts, fetchCategorySales, fetchExpiringProducts, fetchBranchSummary, isAdmin]);
+  }, [fetchDashboard, fetchTopProducts, fetchCategorySales, fetchExpiringProducts, fetchBranchSummary, isSuperAdmin, user]);
 
   useEffect(() => { load(selectedBranch || undefined); }, [load, selectedBranch]);
 
@@ -299,8 +307,8 @@ function DashboardPage() {
 
   return (
     <div className="dashboard">
-      {/* Branch selector for Admin */}
-      {isAdmin && branches.length > 0 && (
+      {/* Branch selector for Super-Admin only */}
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -316,8 +324,8 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Non-admin branch indicator */}
-      {!isAdmin && user?.branch?.name && (
+      {/* Branch-scoped user branch indicator */}
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 16, padding: '10px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>{user.branch.name}</strong> — Dashboard showing your branch data.
         </div>
@@ -377,8 +385,8 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Branch Overview Table (Admin only, when viewing all branches) */}
-      {isAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (
+      {/* Branch Overview Table (Super-Admin only, when viewing all branches) */}
+      {isSuperAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (
         <div className="panel">
           <h2>🏢 Branch Performance Overview</h2>
           <div className="table-wrap">
@@ -423,8 +431,8 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Sales by Branch — Horizontal Bar Chart (Admin only, when viewing all branches) */}
-      {isAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (() => {
+      {/* Sales by Branch — Horizontal Bar Chart (Super-Admin only, when viewing all branches) */}
+      {isSuperAdmin && !selectedBranch && branchSummary?.branches?.length > 0 && (() => {
         const maxRevenue = Math.max(...branchSummary.branches.map(b => b.total_revenue || 1));
         const branchColors = ['#16a34a', '#0ea5e9', '#8b5cf6', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#84cc16'];
         return (
@@ -1223,10 +1231,11 @@ function InventoryPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
@@ -1272,7 +1281,7 @@ function InventoryPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -1288,7 +1297,7 @@ function InventoryPage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Inventory filtered to your branch.
         </div>
@@ -1408,10 +1417,11 @@ function DamagesPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
@@ -1439,7 +1449,7 @@ function DamagesPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -1516,8 +1526,9 @@ function WastagePage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
@@ -1531,7 +1542,7 @@ function WastagePage() {
     } catch { } finally { setLoading(false); }
   }, [fetchProducts, fetchInventoryMovements, user, selectedBranch]);
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
   useEffect(() => { load(); }, [load]);
 
   async function handleSubmit(e) {
@@ -1546,7 +1557,7 @@ function WastagePage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -1784,9 +1795,10 @@ function StockValuationPage() {
 // BRANCH INVENTORY MANAGEMENT (admin per-branch stock control)
 // ═══════════════════════════════════════════════════════════════════
 function BranchInventoryPage() {
-  const { fetchBranchInventory, updateBranchInventory, fetchBranches, notifyDataChange } = useAuth();
+  const { fetchBranchInventory, updateBranchInventory, fetchBranches, notifyDataChange, user } = useAuth();
   const [branches, setBranches] = useState([]);
-  const [selectedBranch, setSelectedBranch] = useState("");
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+  const [selectedBranch, setSelectedBranch] = useState(user?.branchId || "");
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(null); // productId being saved
@@ -1796,8 +1808,8 @@ function BranchInventoryPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    fetchBranches().then(setBranches).catch(() => {});
-  }, [fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     if (!selectedBranch) { setInventory([]); setLoading(false); return; }
@@ -1839,19 +1851,25 @@ function BranchInventoryPage() {
 
   return (
     <div className="page-panel">
-      {/* Branch selector */}
-      <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
-        <select
-          value={selectedBranch}
-          onChange={e => { setSelectedBranch(e.target.value); setSearch(""); }}
-          style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
-        >
-          <option value="">Select a branch…</option>
-          {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        {selectedBranch && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>— Managing inventory for {branches.find(b => String(b.id) === String(selectedBranch))?.name}</span>}
-      </div>
+      {/* Branch selector — super-admin can pick any branch; branch admins are locked to their branch */}
+      {isSuperAdmin ? (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
+          <select
+            value={selectedBranch}
+            onChange={e => { setSelectedBranch(e.target.value); setSearch(""); }}
+            style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}
+          >
+            <option value="">Select a branch…</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          {selectedBranch && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>— Managing inventory for {branches.find(b => String(b.id) === String(selectedBranch))?.name}</span>}
+        </div>
+      ) : user?.branch?.name && (
+        <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
+          🏢 <strong>Branch:</strong> {user.branch.name} — Managing inventory for your branch only.
+        </div>
+      )}
 
       {msg && <div className={msg.startsWith("Error") ? "error-msg" : "muted"} style={{ marginBottom: 12 }}>{msg}</div>}
 
@@ -1951,10 +1969,11 @@ function SalesPage() {
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   // Build filter params object (used by both load and loadMore)
   const buildParams = useCallback((extra) => {
@@ -2032,7 +2051,7 @@ function SalesPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -2048,7 +2067,7 @@ function SalesPage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Sales are filtered to your branch.
         </div>
@@ -2547,10 +2566,11 @@ function ProcurementPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     try {
@@ -2622,7 +2642,7 @@ function ProcurementPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -2638,7 +2658,7 @@ function ProcurementPage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Purchase orders are filtered to your branch.
         </div>
@@ -2798,10 +2818,11 @@ function ExpensesPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     const params = {};
@@ -2818,7 +2839,7 @@ function ExpensesPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -2834,7 +2855,7 @@ function ExpensesPage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Expenses are filtered to your branch.
         </div>
@@ -2894,10 +2915,11 @@ function FinancePage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2917,7 +2939,7 @@ function FinancePage() {
 
   return (
     <div className="finance-page">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -2933,7 +2955,7 @@ function FinancePage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Finance data is filtered to your branch.
         </div>
@@ -3033,8 +3055,9 @@ function AutoReorderPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3067,7 +3090,7 @@ function AutoReorderPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -3123,8 +3146,9 @@ function ExecutiveDashboard() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3144,7 +3168,7 @@ function ExecutiveDashboard() {
 
   return (
     <div className="dashboard">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -3372,6 +3396,7 @@ function ReportsPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
   // Email
   const [emailTo, setEmailTo] = useState("");
   const [sending, setSending] = useState(false);
@@ -3381,8 +3406,8 @@ function ReportsPage() {
 
   // Load branches for admin
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true); setSendMsg("");
@@ -3431,7 +3456,7 @@ function ReportsPage() {
   return (
     <div className="page-panel">
       {/* Branch selector (Admin) / indicator (Manager/Cashier) */}
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -3447,7 +3472,7 @@ function ReportsPage() {
           </span>
         </div>
       )}
-      {!isAdmin && user?.branch?.name && (
+      {!isSuperAdmin && user?.branch?.name && (
         <div style={{ marginBottom: 12, padding: '8px 16px', background: 'var(--surface, var(--card-bg))', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '0.9rem' }}>
           🏢 <strong>Branch:</strong> {user.branch.name} — Reports are filtered to your branch.
         </div>
@@ -3817,10 +3842,11 @@ function AuditPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === "ADMIN";
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3854,7 +3880,7 @@ function AuditPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select
@@ -3916,6 +3942,7 @@ function CashDrawerPage() {
   const [branches, setBranches] = useState([]);
   const [selectedBranch, setSelectedBranch] = useState("");
   const isAdmin = user?.role === 'ADMIN';
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   const load = useCallback(async () => {
     try {
@@ -3926,8 +3953,8 @@ function CashDrawerPage() {
   }, [getActiveDrawer, fetchCashDrawers]);
 
   useEffect(() => {
-    if (isAdmin) fetchBranches().then(setBranches).catch(() => {});
-  }, [isAdmin, fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -3955,7 +3982,7 @@ function CashDrawerPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 16, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}
@@ -5137,10 +5164,12 @@ function WifiQRPage() {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const [error, setError] = useState("");
 
-  // Load branches on mount
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+
+  // Load branches only for super-admin
   useEffect(() => {
-    fetchBranches().then(setBranches).catch(() => {});
-  }, [fetchBranches]);
+    if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {});
+  }, [isSuperAdmin, fetchBranches]);
 
   // Load settings when branch changes
   useEffect(() => {
@@ -5443,6 +5472,7 @@ function BulkImportExportPage() {
   const [result, setResult] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const isAdmin = user?.role === 'ADMIN';
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   async function handleExport() {
     try { await exportInventoryCSV(user?.branchId); } catch (err) { alert('Export failed: ' + err.message); }
@@ -5537,14 +5567,15 @@ function InventoryAuditPage() {
   const [selectedBranch, setSelectedBranch] = useState('');
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === 'ADMIN';
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
 
   const load = useCallback(async () => {
     const params = {};
     if (selectedBranch) params.branchId = selectedBranch;
     try { setAudits(await fetchAudits(Object.keys(params).length ? params : undefined)); } catch {} finally { setLoading(false); }
-  }, [fetchAudits]);
+  }, [fetchAudits, selectedBranch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -5588,7 +5619,7 @@ function InventoryAuditPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && !active && (
+      {isSuperAdmin && branches.length > 0 && !active && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -5724,6 +5755,7 @@ function StockAlertsPage() {
   const [selectedBranch, setSelectedBranch] = useState('');
   const [branches, setBranches] = useState([]);
   const isAdmin = user?.role === 'ADMIN';
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [ruleForm, setRuleForm] = useState({ name: '', alertType: 'LOW_STOCK', thresholdValue: 5, thresholdUnit: 'UNITS', notifyDashboard: true });
   const [msg, setMsg] = useState('');
@@ -5739,7 +5771,7 @@ function StockAlertsPage() {
     } catch {} finally { setLoading(false); }
   }, [fetchStockAlerts, fetchAlertRules, selectedBranch]);
 
-  useEffect(() => { if (isAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isAdmin, fetchBranches]);
+  useEffect(() => { if (isSuperAdmin) fetchBranches().then(setBranches).catch(() => {}); }, [isSuperAdmin, fetchBranches]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -5776,7 +5808,7 @@ function StockAlertsPage() {
 
   return (
     <div className="page-panel">
-      {isAdmin && branches.length > 0 && (
+      {isSuperAdmin && branches.length > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', background: 'var(--card-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>🏢 Branch:</span>
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1.5px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: '0.9rem', fontWeight: 500 }}>
@@ -5982,6 +6014,7 @@ function NotificationCenterPage() {
   const [testMsg, setTestMsg] = useState('');
   const [filter, setFilter] = useState({ channel: '', event_type: '' });
   const isAdmin = user?.role === 'ADMIN';
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -6122,12 +6155,14 @@ function TerminalPage() {
 
   const fmt = (n) => { const v = parseFloat(n) || 0; return "\u20A6" + v.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
 
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+
   const load = useCallback(async () => {
     setLoading(true); setMsg(""); setError("");
     try {
       const [t, b, tx] = await Promise.all([
         fetchTerminals(),
-        fetchBranches().catch(() => []),
+        isSuperAdmin ? fetchBranches().catch(() => []) : Promise.resolve([]),
         fetchTerminalTransactions().catch(() => []),
       ]);
       setTerminals(t.terminals || []);
@@ -6135,7 +6170,7 @@ function TerminalPage() {
       setBranches(b);
       setTxHistory(tx);
     } catch {} finally { setLoading(false); }
-  }, [fetchTerminals, fetchBranches, fetchTerminalTransactions]);
+  }, [fetchTerminals, fetchBranches, fetchTerminalTransactions, isSuperAdmin]);
 
   useEffect(() => { load(); }, [load]);
 

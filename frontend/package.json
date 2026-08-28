@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.10",
     "@vitejs/plugin-react": "latest",
     "jspdf": "^4.2.1",
     "qrcode": "^1.5.4",

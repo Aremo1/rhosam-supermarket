@@ -65,12 +65,32 @@ const server = http.createServer((req, res) => {
   fs.stat(filePath, (err, stat) => {
     if (!err && stat.isFile()) {
       const ext = path.extname(filePath).toLowerCase();
-      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+      const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+      // HTML files: never cache (SPA with hashed assets)
+      if (ext === ".html") {
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+        headers["Pragma"] = "no-cache";
+        headers["Expires"] = "0";
+      }
+      // Hashed assets (JS, CSS): cache aggressively (Vite adds content hash)
+      else if (url.pathname.startsWith("/assets/")) {
+        headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      }
+      // Other static files: cache for 1 hour
+      else if (ext !== ".html") {
+        headers["Cache-Control"] = "public, max-age=3600";
+      }
+      res.writeHead(200, headers);
       fs.createReadStream(filePath).pipe(res);
     } else {
-      // SPA fallback: serve index.html for all non-file routes
+      // SPA fallback: serve index.html for all non-file routes (never cache)
       const indexPath = path.join(DIST, "index.html");
-      res.writeHead(200, { "Content-Type": "text/html" });
+      res.writeHead(200, {
+        "Content-Type": "text/html",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+      });
       fs.createReadStream(indexPath).pipe(res);
     }
   });

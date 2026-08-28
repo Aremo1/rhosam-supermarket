@@ -4,7 +4,7 @@
 //           background sync, periodic sync, stale-while-revalidate
 // ═══════════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const STATIC_CACHE = `rhosam-static-${CACHE_VERSION}`;
 const DYNAMIC_CACHE = `rhosam-dynamic-${CACHE_VERSION}`;
 const OFFLINE_CACHE = `rhosam-offline-${CACHE_VERSION}`;
