@@ -1029,6 +1029,16 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
        RETURNING id,barcode,name,category,price::float,cost_price::float,stock,reorder_level,unit,image_url,description,is_active,expiry_date,batch_number`,
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, req.body.imageUrl || null, expiryDate || null, batchNumber || null]
     );
+    // Create branch_inventory entry if user is branch-scoped
+    if (req.user.branchId) {
+      await pool.query(
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($1, $2, $3, $4)
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = $3, reorder_level = $4, updated_at = NOW()`,
+        [req.user.branchId, rows[0].id, Number(stock) || 0, Number(reorderLevel) || 5]
+      );
+    }
     await audit(pool, req.user.id, "CREATE", "PRODUCT", rows[0].id, { barcode, name, category }, req);
     const warnings = [];
     if (categoryExists) warnings.push(`Category "${category}" already has other products.`);
@@ -1080,6 +1090,28 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null, expiryDate || null, batchNumber || null]
     );
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
+    // Sync stock/reorderLevel to branch_inventory when user is branch-scoped
+    if (req.user.branchId) {
+      const branchId = req.user.branchId;
+      if (stock != null || reorderLevel != null) {
+        await pool.query(
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($1, $2,
+             $3,
+             $4)
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET
+             quantity = COALESCE($3, branch_inventory.quantity),
+             reorder_level = COALESCE($4, branch_inventory.reorder_level),
+             updated_at = NOW()`,
+          [
+            branchId, id,
+            stock != null ? Number(stock) : null,
+            reorderLevel != null ? Number(reorderLevel) : null
+          ]
+        );
+      }
+    }
     await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
@@ -3020,7 +3052,8 @@ app.patch("/api/in-app-notifications/read", auth, async (req, res, next) => {
 app.get("/api/branch-inventory", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     // Branch-scoped users are forced to their own branch
-    const branchId = req.user.branchId || Number(req.query.branchId);
+    const requestedBranchId = Number(req.query.branchId);
+    const branchId = req.user.branchId || requestedBranchId;
     if (!branchId) return res.status(400).json({ message: "branchId required." });
     const { rows } = await pool.query(
       `SELECT p.id, p.barcode, p.name, p.category, p.unit,
@@ -3979,12 +4012,13 @@ app.post("/api/sync/sales", auth, async (req, res, next) => {
 
         const receiptNumber = sale.receiptNumber || `SYNC-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
         const total = subtotal - Number(sale.discount || 0) + Number(sale.tax || 0);
+        const saleBranchId = req.user.branchId || null;
 
         const { rows } = await client.query(
-          `INSERT INTO sales(receipt_number,customer_name,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          `INSERT INTO sales(receipt_number,customer_name,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id,branch_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
           [receiptNumber, sale.customerName || "Walk-in Customer", sale.paymentMethod || "Cash",
-           subtotal, sale.discount || 0, sale.tax || 0, total, sale.amountPaid || total, 0, req.user.id]
+           subtotal, sale.discount || 0, sale.tax || 0, total, sale.amountPaid || total, 0, req.user.id, saleBranchId]
         );
 
         for (const item of (sale.items || [])) {
@@ -3995,6 +4029,17 @@ app.post("/api/sync/sales", auth, async (req, res, next) => {
               [rows[0].id, item.productId, item.name || 'Product', pRows[0].price, item.quantity, item.discount || 0, pRows[0].price * item.quantity]
             );
             await client.query("UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2", [item.quantity, item.productId]);
+            // Also deduct from branch_inventory if branch is assigned
+            if (saleBranchId) {
+              await client.query(
+                "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+                [item.quantity, saleBranchId, item.productId]
+              );
+            }
+            await client.query(
+              "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id) VALUES($1,'SALE',$2,$3,$4)",
+              [item.productId, -item.quantity, receiptNumber, req.user.id]
+            );
           }
         }
 
