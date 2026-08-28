@@ -50,6 +50,8 @@ const ICONS = {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [swUpdateAvailable, setSwUpdateAvailable] = useState(false);
+  const swWorkerRef = useState({ current: null })[0];
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("rhosam-theme") === "dark");
   const [alertCount, setAlertCount] = useState(0);
   const [notifCount, setNotifCount] = useState(0);
@@ -123,6 +125,16 @@ const ICONS = {
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
 
+  // PWA Service Worker update notification
+  useEffect(() => {
+    const handler = (e) => {
+      swWorkerRef.current = e.detail.worker;
+      setSwUpdateAvailable(true);
+    };
+    window.addEventListener("sw-update-available", handler);
+    return () => window.removeEventListener("sw-update-available", handler);
+  }, [swWorkerRef]);
+
   async function handleInstall() {
     if (!installPrompt) return;
     installPrompt.prompt();
@@ -161,6 +173,18 @@ const ICONS = {
       <div className={`sidebar-overlay ${sidebarOpen ? "show" : ""}`} onClick={() => { setSidebarOpen(false); setNotifDropdown(false); }} />
 
       <div className="main-content">
+        {swUpdateAvailable && (
+          <div className="sw-update-banner">
+            <span>🔄 A new version of RHoSAM is available!</span>
+            <button className="btn primary" onClick={() => {
+              if (swWorkerRef.current) {
+                swWorkerRef.current.postMessage({ type: "SKIP_WAITING" });
+              }
+              window.location.reload();
+            }}>Refresh Now</button>
+            <button className="btn secondary" onClick={() => setSwUpdateAvailable(false)}>Later</button>
+          </div>
+        )}
         {installPrompt && !isInstalled && (
           <div className="install-banner">
             <span>📱 Install RHoSAM POS on your device for faster access</span>

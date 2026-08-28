@@ -38,11 +38,9 @@
               console.log("[PWA] New SW installing...");
               newWorker.addEventListener("statechange", () => {
                 if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
-                  // New content available — notify user
-                  if (window.confirm("New version available! Reload to update?")) {
-                    newWorker.postMessage({ type: "SKIP_WAITING" });
-                    window.location.reload();
-                  }
+                  // New content available — dispatch event for React banner
+                  console.log("[PWA] New version available");
+                  window.dispatchEvent(new CustomEvent("sw-update-available", { detail: { worker: newWorker } }));
                 }
               });
             });
