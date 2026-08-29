@@ -6976,12 +6976,45 @@ function PaymentSettingsPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ERROR BOUNDARY — catches JS errors so the page shows a message
+// instead of a blank screen
+// ═══════════════════════════════════════════════════════════════════
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[ErrorBoundary]', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: '100vh', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, fontFamily: 'Inter, system-ui, sans-serif' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 400, textAlign: 'center', boxShadow: '0 8px 30px rgba(0,0,0,0.08)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>⚠️</div>
+            <h2 style={{ margin: '0 0 8px', color: '#111827' }}>Something went wrong</h2>
+            <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: '0 0 16px' }}>{this.state.error?.message || 'An unexpected error occurred.'}</p>
+            <button onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }} style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: '0.9rem', fontWeight: 600, cursor: 'pointer' }}>🔄 Reload Page</button>
+            <button onClick={() => window.location.href = '/pos'} style={{ background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: '0.9rem', fontWeight: 600, cursor: 'pointer', marginLeft: 8 }}>Back to POS</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
   return (
     <Routes>
-      <Route path="/scanner" element={<ScannerPage />} />
+      <Route path="/scanner" element={<ErrorBoundary><ScannerPage /></ErrorBoundary>} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />

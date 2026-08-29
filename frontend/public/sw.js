@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
-// RHoSAM PWA Service Worker v2
+// RHoSAM PWA Service Worker v3
 // Features: Versioned caching, asset precaching, offline fallback,
 //           background sync, periodic sync, stale-while-revalidate
 // ═══════════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const STATIC_CACHE = `rhosam-static-${CACHE_VERSION}`;
 const DYNAMIC_CACHE = `rhosam-dynamic-${CACHE_VERSION}`;
 const OFFLINE_CACHE = `rhosam-offline-${CACHE_VERSION}`;
@@ -18,6 +18,7 @@ const MAX_API_ITEMS = 50;
 const PRECACHE_URLS = [
   "/",
   "/index.html",
+  "/scanner",
   "/offline.html",
   "/favicon.svg",
   "/icons/icon-192x192.png",
