@@ -469,6 +469,17 @@ export default function ScannerPage() {
   const [previewSearch, setPreviewSearch] = useState("");
   const [csvCopied, setCsvCopied] = useState(false);
 
+  // filteredPreviewRows: must be defined before rawCsvText
+  const filteredPreviewRows = React.useMemo(() => {
+    const q = previewSearch.trim().toLowerCase();
+    if (!q) return sortedPreviewRows;
+    return sortedPreviewRows.filter(r =>
+      r.barcode.toLowerCase().includes(q) ||
+      (r.name || "").toLowerCase().includes(q) ||
+      (r.category || "").toLowerCase().includes(q)
+    );
+  }, [sortedPreviewRows, previewSearch]);
+
   // Generate raw CSV text for preview
   const rawCsvText = React.useMemo(() => {
     const header = ["Barcode", "Product Name", "Category", "Unit Price (₦)", "Quantity", "Line Total (₦)", "Status"];
@@ -492,15 +503,6 @@ export default function ScannerPage() {
       setTimeout(() => setCsvCopied(false), 2000);
     } catch {}
   }, [rawCsvText]);
-  const filteredPreviewRows = React.useMemo(() => {
-    const q = previewSearch.trim().toLowerCase();
-    if (!q) return sortedPreviewRows;
-    return sortedPreviewRows.filter(r =>
-      r.barcode.toLowerCase().includes(q) ||
-      (r.name || "").toLowerCase().includes(q) ||
-      (r.category || "").toLowerCase().includes(q)
-    );
-  }, [sortedPreviewRows, previewSearch]);
 
   const togglePreviewSort = (key) => {
     setPreviewSort(prev => {
@@ -515,10 +517,6 @@ export default function ScannerPage() {
     if (previewSort.key !== key) return "";
     return previewSort.dir === "asc" ? " ▲" : " ▼";
   };
-
-  // Preview product from autocomplete for price estimate
-  const previewProduct = lookupResults.length > 0 ? lookupResults[0] : null;
-  const estimatedTotal = previewProduct ? (parseFloat(previewProduct.price) || 0) * manualQty : 0;
 
   // Download CSV
   const exportCsv = useCallback(() => {
@@ -691,6 +689,10 @@ export default function ScannerPage() {
   const [lookupResults, setLookupResults] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const lookupTimerRef = useRef(null);
+
+  // Preview product from autocomplete for price estimate
+  const previewProduct = lookupResults.length > 0 ? lookupResults[0] : null;
+  const estimatedTotal = previewProduct ? (parseFloat(previewProduct.price) || 0) * manualQty : 0;
 
   // Debounced product lookup
   const fetchSuggestions = useCallback((query) => {
