@@ -149,6 +149,7 @@ const ICONS = {
         <div className="sidebar-header">
           <h2>RHoSAM</h2>
           <small>Supermarket POS</small>
+          {/* v2.0 — Phone Scanner Added */}
         </div>
         <nav className="sidebar-nav">
           {menuItems.map((key) => (
