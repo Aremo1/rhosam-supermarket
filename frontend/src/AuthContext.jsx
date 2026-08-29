@@ -2,9 +2,10 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 const AuthContext = createContext(null);
 function resolveApiUrl(val) {
-  if (!val) return "http://localhost:5000/api";
+  if (!val) return "/api"; // relative path — works with Vite proxy in dev, frontend server proxy in production
   // If it's just a hostname (no protocol), prepend https:// and append /api
-  if (!/^https?:\/\//.test(val)) return `https://${val}/api`;
+  if (!/^https?:\/\//.test(val) && !val.startsWith("/")) return `https://${val}/api`;
+  if (!/^https?:\/\//.test(val) && val.startsWith("/")) return val; // already a relative path
   return val;
 }
 const API = resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/$/, "");

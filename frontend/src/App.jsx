@@ -8,8 +8,9 @@ import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLo
 import "./App.css";
 
 function resolveApiUrl(val) {
-  if (!val) return "http://localhost:5000/api";
-  if (!/^https?:\/\//.test(val)) return `https://${val}/api`;
+  if (!val) return "/api"; // relative path — works with Vite proxy in dev, frontend server proxy in production
+  if (!/^https?:\/\//.test(val) && !val.startsWith("/")) return `https://${val}/api`;
+  if (!/^https?:\/\//.test(val) && val.startsWith("/")) return val; // already a relative path like /api
   return val;
 }
 
