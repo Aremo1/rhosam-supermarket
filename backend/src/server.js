@@ -5650,10 +5650,10 @@ app.get("/api/scanner/stream", (req, res) => {
   session.sseClients.add(res);
   console.log(`[SCANNER] POS connected to session ${sessionId} (${session.sseClients.size} client(s))`);
 
-  // Heartbeat every 30s to keep connection alive
+  // Heartbeat every 15s to keep connection alive and prevent session cleanup
   const heartbeat = setInterval(() => {
-    try { res.write(":heartbeat\n\n"); } catch {}
-  }, 30000);
+    try { res.write(":heartbeat\n\n"); session.lastSeen = Date.now(); } catch {}
+  }, 15000);
 
   req.on("close", () => {
     session.sseClients.delete(res);
