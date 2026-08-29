@@ -676,9 +676,13 @@ function POSPage() {
   }, [cart, receipt]);
 
   // Phone scanner SSE connection — listens for barcodes from the phone
+  // Use a ref for products so the EventSource doesn't reconnect when products change
+  const productsRef = useRef(products);
+  useEffect(() => { productsRef.current = products; }, [products]);
+
   useEffect(() => {
-    // Use relative /api path — routes through the frontend server proxy
     const apiUrl = "/api";
+    console.log("[SCANNER] Connecting SSE to session:", scannerSessionId);
     const es = new EventSource(`${apiUrl}/scanner/stream?session=${scannerSessionId}`);
     scannerEventSourceRef.current = es;
 
@@ -686,8 +690,10 @@ function POSPage() {
       try {
         const data = JSON.parse(event.data);
         if (data.barcode) {
-          // Find the product in our local product list
-          const match = products.find(p => p.barcode === data.barcode);
+          console.log("[SCANNER] Received barcode:", data.barcode, "product:", data.product?.name);
+          // Find the product in our local product list (use ref to avoid stale closure)
+          const currentProducts = productsRef.current;
+          const match = currentProducts.find(p => p.barcode === data.barcode);
           if (match) {
             addToCart(match, true);
           } else if (data.product) {
@@ -703,12 +709,14 @@ function POSPage() {
           }
           setScannerConnected(true);
         }
-      } catch {}
+      } catch (err) { console.error("[SCANNER] Parse error:", err); }
     };
-    es.onerror = () => {
+    es.onerror = (err) => {
+      console.error("[SCANNER] SSE error:", err);
       setScannerConnected(false);
     };
     es.onopen = () => {
+      console.log("[SCANNER] SSE connected!");
       setScannerConnected(true);
     };
 
@@ -716,7 +724,7 @@ function POSPage() {
       es.close();
       scannerEventSourceRef.current = null;
     };
-  }, [scannerSessionId, products]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scannerSessionId]); // Only reconnect when session ID changes, NOT when products change
 
   // Generate QR code when scanner modal opens
   useEffect(() => {
