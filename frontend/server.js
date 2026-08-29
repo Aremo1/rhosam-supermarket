@@ -71,8 +71,8 @@ const server = http.createServer((req, res) => {
     if (!err && stat.isFile()) {
       const ext = path.extname(filePath).toLowerCase();
       const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
-      // HTML files: never cache (SPA with hashed assets)
-      if (ext === ".html") {
+      // HTML files and service worker: never cache (SPA with hashed assets)
+      if (ext === ".html" || url.pathname === "/sw.js") {
         headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
         headers["Pragma"] = "no-cache";
         headers["Expires"] = "0";

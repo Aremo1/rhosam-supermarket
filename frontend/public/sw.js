@@ -4,7 +4,7 @@
 //           background sync, periodic sync, stale-while-revalidate
 // ═══════════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const STATIC_CACHE = `rhosam-static-${CACHE_VERSION}`;
 const DYNAMIC_CACHE = `rhosam-dynamic-${CACHE_VERSION}`;
 const OFFLINE_CACHE = `rhosam-offline-${CACHE_VERSION}`;
@@ -66,6 +66,14 @@ self.addEventListener("activate", (event) => {
       .then(() => {
         // Claim all clients immediately
         return self.clients.claim();
+      })
+      .then(() => {
+        // Notify all clients to reload with the new version
+        return self.clients.matchAll().then((clients) => {
+          clients.forEach((client) => {
+            client.postMessage({ type: "SW_UPDATED" });
+          });
+        });
       })
   );
 });
