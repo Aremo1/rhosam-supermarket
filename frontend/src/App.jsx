@@ -679,31 +679,42 @@ function POSPage() {
   // Use a ref for products so the EventSource doesn't reconnect when products change
   const productsRef = useRef(products);
   useEffect(() => { productsRef.current = products; }, [products]);
+  // Use a ref for addToCart so the EventSource handler always has the latest version
+  const addToCartRef = useRef(addToCart);
+  useEffect(() => { addToCartRef.current = addToCart; }, [addToCart]);
 
   useEffect(() => {
-    const apiUrl = "/api";
-    console.log("[SCANNER] Connecting SSE to session:", scannerSessionId);
-    const es = new EventSource(`${apiUrl}/scanner/stream?session=${scannerSessionId}`);
+    // Connect DIRECTLY to backend SSE (bypasses frontend proxy buffering issues)
+    const rawTarget = import.meta.env.VITE_API_URL || "";
+    let backendBase = "http://localhost:5000";
+    if (rawTarget) {
+      backendBase = /^https?:\/\//.test(rawTarget) ? rawTarget : `https://${rawTarget}`;
+    }
+    const backendApi = backendBase.replace(/\/api$/, "");
+    const streamUrl = `${backendApi}/api/scanner/stream?session=${scannerSessionId}`;
+    console.log("[SCANNER] Connecting SSE to:", streamUrl);
+    const es = new EventSource(streamUrl);
     scannerEventSourceRef.current = es;
 
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.barcode) {
-          console.log("[SCANNER] Received barcode:", data.barcode, "product:", data.product?.name);
+          console.log("[SCANNER] ✅ Received barcode:", data.barcode, "product:", data.product?.name);
           // Find the product in our local product list (use ref to avoid stale closure)
           const currentProducts = productsRef.current;
           const match = currentProducts.find(p => p.barcode === data.barcode);
           if (match) {
-            addToCart(match, true);
+            addToCartRef.current(match, true);
           } else if (data.product) {
             // Product was found server-side but not in local list — add it to products and cart
             setProducts(prev => {
               if (prev.find(p => p.id === data.product.id)) return prev;
               return [...prev, data.product];
             });
-            addToCart({ ...data.product, stock: data.product.stock || 0, reorder_level: data.product.reorder_level || 0 }, true);
+            addToCartRef.current({ ...data.product, stock: data.product.stock || 0, reorder_level: data.product.reorder_level || 0 }, true);
           } else {
+            console.warn("[SCANNER] No product found for barcode:", data.barcode);
             setError(`No product found for barcode: ${data.barcode}`);
             setTimeout(() => setError(""), 2000);
           }
@@ -716,7 +727,7 @@ function POSPage() {
       setScannerConnected(false);
     };
     es.onopen = () => {
-      console.log("[SCANNER] SSE connected!");
+      console.log("[SCANNER] ✅ SSE connected!", streamUrl);
       setScannerConnected(true);
     };
 
