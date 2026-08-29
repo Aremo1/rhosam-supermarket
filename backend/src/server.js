@@ -1176,10 +1176,13 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
     const qty = Number(quantity);
     const adj = type === "STOCK_OUT" ? -Math.abs(qty) : Math.abs(qty);
     await pool.query("UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2", [adj, id]);
-    // Also update branch_inventory if user is assigned to a branch
+    // Also upsert branch_inventory if user is assigned to a branch
     if (req.user.branchId) {
       await pool.query(
-        "UPDATE branch_inventory SET quantity = quantity + $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($2, $3, GREATEST(0, $1), (SELECT reorder_level FROM products WHERE id = $3))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity + $1), updated_at = NOW()`,
         [adj, req.user.branchId, id]
       );
     }
@@ -1187,8 +1190,21 @@ app.post("/api/products/:id/adjust", auth, allow("ADMIN", "MANAGER"), async (req
       "INSERT INTO inventory_movements(product_id,movement_type,quantity,reference,user_id,notes) VALUES($1,$2,$3,$4,$5,$6)",
       [id, type, adj, `ADJ-${Date.now()}`, req.user.id, notes || ""]
     );
+    // Return updated stock from branch_inventory or products
+    let updatedStock = null;
+    if (req.user.branchId) {
+      const { rows: bi } = await pool.query(
+        "SELECT quantity FROM branch_inventory WHERE branch_id=$1 AND product_id=$2",
+        [req.user.branchId, id]
+      );
+      updatedStock = bi[0]?.quantity ?? null;
+    }
+    if (updatedStock === null) {
+      const { rows: p } = await pool.query("SELECT stock FROM products WHERE id=$1", [id]);
+      updatedStock = p[0]?.stock ?? 0;
+    }
     await audit(pool, req.user.id, "ADJUST_STOCK", "PRODUCT", id, { type, qty: adj }, req);
-    res.json({ message: "Stock adjusted." });
+    res.json({ message: "Stock adjusted.", stock: updatedStock });
   } catch (e) { next(e); }
 });
 
@@ -1253,7 +1269,10 @@ app.post("/api/inventory/damage", auth, allow("ADMIN", "MANAGER"), async (req, r
       if (branchQty < qty)
         throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${branchQty}`), { status: 409 });
       await client.query(
-        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id=$2 AND product_id=$3",
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
         [qty, req.user.branchId, productId]
       );
     } else {
@@ -1298,7 +1317,10 @@ app.post("/api/inventory/wastage", auth, allow("ADMIN", "MANAGER"), async (req, 
       if (branchQty < qty)
         throw Object.assign(new Error(`Insufficient stock for ${product.name}. Available: ${branchQty}`), { status: 409 });
       await client.query(
-        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id=$2 AND product_id=$3",
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
         [qty, req.user.branchId, productId]
       );
     } else {
@@ -1675,7 +1697,10 @@ app.post("/api/sales", auth, async (req, res, next) => {
       // Deduct from branch_inventory if branch is assigned
       if (saleBranchId) {
         await client.query(
-          "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
           [item.quantity, saleBranchId, item.productId]
         );
       }
@@ -1745,7 +1770,10 @@ app.post("/api/sales/:id/return", auth, allow("ADMIN", "MANAGER"), async (req, r
     const saleBranchId = saleRows[0].branch_id;
     if (saleBranchId) {
       await client.query(
-        "UPDATE branch_inventory SET quantity = quantity + $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($2, $3, $1, (SELECT reorder_level FROM products WHERE id = $3))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = branch_inventory.quantity + $1, updated_at = NOW()`,
         [qty, saleBranchId, productId]
       );
     }
@@ -2849,9 +2877,12 @@ app.patch("/api/stock-transfers/:id/status", auth, allow("ADMIN", "MANAGER"), as
         "UPDATE products SET stock = stock - $1, updated_at = NOW() WHERE id = $2 AND stock >= $1",
         [qty, transfer.product_id]
       );
-      // Deduct from source branch_inventory
+      // Deduct from source branch_inventory (upsert in case row is missing)
       await client.query(
-        "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+        `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+         VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+         ON CONFLICT (branch_id, product_id)
+         DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
         [qty, transfer.from_branch_id, transfer.product_id]
       );
       // Record inventory movement for source
@@ -4032,7 +4063,10 @@ app.post("/api/sync/sales", auth, async (req, res, next) => {
             // Also deduct from branch_inventory if branch is assigned
             if (saleBranchId) {
               await client.query(
-                "UPDATE branch_inventory SET quantity = quantity - $1, updated_at = NOW() WHERE branch_id = $2 AND product_id = $3",
+                `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+                 VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+                 ON CONFLICT (branch_id, product_id)
+                 DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
                 [item.quantity, saleBranchId, item.productId]
               );
             }
@@ -4701,7 +4735,10 @@ app.post("/api/inventory/expiry-event", auth, allow("ADMIN", "MANAGER"), async (
       await pool.query('UPDATE products SET stock = GREATEST(stock - $1, 0), updated_at = NOW() WHERE id=$2', [qty, productId]);
       if (req.user.branchId) {
         await pool.query(
-          'UPDATE branch_inventory SET quantity = GREATEST(quantity - $1, 0), updated_at = NOW() WHERE branch_id=$2 AND product_id=$3',
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($2, $3, 0, (SELECT reorder_level FROM products WHERE id = $3))
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET quantity = GREATEST(0, branch_inventory.quantity - $1), updated_at = NOW()`,
           [qty, req.user.branchId, productId]
         );
       }
@@ -5563,6 +5600,132 @@ app.post('/api/sms/test', auth, allow('ADMIN'), async (req, res, next) => {
 // ── Wire SMS into stock deduction (products update endpoint) ────
 // We hook into the product update to check stock levels after changes
 // This is called from the existing PUT /api/products/:id and POST /api/sales
+
+// ═══════════════════════════════════════════════════════════════════
+// PHONE BARCODE SCANNER RELAY
+// ═══════════════════════════════════════════════════════════════════
+// In-memory store: session → { sseClients: Set, lastBarcode, lastSeen }
+const scannerSessions = {};
+// Cleanup stale sessions every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of Object.entries(scannerSessions)) {
+    if (now - session.lastSeen > 10 * 60 * 1000) {
+      // Close all SSE connections for stale session
+      for (const client of session.sseClients) {
+        try { client.end(); } catch {}
+      }
+      delete scannerSessions[id];
+    }
+  }
+}, 5 * 60 * 1000);
+
+function getOrCreateSession(sessionId) {
+  if (!scannerSessions[sessionId]) {
+    scannerSessions[sessionId] = {
+      sseClients: new Set(),
+      lastBarcode: null,
+      lastSeen: Date.now(),
+    };
+  }
+  return scannerSessions[sessionId];
+}
+
+// GET /api/scanner/stream — POS subscribes via SSE to receive barcodes
+app.get("/api/scanner/stream", (req, res) => {
+  const sessionId = String(req.query.session || "");
+  if (!sessionId) return res.status(400).json({ message: "session query param required." });
+  const session = getOrCreateSession(sessionId);
+  session.lastSeen = Date.now();
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  // Send initial keepalive comment
+  res.write(":connected\n\n");
+
+  session.sseClients.add(res);
+  console.log(`[SCANNER] POS connected to session ${sessionId} (${session.sseClients.size} client(s))`);
+
+  // Heartbeat every 30s to keep connection alive
+  const heartbeat = setInterval(() => {
+    try { res.write(":heartbeat\n\n"); } catch {}
+  }, 30000);
+
+  req.on("close", () => {
+    session.sseClients.delete(res);
+    clearInterval(heartbeat);
+    console.log(`[SCANNER] POS disconnected from session ${sessionId} (${session.sseClients.size} left)`);
+  });
+});
+
+// POST /api/scanner/submit — Phone scanner submits a barcode
+app.post("/api/scanner/submit", async (req, res, next) => {
+  try {
+    const { sessionId, barcode } = req.body;
+    if (!sessionId || !barcode) return res.status(400).json({ message: "sessionId and barcode required." });
+    const session = getOrCreateSession(sessionId);
+    session.lastBarcode = { code: String(barcode), timestamp: Date.now() };
+    session.lastSeen = Date.now();
+
+    // Look up the product by barcode
+    let product = null;
+    try {
+      const { rows } = await pool.query(
+        "SELECT id, name, barcode, price, stock, category, reorder_level, image_url FROM products WHERE barcode = $1",
+        [barcode]
+      );
+      product = rows[0] || null;
+    } catch {}
+
+    // Broadcast to all POS clients listening on this session
+    const payload = JSON.stringify({ barcode: String(barcode), product, timestamp: Date.now() });
+    for (const client of session.sseClients) {
+      try {
+        client.write(`data: ${payload}\n\n`);
+      } catch {
+        session.sseClients.delete(client);
+      }
+    }
+
+    console.log(`[SCANNER] Barcode ${barcode} from session ${sessionId} → ${session.sseClients.size} POS client(s)`);
+    res.json({ ok: true, product, listeners: session.sseClients.size });
+  } catch (e) { next(e); }
+});
+
+// GET /api/scanner/status — POS checks if scanner is connected
+app.get("/api/scanner/status", (req, res) => {
+  const sessionId = String(req.query.session || "");
+  if (!sessionId) return res.json({ connected: false });
+  const session = scannerSessions[sessionId];
+  if (!session) return res.json({ connected: false });
+  // Consider scanner connected if someone submitted a barcode in last 30s
+  const recentSubmit = Date.now() - session.lastSeen < 30000;
+  res.json({ connected: recentSubmit, lastBarcode: session.lastBarcode, posListeners: session.sseClients.size });
+});
+
+// GET /api/scanner/lookup — public product search for phone scanner autocomplete (no auth required)
+app.get("/api/scanner/lookup", async (req, res, next) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (q.length < 1) return res.json([]);
+    // Search by barcode (exact prefix) or name (LIKE), limit 8 results
+    const { rows } = await pool.query(
+      `SELECT id, barcode, name, category, price::float, stock::int, reorder_level::int, unit
+       FROM products
+       WHERE barcode LIKE $1 OR LOWER(name) LIKE $2
+       ORDER BY
+         CASE WHEN barcode LIKE $1 THEN 0 ELSE 1 END,
+         name
+       LIMIT 8`,
+      [`${q}%`, `%${q.toLowerCase()}%`]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
 
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {

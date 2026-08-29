@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-
 import QRCode from "qrcode";
 import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
+import ScannerPage from "./ScannerPage";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import "./App.css";
 
@@ -570,6 +571,65 @@ function POSPage() {
   const [paymentVerifying, setPaymentVerifying] = useState(false);
   const [paymentReference, setPaymentReference] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
+  // Phone scanner state
+  const [scannerSessionId] = useState(() => Math.random().toString(36).slice(2, 10));
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [scannerHelpStep, setScannerHelpStep] = useState(0); // 0 = walkthrough, 1-4 = steps, 5 = QR view
+  const [scannerConnected, setScannerConnected] = useState(false);
+  const scannerEventSourceRef = useRef(null);
+  const scannerQrRef = useRef(null);
+
+  // Auto-show walkthrough on first visit
+  useEffect(() => {
+    const seen = localStorage.getItem('scanner-help-seen');
+    if (!seen) {
+      setShowScannerModal(true);
+      setScannerHelpStep(0);
+    }
+  }, []);
+
+  // Test connection state
+  const [connTest, setConnTest] = useState(null); // null | 'testing' | { ok, latency, error, details }
+  const testConnection = useCallback(async () => {
+    setConnTest('testing');
+    const apiUrl = resolveApiUrl(import.meta.env.VITE_API_URL);
+    const start = Date.now();
+    try {
+      const res = await fetch(`${apiUrl.replace(/\/api$/, '')}/api/health`, { signal: AbortSignal.timeout(10000) });
+      const data = await res.json();
+      const latency = Date.now() - start;
+      setConnTest({
+        ok: data.status === 'ok',
+        latency,
+        db: data.database?.status === 'ok',
+        dbLatency: data.database?.latencyMs,
+        error: data.status !== 'ok' ? data.message : null,
+        details: data.status === 'ok' ? {
+          uptime: data.system?.uptime,
+          nodeVersion: data.system?.nodeVersion,
+          platform: data.system?.platform,
+          memoryMB: data.system?.memoryMB,
+          poolTotal: data.pool?.total,
+          poolIdle: data.pool?.idle,
+          poolWaiting: data.pool?.waiting,
+          email: data.services?.email,
+          sms: data.services?.sms,
+          cloudinary: data.services?.cloudinary,
+          timestamp: data.timestamp,
+        } : null,
+      });
+    } catch (err) {
+      setConnTest({ ok: false, latency: null, db: false, error: err.message || 'Connection failed', details: null });
+    }
+  }, []);
+
+  // Auto-test connection when modal opens to QR view
+  useEffect(() => {
+    if (showScannerModal && scannerHelpStep === 5) {
+      setConnTest(null);
+      testConnection();
+    }
+  }, [showScannerModal, scannerHelpStep, testConnection]);
 
   // Play a short beep for successful scans
   const playBeep = useCallback(() => {
@@ -614,6 +674,61 @@ function POSPage() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [cart, receipt]);
+
+  // Phone scanner SSE connection — listens for barcodes from the phone
+  useEffect(() => {
+    const apiUrl = resolveApiUrl(import.meta.env.VITE_API_URL);
+    const es = new EventSource(`${apiUrl}/scanner/stream?session=${scannerSessionId}`);
+    scannerEventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.barcode) {
+          // Find the product in our local product list
+          const match = products.find(p => p.barcode === data.barcode);
+          if (match) {
+            addToCart(match, true);
+          } else if (data.product) {
+            // Product was found server-side but not in local list — add it to products and cart
+            setProducts(prev => {
+              if (prev.find(p => p.id === data.product.id)) return prev;
+              return [...prev, data.product];
+            });
+            addToCart({ ...data.product, stock: data.product.stock || 0, reorder_level: data.product.reorder_level || 0 }, true);
+          } else {
+            setError(`No product found for barcode: ${data.barcode}`);
+            setTimeout(() => setError(""), 2000);
+          }
+          setScannerConnected(true);
+        }
+      } catch {}
+    };
+    es.onerror = () => {
+      setScannerConnected(false);
+    };
+    es.onopen = () => {
+      setScannerConnected(true);
+    };
+
+    return () => {
+      es.close();
+      scannerEventSourceRef.current = null;
+    };
+  }, [scannerSessionId, products]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Generate QR code when scanner modal opens
+  useEffect(() => {
+    if (showScannerModal && scannerQrRef.current) {
+      const base = window.location.origin;
+      const scannerUrl = `${base}/scanner?session=${scannerSessionId}`;
+      QRCode.toCanvas(scannerQrRef.current, scannerUrl, {
+        width: 200,
+        margin: 2,
+        color: { dark: '#111827', light: '#ffffff' },
+      }).catch(() => {});
+    }
+  }, [showScannerModal, scannerSessionId]);
 
   // Derive unique categories from products
   const categories = [...new Set(products.map(p => p.category).filter(Boolean))].sort();
@@ -902,7 +1017,54 @@ function POSPage() {
             autoComplete="off"
             autoFocus
           />
-          <small className="pos-search-hint">Point scanner here • Press Enter to add</small>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+            <small className="pos-search-hint">Point scanner here • Press Enter to add</small>
+          </div>
+          {/* Phone Scanner Button — prominent, always visible */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button
+              onClick={() => { setShowScannerModal(true); setScannerHelpStep(5); }}
+              style={{
+                flex: 1,
+                padding: '12px 16px',
+                background: scannerConnected ? 'linear-gradient(135deg, #16a34a, #15803d)' : 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+                color: scannerConnected ? '#fff' : '#1d4ed8',
+                border: scannerConnected ? '2px solid #16a34a' : '2px solid #93c5fd',
+                borderRadius: 12,
+                fontSize: '0.95rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                transition: 'all 0.2s',
+                boxShadow: scannerConnected ? '0 2px 8px rgba(22,163,74,0.3)' : '0 2px 8px rgba(59,130,246,0.15)',
+              }}
+              title="Use your phone as a barcode scanner"
+            >
+              📱 {scannerConnected ? '✅ Scanner Connected' : '📷 Use Phone as Scanner'}
+            </button>
+            <button
+              onClick={() => { setShowScannerModal(true); setScannerHelpStep(1); }}
+              style={{
+                width: 44,
+                padding: '12px 0',
+                background: 'var(--card-bg, #fff)',
+                color: 'var(--muted, #6b7280)',
+                border: '2px solid var(--border, #e5e7eb)',
+                borderRadius: 12,
+                fontSize: '1.1rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+              title="Show walkthrough guide"
+            >❓</button>
+          </div>
         </div>
 
         {/* Category Filter */}
@@ -1050,6 +1212,191 @@ function POSPage() {
           <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : "💳 Checkout"}</button>
         </div>
       </div>
+
+      {/* Phone Scanner Modal with Walkthrough */}
+      {showScannerModal && (() => {
+        const walkthroughSteps = [
+          {
+            emoji: '📱',
+            title: 'Use Your Phone as a Scanner',
+            desc: 'Turn any phone into a wireless barcode scanner for the POS. No extra hardware needed!',
+            color: '#1d4ed8',
+          },
+          {
+            emoji: '📷',
+            title: 'Open Phone Camera',
+            desc: 'On your phone, open the camera app and point it at the QR code (shown in the next step).',
+            color: '#7c3aed',
+          },
+          {
+            emoji: '🔗',
+            title: 'Scan the QR Code',
+            desc: 'A link will appear — tap it to open the scanner page. Or copy the URL and paste it in your phone browser.',
+            color: '#0891b2',
+          },
+          {
+            emoji: '🛒',
+            title: 'Scan Barcodes into POS',
+            desc: 'On the scanner page, tap "Start Camera" and point at product barcodes. They appear in the POS cart instantly!',
+            color: '#16a34a',
+          },
+        ];
+        const totalSteps = walkthroughSteps.length;
+        const isWalkthrough = scannerHelpStep >= 1 && scannerHelpStep <= totalSteps;
+        const isQRView = scannerHelpStep === 5;
+
+        return (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 2000, padding: 16,
+          }} onClick={() => { setShowScannerModal(false); localStorage.setItem('scanner-help-seen', '1'); }}>
+            <div style={{
+              background: 'var(--card-bg, #fff)', borderRadius: 16, padding: '24px 28px', maxWidth: 400, width: '100%',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.3)', textAlign: 'center',
+              position: 'relative',
+            }} onClick={e => e.stopPropagation()}>
+              {/* Close button */}
+              <button
+                onClick={() => { setShowScannerModal(false); localStorage.setItem('scanner-help-seen', '1'); }}
+                style={{ position: 'absolute', top: 12, right: 12, background: 'none', border: 'none', fontSize: '1.1rem', cursor: 'pointer', color: 'var(--muted, #9ca3af)' }}
+              >✕</button>
+
+              {/* Step indicators */}
+              {isWalkthrough && (
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 16 }}>
+                  {walkthroughSteps.map((_, i) => (
+                    <div key={i} style={{
+                      width: scannerHelpStep === i + 1 ? 24 : 8, height: 8, borderRadius: 4,
+                      background: scannerHelpStep === i + 1 ? walkthroughSteps[i].color : '#e5e7eb',
+                      transition: 'all 0.2s',
+                    }} />
+                  ))}
+                </div>
+              )}
+
+              {/* Walkthrough steps */}
+              {isWalkthrough && (() => {
+                const step = walkthroughSteps[scannerHelpStep - 1];
+                return (
+                  <>
+                    <div style={{ fontSize: '3rem', marginBottom: 8 }}>{step.emoji}</div>
+                    <h2 style={{ margin: '0 0 8px', fontSize: '1.2rem', color: 'var(--text, #111827)' }}>{step.title}</h2>
+                    <p style={{ color: 'var(--muted, #6b7280)', fontSize: '0.88rem', lineHeight: 1.5, margin: '0 0 20px' }}>{step.desc}</p>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {scannerHelpStep > 1 && (
+                        <button
+                          onClick={() => setScannerHelpStep(s => s - 1)}
+                          style={{ flex: 1, padding: '10px', background: '#f3f4f6', border: 'none', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600, color: '#6b7280', cursor: 'pointer' }}
+                        >← Back</button>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (scannerHelpStep < totalSteps) setScannerHelpStep(s => s + 1);
+                          else setScannerHelpStep(5); // Go to QR view
+                        }}
+                        style={{ flex: 1, padding: '10px', background: step.color, border: 'none', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600, color: '#fff', cursor: 'pointer' }}
+                      >{scannerHelpStep < totalSteps ? 'Next →' : 'Show QR Code'}</button>
+                    </div>
+                    {scannerHelpStep === totalSteps && (
+                      <button
+                        onClick={() => { setShowScannerModal(false); localStorage.setItem('scanner-help-seen', '1'); }}
+                        style={{ marginTop: 8, padding: '6px', background: 'none', border: 'none', fontSize: '0.8rem', color: 'var(--muted, #9ca3af)', cursor: 'pointer' }}
+                      >Skip for now</button>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* QR Code view */}
+              {isQRView && (
+                <>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '1.2rem' }}>📱 Scan to Connect</h2>
+                  <p style={{ color: 'var(--muted, #6b7280)', fontSize: '0.82rem', margin: '0 0 12px' }}>
+                    Point your phone camera at the QR code
+                  </p>
+                  <div style={{ background: '#fff', borderRadius: 12, padding: 16, display: 'inline-block', border: '2px solid var(--border, #e5e7eb)' }}>
+                    <canvas ref={scannerQrRef} />
+                  </div>
+                  <p style={{ margin: '12px 0 4px', fontSize: '0.78rem', color: 'var(--muted, #6b7280)' }}>Or copy this URL:</p>
+                  <div style={{ position: 'relative' }}>
+                    <code style={{ display: 'block', margin: '4px 0 12px', padding: '10px 40px 10px 12px', background: 'var(--surface, #f3f4f6)', borderRadius: 8, fontSize: '0.7rem', wordBreak: 'break-all', color: 'var(--text, #374151)', border: '1px solid var(--border, #e5e7eb)' }}>
+                      {window.location.origin}/scanner?session={scannerSessionId}
+                    </code>
+                    <button
+                      onClick={() => { navigator.clipboard?.writeText(window.location.origin + '/scanner?session=' + scannerSessionId); }}
+                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem' }}
+                      title="Copy URL"
+                    >📋</button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, margin: '12px 0' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: scannerConnected ? '#16a34a' : '#d1d5db' }} />
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text, #374151)', fontWeight: 600 }}>
+                      {scannerConnected ? '🟢 Phone connected!' : '⏳ Waiting for phone…'}
+                    </span>
+                  </div>
+                  {/* Test Connection */}
+                  <div style={{
+                    width: '100%', marginBottom: 10, padding: '8px 12px',
+                    background: connTest === 'testing' ? '#f3f4f6' : connTest?.ok ? '#f0fdf4' : connTest && !connTest.ok ? '#fef2f2' : '#f9fafb',
+                    border: `1.5px solid ${connTest === 'testing' ? '#e5e7eb' : connTest?.ok ? '#bbf7d0' : connTest && !connTest.ok ? '#fecaca' : '#e5e7eb'}`,
+                    borderRadius: 8,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 600, flex: 1, minWidth: 0,
+                        color: connTest === 'testing' ? '#6b7280' : connTest?.ok ? '#166534' : connTest && !connTest.ok ? '#991b1b' : '#374151',
+                      }}>
+                        {connTest === 'testing' && '⏳ Testing connection…'}
+                        {connTest && connTest.ok && `✅ Connected — ${connTest.latency}ms${connTest.db ? ' · DB OK' : ''}`}
+                        {connTest && !connTest.ok && `❌ ${connTest.error || 'Connection failed'}`}
+                        {!connTest && '🔍 Test Connection'}
+                      </span>
+                      {connTest && connTest.ok && (
+                        <button onClick={testConnection} style={{ background: 'none', border: '1px solid #bbf7d0', borderRadius: 6, padding: '3px 8px', fontSize: '0.7rem', fontWeight: 600, color: '#166534', cursor: 'pointer', flexShrink: 0 }}>↻ Retry</button>
+                      )}
+                      {connTest && !connTest.ok && connTest !== 'testing' && (
+                        <button onClick={testConnection} style={{ background: '#dc2626', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: '0.7rem', fontWeight: 700, color: '#fff', cursor: 'pointer', flexShrink: 0 }}>↻ Retry</button>
+                      )}
+                      {!connTest && (
+                        <button onClick={testConnection} style={{ background: '#16a34a', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: '0.7rem', fontWeight: 700, color: '#fff', cursor: 'pointer', flexShrink: 0 }}>Test</button>
+                      )}
+                    </div>
+                    {/* Detailed health info */}
+                    {connTest?.ok && connTest.details && (
+                      <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #d1fae5', fontSize: '0.68rem', fontFamily: 'monospace', color: '#374151', lineHeight: 1.8 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 12px' }}>
+                          <span>⏱️ Uptime</span><span style={{ fontWeight: 600 }}>{Math.floor(connTest.details.uptime / 3600)}h {Math.floor((connTest.details.uptime % 3600) / 60)}m</span>
+                          <span>💾 Memory</span><span style={{ fontWeight: 600 }}>{connTest.details.memoryMB} MB</span>
+                          <span>🔗 DB Latency</span><span style={{ fontWeight: 600 }}>{connTest.dbLatency}ms</span>
+                          <span>📦 Pool</span><span style={{ fontWeight: 600 }}>{connTest.details.poolIdle}/{connTest.details.poolTotal} idle{connTest.details.poolWaiting > 0 ? ` · ${connTest.details.poolWaiting} waiting` : ''}</span>
+                          <span>🟢 Node</span><span style={{ fontWeight: 600 }}>{connTest.details.nodeVersion}</span>
+                          <span>🖥️ Platform</span><span style={{ fontWeight: 600 }}>{connTest.details.platform}</span>
+                        </div>
+                        <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid #d1fae5', display: 'flex', gap: 8 }}>
+                          <span>📧 Email: {connTest.details.email ? '✅' : '❌'}</span>
+                          <span>📱 SMS: {connTest.details.sms ? '✅' : '❌'}</span>
+                          <span>☁️ Cloud: {connTest.details.cloudinary ? '✅' : '❌'}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Debug info */}
+                  <details style={{ marginTop: 8, textAlign: 'left' }}>
+                    <summary style={{ fontSize: '0.72rem', color: 'var(--muted, #9ca3af)', cursor: 'pointer', userSelect: 'none' }}>🔧 Debug Info</summary>
+                    <div style={{ marginTop: 6, padding: '8px 10px', background: 'var(--surface, #f9fafb)', borderRadius: 6, fontSize: '0.68rem', fontFamily: 'monospace', color: 'var(--muted, #6b7280)', lineHeight: 1.8, wordBreak: 'break-all' }}>
+                      <div><strong>Frontend:</strong> {window.location.origin}</div>
+                      <div><strong>Backend API:</strong> {resolveApiUrl(import.meta.env.VITE_API_URL)}</div>
+                      <div><strong>Session:</strong> {scannerSessionId}</div>
+                      <div><strong>Scanner URL:</strong> {window.location.origin}/scanner?session={scannerSessionId}</div>
+                    </div>
+                  </details>
+                  <button onClick={() => { setShowScannerModal(false); localStorage.setItem('scanner-help-seen', '1'); }} style={{ background: 'var(--accent, #16a34a)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer', width: '100%' }}>Done</button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -6633,6 +6980,7 @@ function PaymentSettingsPage() {
 export default function App() {
   return (
     <Routes>
+      <Route path="/scanner" element={<ScannerPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
