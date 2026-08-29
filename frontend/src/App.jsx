@@ -593,10 +593,9 @@ function POSPage() {
   const [connTest, setConnTest] = useState(null); // null | 'testing' | { ok, latency, error, details }
   const testConnection = useCallback(async () => {
     setConnTest('testing');
-    const apiUrl = resolveApiUrl(import.meta.env.VITE_API_URL);
     const start = Date.now();
     try {
-      const res = await fetch(`${apiUrl.replace(/\/api$/, '')}/api/health`, { signal: AbortSignal.timeout(10000) });
+      const res = await fetch(`/api/health`, { signal: AbortSignal.timeout(10000) });
       const data = await res.json();
       const latency = Date.now() - start;
       setConnTest({
@@ -678,7 +677,8 @@ function POSPage() {
 
   // Phone scanner SSE connection — listens for barcodes from the phone
   useEffect(() => {
-    const apiUrl = resolveApiUrl(import.meta.env.VITE_API_URL);
+    // Use relative /api path — routes through the frontend server proxy
+    const apiUrl = "/api";
     const es = new EventSource(`${apiUrl}/scanner/stream?session=${scannerSessionId}`);
     scannerEventSourceRef.current = es;
 

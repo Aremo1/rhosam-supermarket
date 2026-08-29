@@ -40,7 +40,12 @@ function proxyRequest(req, res) {
     headers: { ...req.headers, host: API_URL.host },
   };
   const proxy = proxyModule.request(opts, (proxyRes) => {
+    // Copy all headers from backend (including CORS, SSE headers)
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    // For SSE streams, disable Node.js buffering so events stream in real-time
+    if (proxyRes.headers["content-type"] === "text/event-stream") {
+      res.write("");
+    }
     proxyRes.pipe(res, { end: true });
   });
   proxy.on("error", (err) => {

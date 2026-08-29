@@ -3,13 +3,9 @@ import { useSearchParams } from "react-router-dom";
 import { Html5Qrcode } from "html5-qrcode";
 import QRCode from "qrcode";
 
-function resolveApiUrl(val) {
-  if (!val) return "http://localhost:5000/api";
-  if (!/^https?:\/\//.test(val)) return `https://${val}/api`;
-  return val;
-}
-
-const API = resolveApiUrl(import.meta.env.VITE_API_URL);
+// Use relative /api path — routes through the frontend server proxy
+// (avoids cross-origin CORS issues on the phone browser)
+const API = "/api";
 
 export default function ScannerPage() {
   const [searchParams] = useSearchParams();
@@ -21,6 +17,7 @@ export default function ScannerPage() {
   const scannerRef = useRef(null);
   const html5QrRef = useRef(null);
   const manualInputRef = useRef(null);
+  const lastScanTimeRef = useRef({}); // debounce: { [barcode]: timestamp }
   const [manualBarcode, setManualBarcode] = useState("");
   const [manualQty, setManualQty] = useState(1);
   const [manualSending, setManualSending] = useState(false);
@@ -236,12 +233,10 @@ export default function ScannerPage() {
         },
         (decodedText) => {
           // Debounce: don't re-scan the same barcode within 2 seconds
-          setScans((prev) => {
-            if (prev.length > 0 && prev[0].barcode === decodedText && Date.now() - prev[0].timestamp < 2000) {
-              return prev;
-            }
-            return prev;
-          });
+          const now = Date.now();
+          const lastTime = lastScanTimeRef.current[decodedText] || 0;
+          if (now - lastTime < 2000) return; // skip duplicate scan
+          lastScanTimeRef.current[decodedText] = now;
           submitBarcode(decodedText);
         },
         () => {} // Ignore scan failures (expected when no barcode in view)
