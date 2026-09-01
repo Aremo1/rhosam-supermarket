@@ -848,6 +848,9 @@ app.patch("/api/users/:id", auth, allow("ADMIN"), async (req, res, next) => {
       // Branch admins cannot promote users to ADMIN
       if (req.body.role === "ADMIN" && targetUser[0].role !== "ADMIN")
         return res.status(403).json({ message: "Branch admins cannot promote users to admin. Contact super-admin." });
+      // Branch admins cannot move users to a different branch
+      if (req.body.branchId !== undefined && req.body.branchId !== targetUser[0].branch_id)
+        return res.status(403).json({ message: "Branch admins cannot move users to another branch. Contact super-admin." });
     }
     const { name, email, password, role, isActive, unlock, branchId } = req.body;
     if (id === req.user.id && isActive === false)
@@ -1049,6 +1052,55 @@ app.post("/api/products", auth, allow("ADMIN", "MANAGER"), async (req, res, next
 app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+
+    // BRANCH SCOPING: Branch admins/managers can only update stock & reorder level
+    // for products in their branch (via branch_inventory). Only super-admin can
+    // edit global product fields (name, price, category, etc.) that affect all branches.
+    if (isBranchAdmin(req) || (req.user.role === 'MANAGER' && req.user.branchId)) {
+      const { barcode, name, category, price, costPrice, description, isActive, expiryDate, batchNumber } = req.body;
+      const hasGlobalField = barcode || name || category || price != null || costPrice != null || description !== undefined || isActive !== undefined || expiryDate || batchNumber;
+      if (hasGlobalField) {
+        return res.status(403).json({
+          message: "Branch admins/managers can only update stock & reorder level for their branch. Contact super-admin to edit product details (name, price, category, etc.)."
+        });
+      }
+      // Branch-scoped: only update branch_inventory
+      const { stock, reorderLevel } = req.body;
+      const branchId = req.user.branchId;
+      if (stock == null && reorderLevel == null)
+        return res.status(400).json({ message: "Provide stock or reorderLevel to update." });
+      if (stock != null) {
+        await pool.query(
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($1, $2, $3, (SELECT reorder_level FROM products WHERE id = $2))
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET quantity = $3, updated_at = NOW()`,
+          [branchId, id, Number(stock)]
+        );
+      }
+      if (reorderLevel != null) {
+        await pool.query(
+          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
+           VALUES($1, $2, (SELECT COALESCE(quantity, 0) FROM branch_inventory WHERE branch_id = $1 AND product_id = $2), $3)
+           ON CONFLICT (branch_id, product_id)
+           DO UPDATE SET reorder_level = $3, updated_at = NOW()`,
+          [branchId, id, Number(reorderLevel)]
+        );
+      }
+      const { rows } = await pool.query(
+        `SELECT p.id, p.name, p.category, p.unit,
+               COALESCE(bi.quantity, 0)::int AS quantity,
+               COALESCE(bi.reorder_level, p.reorder_level)::int AS reorder_level,
+               bi.updated_at AS last_updated
+         FROM products p
+         LEFT JOIN branch_inventory bi ON bi.product_id = p.id AND bi.branch_id = $1
+         WHERE p.id = $2`, [branchId, id]
+      );
+      await audit(pool, req.user.id, "UPDATE", "BRANCH_INVENTORY", id, { branchId, stock, reorderLevel }, req);
+      return res.json(rows[0] || { message: "Stock updated." });
+    }
+
+    // SUPER-ADMIN: full product update (affects all branches)
     const { barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, expiryDate, batchNumber } = req.body;
 
     // Check for duplicate barcode (excluding current product)
@@ -1090,34 +1142,12 @@ app.put("/api/products/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, n
       [barcode, name, category, price, costPrice, stock, reorderLevel, unit, description, isActive, id, req.body.imageUrl ?? null, expiryDate || null, batchNumber || null]
     );
     if (!rows[0]) return res.status(404).json({ message: "Product not found." });
-    // Sync stock/reorderLevel to branch_inventory when user is branch-scoped
-    if (req.user.branchId) {
-      const branchId = req.user.branchId;
-      if (stock != null || reorderLevel != null) {
-        await pool.query(
-          `INSERT INTO branch_inventory(branch_id, product_id, quantity, reorder_level)
-           VALUES($1, $2,
-             $3,
-             $4)
-           ON CONFLICT (branch_id, product_id)
-           DO UPDATE SET
-             quantity = COALESCE($3, branch_inventory.quantity),
-             reorder_level = COALESCE($4, branch_inventory.reorder_level),
-             updated_at = NOW()`,
-          [
-            branchId, id,
-            stock != null ? Number(stock) : null,
-            reorderLevel != null ? Number(reorderLevel) : null
-          ]
-        );
-      }
-    }
     await audit(pool, req.user.id, "UPDATE", "PRODUCT", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
 
-app.delete("/api/products/:id", auth, allow("ADMIN"), async (req, res, next) => {
+app.delete("/api/products/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { rowCount } = await pool.query("DELETE FROM products WHERE id=$1", [id]);
@@ -2003,7 +2033,9 @@ app.post("/api/suppliers", auth, allow("ADMIN", "MANAGER"), async (req, res, nex
   } catch (e) { next(e); }
 });
 
-app.put("/api/suppliers/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, next) => {
+app.put("/api/suppliers/:id", auth, requireSuperAdmin, async (req, res, next) => {
+  // Suppliers are global (no branch_id). Only super-admin can edit them
+  // so that a branch admin's changes don't affect other branches.
   try {
     const id = Number(req.params.id);
     const { name, contactPerson, email, phone, address, isActive } = req.body;
@@ -2014,11 +2046,13 @@ app.put("/api/suppliers/:id", auth, allow("ADMIN", "MANAGER"), async (req, res, 
       [name, contactPerson, email, phone, address, isActive, id]
     );
     if (!rows[0]) return res.status(404).json({ message: "Supplier not found." });
+    await audit(pool, req.user.id, "UPDATE", "SUPPLIER", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
 
-app.delete("/api/suppliers/:id", auth, allow("ADMIN"), async (req, res, next) => {
+app.delete("/api/suppliers/:id", auth, requireSuperAdmin, async (req, res, next) => {
+  // Suppliers are global (no branch_id). Only super-admin can delete them.
   try {
     const { rowCount } = await pool.query("DELETE FROM suppliers WHERE id=$1", [Number(req.params.id)]);
     if (rowCount === 0) return res.status(404).json({ message: "Supplier not found." });
@@ -2123,8 +2157,14 @@ app.patch("/api/purchase-orders/:id/status", auth, allow("ADMIN", "MANAGER"), as
       return res.status(400).json({ message: "Invalid status." });
 
     await client.query("BEGIN");
-    const { rows: existing } = await client.query("SELECT status FROM purchase_orders WHERE id=$1", [id]);
+    const { rows: existing } = await client.query("SELECT status, branch_id FROM purchase_orders WHERE id=$1", [id]);
     if (!existing[0]) { await client.query("ROLLBACK").catch(() => {}); client.release(); return res.status(404).json({ message: "Purchase order not found." }); }
+    // BRANCH SCOPING: Branch admins/managers can only update POs belonging to their branch
+    if (req.user.branchId && existing[0].branch_id !== req.user.branchId) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return res.status(403).json({ message: "Access denied. Purchase order belongs to another branch." });
+    }
     const currentStatus = existing[0].status;
     const validTransitions = { PENDING: ["APPROVED", "CANCELLED"], APPROVED: ["RECEIVED", "CANCELLED"] };
     if (currentStatus === "RECEIVED" || currentStatus === "CANCELLED")
@@ -2291,7 +2331,9 @@ app.post("/api/customers", auth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-app.put("/api/customers/:id", auth, async (req, res, next) => {
+app.put("/api/customers/:id", auth, requireSuperAdmin, async (req, res, next) => {
+  // Customers are global (no branch_id). Only super-admin can edit them
+  // so that a branch admin's changes don't affect other branches.
   try {
     const id = Number(req.params.id);
     const { name, email, phone } = req.body;
@@ -2300,6 +2342,7 @@ app.put("/api/customers/:id", auth, async (req, res, next) => {
       [name, email, phone, id]
     );
     if (!rows[0]) return res.status(404).json({ message: "Customer not found." });
+    await audit(pool, req.user.id, "UPDATE", "CUSTOMER", id, req.body, req);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -3242,7 +3285,7 @@ app.delete("/api/categories/:name", auth, allow("ADMIN"), async (req, res, next)
   } catch (e) { next(e); }
 });
 
-app.put("/api/categories/:name", auth, allow("ADMIN"), async (req, res, next) => {
+app.put("/api/categories/:name", auth, requireSuperAdmin, async (req, res, next) => {
   try {
     const oldName = decodeURIComponent(req.params.name);
     const { name: newName } = req.body;
@@ -4954,6 +4997,13 @@ app.patch("/api/inventory-audits/:id/status", auth, allow('ADMIN', 'MANAGER'), a
     const { status } = req.body;
     if (!['IN_PROGRESS','COMPLETED','CANCELLED'].includes(status))
       return res.status(400).json({ message: 'Invalid status.' });
+    // BRANCH SCOPING: Branch admins/managers can only update audits belonging to their branch
+    if (req.user.branchId) {
+      const { rows: auditRow } = await pool.query('SELECT branch_id FROM inventory_audits WHERE id=$1', [id]);
+      if (!auditRow[0]) return res.status(404).json({ message: 'Audit not found.' });
+      if (auditRow[0].branch_id !== req.user.branchId)
+        return res.status(403).json({ message: 'Access denied. Audit belongs to another branch.' });
+    }
     const updates = ['status=$1', 'updated_at=NOW()'];
     const params = [status];
     if (status === 'IN_PROGRESS') updates.push('started_at=NOW()');
@@ -4989,6 +5039,13 @@ app.patch("/api/inventory-audits/:id/status", auth, allow('ADMIN', 'MANAGER'), a
 app.patch("/api/inventory-audits/:auditId/items/:itemId", auth, allow('ADMIN', 'MANAGER'), async (req, res, next) => {
   try {
     const { auditId, itemId } = { auditId: Number(req.params.auditId), itemId: Number(req.params.itemId) };
+    // BRANCH SCOPING: Branch admins/managers can only update items in audits belonging to their branch
+    if (req.user.branchId) {
+      const { rows: auditRow } = await pool.query('SELECT branch_id FROM inventory_audits WHERE id=$1', [auditId]);
+      if (!auditRow[0]) return res.status(404).json({ message: 'Audit not found.' });
+      if (auditRow[0].branch_id !== req.user.branchId)
+        return res.status(403).json({ message: 'Access denied. Audit belongs to another branch.' });
+    }
     const { countedQuantity, notes } = req.body;
     if (countedQuantity === undefined || countedQuantity === null)
       return res.status(400).json({ message: 'countedQuantity required.' });
@@ -5005,8 +5062,11 @@ app.patch("/api/inventory-audits/:auditId/items/:itemId", auth, allow('ADMIN', '
 app.delete("/api/inventory-audits/:id", auth, allow('ADMIN'), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { rows } = await pool.query('SELECT status FROM inventory_audits WHERE id=$1', [id]);
+    const { rows } = await pool.query('SELECT status, branch_id FROM inventory_audits WHERE id=$1', [id]);
     if (!rows[0]) return res.status(404).json({ message: 'Audit not found.' });
+    // BRANCH SCOPING: Branch admins can only delete audits belonging to their branch
+    if (req.user.branchId && rows[0].branch_id !== req.user.branchId)
+      return res.status(403).json({ message: 'Access denied. Audit belongs to another branch.' });
     if (rows[0].status !== 'DRAFT') return res.status(400).json({ message: 'Only DRAFT audits can be deleted.' });
     await pool.query('DELETE FROM inventory_audits WHERE id=$1', [id]);
     res.json({ message: 'Audit deleted.' });
