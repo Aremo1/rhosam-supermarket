@@ -1660,7 +1660,7 @@ app.get("/api/sales/:id", auth, async (req, res, next) => {
 app.post("/api/sales", auth, async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const { customerName = "Walk-in Customer", customerId, paymentMethod, items, discount = 0, tax = 0, amountPaid } = req.body;
+    const { customerName = "Walk-in Customer", customerId, paymentMethod, items, discount = 0, tax = 0, amountPaid, couponId, couponDiscount = 0, giftCardId, giftCardAmount = 0 } = req.body;
     if (!["Cash", "Card", "Transfer", "POS"].includes(paymentMethod))
       return res.status(400).json({ message: "Invalid payment method." });
     if (!Array.isArray(items) || !items.length)
@@ -1704,16 +1704,16 @@ app.post("/api/sales", auth, async (req, res, next) => {
       details.push({ productId: product.id, name: product.name, price: Number(product.price), quantity, discount: itemDiscount, lineTotal });
     }
 
-    const total = subtotal - Number(discount) + Number(tax);
-    const paidRaw = amountPaid != null ? Number(amountPaid) : total;
+    const total = subtotal - Number(discount) - Number(couponDiscount) - Number(giftCardAmount) + Number(tax);
+    const paidRaw = amountPaid != null ? Number(amountPaid) : (total > 0 ? total : 0);
     const paid = Number.isFinite(paidRaw) && paidRaw >= 0 ? paidRaw : total;
     const change = Math.max(0, paid - total);
     const receiptNumber = `RHS-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
     const { rows } = await client.query(
-      `INSERT INTO sales(receipt_number,customer_name,customer_id,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id,branch_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,created_at`,
-      [receiptNumber, customerName, customerId || null, paymentMethod, subtotal, discount, tax, total, paid, change, req.user.id, saleBranchId]
+      `INSERT INTO sales(receipt_number,customer_name,customer_id,payment_method,subtotal,discount,tax,total,amount_paid,change_amount,cashier_id,branch_id,coupon_id,coupon_discount,gift_card_id,gift_card_amount)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id,created_at`,
+      [receiptNumber, customerName, customerId || null, paymentMethod, subtotal, discount, tax, total, paid, change, req.user.id, saleBranchId, couponId || null, couponDiscount || 0, giftCardId || null, giftCardAmount || 0]
     );
     const sale = rows[0];
 
@@ -1749,6 +1749,27 @@ app.post("/api/sales", auth, async (req, res, next) => {
       );
       await updateCustomerTier(client, customerId);
     }
+
+    // Auto-create commission record based on commission rules
+    try {
+      const { rows: rules } = await client.query(
+        `SELECT commission_rate, min_sale_amount FROM commission_rules
+         WHERE is_active = true AND (user_id = $1 OR (user_id IS NULL AND role = $2 AND (branch_id IS NULL OR branch_id = $3)))
+         ORDER BY user_id NULLS LAST LIMIT 1`,
+        [req.user.id, req.user.role, saleBranchId]
+      );
+      if (rules.length > 0 && total >= rules[0].min_sale_amount) {
+        const commissionAmount = Math.round((total * rules[0].commission_rate / 100) * 100) / 100;
+        const now = new Date();
+        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        await client.query(
+          `INSERT INTO sales_commissions (user_id, sale_id, sale_amount, commission_rate, commission_amount, period_start, period_end)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [req.user.id, sale.id, total, rules[0].commission_rate, commissionAmount, periodStart, periodEnd]
+        );
+      }
+    } catch (commErr) { console.error('[COMMISSION] Auto-creation failed:', commErr.message); }
 
     await audit(client, req.user.id, "CREATE", "SALE", sale.id, { receiptNumber, total }, req);
     await client.query("COMMIT");
@@ -5786,6 +5807,10 @@ app.get("/api/scanner/lookup", async (req, res, next) => {
     res.json(rows);
   } catch (e) { next(e); }
 });
+
+// ── Store Commerce Feature Routes ─────────────────────────────
+const registerStoreCommerceRoutes = require("./store-commerce-routes");
+registerStoreCommerceRoutes(app, pool, auth, allow);
 
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {

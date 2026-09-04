@@ -273,6 +273,63 @@ export function AuthProvider({ children }) {
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.message || "Upload failed"); }
       return r.json();
     },
+    // ── Store Commerce Features ──────────────────────────────────
+    // Gift Cards
+    fetchGiftCards: (params) => request(`/gift-cards${params ? `?${new URLSearchParams(params)}` : ""}`),
+    createGiftCard: (data) => request("/gift-cards", { method: "POST", body: JSON.stringify(data) }),
+    validateGiftCard: (code) => request("/gift-cards/validate", { method: "POST", body: JSON.stringify({ code }) }),
+    redeemGiftCard: (data) => request("/gift-cards/redeem", { method: "POST", body: JSON.stringify(data) }),
+    fetchGiftCardTransactions: (id) => request(`/gift-cards/${id}/transactions`),
+    deleteGiftCard: (id) => request(`/gift-cards/${id}`, { method: "DELETE" }),
+    // Coupons
+    fetchCoupons: (params) => request(`/coupons${params ? `?${new URLSearchParams(params)}` : ""}`),
+    createCoupon: (data) => request("/coupons", { method: "POST", body: JSON.stringify(data) }),
+    validateCoupon: (data) => request("/coupons/validate", { method: "POST", body: JSON.stringify(data) }),
+    updateCoupon: (id, data) => request(`/coupons/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    deleteCoupon: (id) => request(`/coupons/${id}`, { method: "DELETE" }),
+    // Shifts
+    fetchShifts: (params) => request(`/shifts${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getActiveShift: () => request("/shifts/active"),
+    openShift: (data) => request("/shifts/open", { method: "POST", body: JSON.stringify(data) }),
+    closeShift: (id, data) => request(`/shifts/${id}/close`, { method: "POST", body: JSON.stringify(data) }),
+    getShiftSummary: (id) => request(`/shifts/${id}/summary`),
+    // Tasks
+    fetchTasks: (params) => request(`/tasks${params ? `?${new URLSearchParams(params)}` : ""}`),
+    createTask: (data) => request("/tasks", { method: "POST", body: JSON.stringify(data) }),
+    updateTask: (id, data) => request(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    deleteTask: (id) => request(`/tasks/${id}`, { method: "DELETE" }),
+    fetchTaskComments: (id) => request(`/tasks/${id}/comments`),
+    addTaskComment: (id, data) => request(`/tasks/${id}/comments`, { method: "POST", body: JSON.stringify(data) }),
+    // Commissions
+    fetchCommissions: (params) => request(`/commissions${params ? `?${new URLSearchParams(params)}` : ""}`),
+    approveCommissions: (ids) => request("/commissions/approve", { method: "POST", body: JSON.stringify({ ids }) }),
+    payCommissions: (ids) => request("/commissions/pay", { method: "POST", body: JSON.stringify({ ids }) }),
+    fetchCommissionRules: () => request("/commissions/rules"),
+    createCommissionRule: (data) => request("/commissions/rules", { method: "POST", body: JSON.stringify(data) }),
+    fetchCommissionSummary: (params) => request(`/commissions/summary${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // Bundles
+    fetchBundles: (params) => request(`/bundles${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getBundle: (id) => request(`/bundles/${id}`),
+    createBundle: (data) => request("/bundles", { method: "POST", body: JSON.stringify(data) }),
+    updateBundle: (id, data) => request(`/bundles/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteBundle: (id) => request(`/bundles/${id}`, { method: "DELETE" }),
+    // Quotations
+    fetchQuotations: (params) => request(`/quotations${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getQuotation: (id) => request(`/quotations/${id}`),
+    createQuotation: (data) => request("/quotations", { method: "POST", body: JSON.stringify(data) }),
+    updateQuotation: (id, data) => request(`/quotations/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    convertQuotation: (id) => request(`/quotations/${id}/convert`, { method: "POST" }),
+    deleteQuotation: (id) => request(`/quotations/${id}`, { method: "DELETE" }),
+    // Customer Notes / Clienteling
+    fetchCustomerNotes: (id) => request(`/customers/${id}/notes`),
+    addCustomerNote: (id, data) => request(`/customers/${id}/notes`, { method: "POST", body: JSON.stringify(data) }),
+    deleteCustomerNote: (id) => request(`/customers/notes/${id}`, { method: "DELETE" }),
+    fetchCustomerActivities: (id, params) => request(`/customers/${id}/activities${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // Price Checks
+    priceCheck: (data) => request("/price-check", { method: "POST", body: JSON.stringify(data) }),
+    fetchPriceChecks: (params) => request(`/price-checks${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // Product Detail
+    fetchProductDetail: (id) => request(`/products/${id}/detail`),
   }), [user, loading, login, logout, request, notifyDataChange, dataVersion]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

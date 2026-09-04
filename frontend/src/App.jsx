@@ -20,9 +20,9 @@ function resolveApiUrl(val) {
 // Super-admin (ADMIN without branch_id) gets full access to all management features
 // Branch-admin (ADMIN with branch_id) gets operational access but no cross-branch management
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
-  MANAGER: ["dashboard","pos","products","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
-  CASHIER: ["dashboard","pos","cashdrawer","sales","notification-prefs","change-password","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","bundles","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
+  MANAGER: ["dashboard","pos","products","bundles","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
+  CASHIER: ["dashboard","pos","cashdrawer","giftcards","quotations","shifts","tasks","sales","notification-prefs","change-password","wifiqr"],
 };
 // Items restricted to super-admin only (ADMIN without branch_id)
 const SUPER_ADMIN_ONLY = ["executive","branches","users","audit","loginhistory","payment-settings"];
@@ -35,6 +35,8 @@ const LABELS = {
   expiry: "Expiry Tracking", "import-export": "Import / Export", "audit-cycle": "Audit Cycle", alerts: "Stock Alerts", notifications: "Notification Center", "notification-prefs": "Notification Settings",
   cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR", "payment-settings": "Payment Settings", terminals: "Payment Terminals",
+  giftcards: "Gift Cards", coupons: "Coupons", quotations: "Quotations", shifts: "Shift Management",
+  tasks: "Tasks", commissions: "Commissions", bundles: "Product Bundles",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
@@ -44,6 +46,8 @@ const ICONS = {
   dailyreport: "📈", users: "👤", audit: "📝",
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
   "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶", "payment-settings": "⚙️", terminals: "💳",
+  giftcards: "🎁", coupons: "🎟️", quotations: "📄", shifts: "⏱️",
+  tasks: "✅", commissions: "💼", bundles: "📦",
 };function Layout({ children }) {
   const { user, logout, fetchStockAlerts, fetchInAppNotifications, markNotificationsRead } = useAuth();
 
@@ -542,7 +546,7 @@ function DashboardPage() {
 // POS (Phase 2)
 // ═══════════════════════════════════════════════════════════════════
 function POSPage() {
-  const { fetchProducts, createSale, fetchCustomers, emailReceipt, smsReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user, notifyDataChange } = useAuth();
+  const { fetchProducts, createSale, fetchCustomers, emailReceipt, smsReceipt, verifyPayment, initializePayment, getGatewayStatus, getActiveDrawer, user, notifyDataChange, validateGiftCard, validateCoupon, redeemGiftCard, fetchBundles } = useAuth();
   const [products, setProducts] = useState([]);
   const [drawerOk, setDrawerOk] = useState(null); // null = loading, true = open, false = no drawer
   const [cart, setCart] = useState([]);
@@ -567,6 +571,20 @@ function POSPage() {
   const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
   const scanTimeoutRef = useRef(null);
+  // Gift Card state
+  const [giftCardCode, setGiftCardCode] = useState("");
+  const [giftCard, setGiftCard] = useState(null);
+  const [giftCardError, setGiftCardError] = useState("");
+  const [giftCardAmount, setGiftCardAmount] = useState("");
+  // Coupon state
+  const [couponCode, setCouponCode] = useState("");
+  const [coupon, setCoupon] = useState(null);
+  const [couponError, setCouponError] = useState("");
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  // Product detail modal state
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  // Bundles
+  const [bundles, setBundles] = useState([]);
   // Payment gateway state
   const [gatewayStatus, setGatewayStatus] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { saleId, reference, authorizationUrl, gateway }
@@ -653,7 +671,7 @@ function POSPage() {
     scanTimeoutRef.current = setTimeout(() => setScanFeedback(null), 1500);
   }, [playBeep]);
 
-  useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); getGatewayStatus().then(setGatewayStatus).catch(() => {}); }, [fetchProducts, fetchCustomers, getGatewayStatus, user]);
+  useEffect(() => { fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {}); fetchCustomers().then(setCustomers).catch(() => {}); getGatewayStatus().then(setGatewayStatus).catch(() => {}); fetchBundles({ active: 'true' }).then(d => setBundles(d?.data || [])).catch(() => {}); }, [fetchProducts, fetchCustomers, getGatewayStatus, user, fetchBundles]);
 
   // Check if cash drawer is open (required for cashiers)
   useEffect(() => {
@@ -831,7 +849,49 @@ function POSPage() {
   }
 
   const subtotal = cart.reduce((sum, c) => sum + c.price * c.quantity - c.discount, 0);
-  const total = subtotal - discount + tax;
+  const total = subtotal - discount + tax - couponDiscount - Number(giftCardAmount || 0);
+
+  // Validate gift card
+  async function handleValidateGiftCard() {
+    if (!giftCardCode.trim()) return;
+    setGiftCardError("");
+    try {
+      const result = await validateGiftCard(giftCardCode.trim());
+      if (result.valid) {
+        setGiftCard(result.giftCard);
+        // Auto-apply gift card amount (up to remaining total)
+        const maxApply = Math.min(result.giftCard.current_balance, total);
+        setGiftCardAmount(String(maxApply));
+      } else {
+        setGiftCard(null);
+        setGiftCardAmount("");
+        setGiftCardError(result.message || "Invalid gift card");
+      }
+    } catch (err) { setGiftCard(null); setGiftCardAmount(""); setGiftCardError(err.message); }
+  }
+
+  // Validate coupon
+  async function handleValidateCoupon() {
+    if (!couponCode.trim()) return;
+    setCouponError("");
+    try {
+      const result = await validateCoupon({ code: couponCode.trim(), cartTotal: subtotal - discount, productIds: cart.map(c => c.productId) });
+      if (result.valid) {
+        setCoupon(result.coupon);
+        setCouponDiscount(result.discountAmount);
+      } else {
+        setCoupon(null);
+        setCouponDiscount(0);
+        setCouponError(result.message || "Invalid coupon");
+      }
+    } catch (err) { setCoupon(null); setCouponDiscount(0); setCouponError(err.message); }
+  }
+
+  // Clear coupon/gift card when cart changes
+  useEffect(() => {
+    setCoupon(null); setCouponDiscount(0); setCouponCode(""); setCouponError("");
+    setGiftCard(null); setGiftCardAmount(""); setGiftCardCode(""); setGiftCardError("");
+  }, [cart.length]);
 
   async function handleCheckout() {
     if (!cart.length) return;
@@ -840,20 +900,29 @@ function POSPage() {
       const result = await createSale({
         customerName, customerId, paymentMethod: payment,
         items: cart.map(c => ({ productId: c.productId, quantity: c.quantity, discount: c.discount })),
-        discount, tax, amountPaid: amountPaid ? Number(amountPaid) : total,
+        discount, tax,
+        couponId: coupon?.id || null,
+        couponDiscount: couponDiscount || 0,
+        giftCardId: giftCard?.id || null,
+        giftCardAmount: Number(giftCardAmount) || 0,
+        amountPaid: amountPaid ? Number(amountPaid) : (total > 0 ? total : 0),
       });
+      // Redeem gift card if used
+      if (giftCard && Number(giftCardAmount) > 0 && result.id) {
+        try {
+          await redeemGiftCard({ code: giftCard.code, amount: Number(giftCardAmount), saleId: result.id });
+        } catch (gcErr) { console.error('Gift card redemption error:', gcErr); }
+      }
       // For electronic payments, initialize gateway payment
       if (payment !== "Cash" && result.id) {
         try {
           const initData = await initializePayment({ saleId: result.id, email: customerEmail || undefined });
           if (initData.authorizationUrl) {
-            // Open gateway payment page in new tab
             window.open(initData.authorizationUrl, "_blank");
           }
           setPaymentModal({ saleId: result.id, reference: initData.reference, gateway: initData.gateway, authorizationUrl: initData.authorizationUrl });
           setReceipt(result);
         } catch (payErr) {
-          // Payment init failed but sale was created — show receipt and manual verification option
           setReceipt(result);
           setPaymentModal({ saleId: result.id, reference: null, gateway: "INTERNAL", authorizationUrl: null, error: payErr.message });
         }
@@ -862,8 +931,10 @@ function POSPage() {
       }
       setCart([]); setCustomerName("Walk-in Customer"); setCustomerId(null);
       setDiscount(0); setTax(0); setAmountPaid("");
+      setGiftCard(null); setGiftCardCode(""); setGiftCardAmount("");
+      setCoupon(null); setCouponCode(""); setCouponDiscount(0);
       fetchProducts(undefined, user?.branchId).then(setProducts).catch(() => {});
-      notifyDataChange(); // Bust cache so dashboard/branch summary refreshes
+      notifyDataChange();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
@@ -1120,12 +1191,16 @@ function POSPage() {
 
         <div className="product-grid">
           {filtered.map(p => (
-            <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => p.stock > 0 && addToCart(p)}>
+            <div key={p.id} className={`product-card ${p.stock <= 0 ? "out-of-stock" : ""}`} onClick={() => setSelectedProduct(p)}>
+              {p.stock > 0 && (
+                <button className="product-quick-add" onClick={e => { e.stopPropagation(); addToCart(p, true); }} title={`Add ${p.name} to cart`}>+</button>
+              )}
               {p.image_url && <img src={`${resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/api$/, "")}${p.image_url}`} alt={p.name} className="product-card-image" />}
+              {!p.image_url && <div className="product-card-image-placeholder">{p.name?.[0]?.toUpperCase() || '?'}</div>}
               <div className="product-card-body">
                 <div className="product-card-header">
                   <strong>{p.name}</strong>
-                  <small>{p.barcode}</small>
+                  <small style={{ opacity: 0.5 }}>{p.barcode}</small>
                 </div>
                 <div className="product-card-meta">
                   <span className="category-tag">{p.category}</span>
@@ -1220,8 +1295,42 @@ function POSPage() {
           <div className="summary-row"><span>Subtotal</span><span>₦{subtotal.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
           <label>Discount<input type="number" min="0" step="0.01" value={discount} onChange={e => setDiscount(Number(e.target.value))} /></label>
           <label>Tax<input type="number" min="0" step="0.01" value={tax} onChange={e => setTax(Number(e.target.value))} /></label>
+          {/* Coupon Section */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+            <label style={{ flex: 1, margin: 0 }}>🎟️ Coupon
+              <input type="text" value={couponCode} onChange={e => setCouponCode(e.target.value)} placeholder="Enter code" style={{ fontSize: '0.82rem' }} onKeyDown={e => e.key === 'Enter' && handleValidateCoupon()} />
+            </label>
+            <button className="btn secondary" style={{ padding: '6px 10px', fontSize: '0.75rem' }} onClick={handleValidateCoupon} disabled={!couponCode.trim()}>Apply</button>
+          </div>
+          {couponError && <small style={{ color: 'var(--danger, #ef4444)', fontSize: '0.75rem' }}>{couponError}</small>}
+          {coupon && couponDiscount > 0 && (
+            <div className="summary-row" style={{ color: 'var(--accent, #16a34a)' }}>
+              <span>🎟️ Coupon ({coupon.code})</span>
+              <span>-₦{couponDiscount.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
+            </div>
+          )}
+          {/* Gift Card Section */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+            <label style={{ flex: 1, margin: 0 }}>🎁 Gift Card
+              <input type="text" value={giftCardCode} onChange={e => setGiftCardCode(e.target.value)} placeholder="Enter code" style={{ fontSize: '0.82rem' }} onKeyDown={e => e.key === 'Enter' && handleValidateGiftCard()} />
+            </label>
+            <button className="btn secondary" style={{ padding: '6px 10px', fontSize: '0.75rem' }} onClick={handleValidateGiftCard} disabled={!giftCardCode.trim()}>Apply</button>
+          </div>
+          {giftCardError && <small style={{ color: 'var(--danger, #ef4444)', fontSize: '0.75rem' }}>{giftCardError}</small>}
+          {giftCard && (
+            <>
+              <div className="summary-row" style={{ color: 'var(--accent, #16a34a)' }}>
+                <span>🎁 Gift Card (Bal: ₦{parseFloat(giftCard.current_balance).toLocaleString("en-NG", { minimumFractionDigits: 2 })})</span>
+                <span>-₦{Number(giftCardAmount || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span>
+              </div>
+              <label style={{ fontSize: '0.78rem' }}>Apply Amount (₦)
+                <input type="number" min="0" max={giftCard.current_balance} step="0.01" value={giftCardAmount} onChange={e => setGiftCardAmount(e.target.value)} style={{ fontSize: '0.8rem' }} />
+              </label>
+            </>
+          )}
           <div className="summary-row total"><span>TOTAL</span><strong>₦{total.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
-          <label>Amount Paid<input type="number" min="0" step="0.01" value={amountPaid} onChange={e => setAmountPaid(e.target.value)} placeholder={total.toFixed(2)} /></label>
+          {total <= 0 && <div style={{ padding: '6px 10px', background: 'rgba(22,163,74,0.1)', border: '1px solid rgba(22,163,74,0.3)', borderRadius: 8, fontSize: '0.8rem', color: '#166534', fontWeight: 600 }}>✅ Fully paid with gift card + coupon</div>}
+          <label>Amount Paid<input type="number" min="0" step="0.01" value={amountPaid} onChange={e => setAmountPaid(e.target.value)} placeholder={total > 0 ? total.toFixed(2) : '0.00'} /></label>
           {Number(amountPaid) > total && (
             <div className="summary-row"><span>Change</span><span className="change">₦{(Number(amountPaid) - total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
           )}
@@ -1230,9 +1339,55 @@ function POSPage() {
               ⚠️ Some items in cart are low on stock. After this sale, consider restocking.
             </div>
           )}
-          <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : "💳 Checkout"}</button>
+          <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : total <= 0 ? "✅ Complete Sale" : "💳 Checkout"}</button>
         </div>
       </div>
+
+      {/* Product Detail Modal (Store Commerce style) */}
+      {selectedProduct && (
+        <div className="modal-overlay" onClick={() => setSelectedProduct(null)}>
+          <div className="modal product-detail-modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+              <h2 style={{ margin: 0 }}>{selectedProduct.name}</h2>
+              <button className="btn secondary" onClick={() => setSelectedProduct(null)} style={{ flexShrink: 0 }}>✕</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: selectedProduct.image_url ? '200px 1fr' : '1fr', gap: 20 }}>
+              {selectedProduct.image_url && (
+                <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--surface)' }}>
+                  <img src={`${resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/api$/, "")}${selectedProduct.image_url}`} alt={selectedProduct.name} style={{ width: '100%', height: 200, objectFit: 'cover' }} />
+                </div>
+              )}
+              {!selectedProduct.image_url && (
+                <div style={{ width: 200, height: 200, borderRadius: 12, background: 'linear-gradient(135deg, var(--primary, #16a34a), #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '4rem', fontWeight: 700 }}>
+                  {selectedProduct.name?.[0]?.toUpperCase() || '?'}
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <div className="summary-card accent" style={{ flex: 1, minWidth: 100 }}><span>Price</span><strong>₦{(parseFloat(selectedProduct.price) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
+                  <div className="summary-card" style={{ flex: 1, minWidth: 100 }}><span>Stock</span><strong style={{ color: selectedProduct.stock <= selectedProduct.reorder_level ? 'var(--danger, #ef4444)' : 'inherit' }}>{selectedProduct.stock}</strong></div>
+                  <div className="summary-card" style={{ flex: 1, minWidth: 100 }}><span>Category</span><strong style={{ fontSize: '1rem' }}>{selectedProduct.category || '—'}</strong></div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: '0.85rem' }}>
+                  <div style={{ padding: 8, background: 'var(--surface)', borderRadius: 8 }}><strong>Barcode:</strong> {selectedProduct.barcode || '—'}</div>
+                  <div style={{ padding: 8, background: 'var(--surface)', borderRadius: 8 }}><strong>Reorder Level:</strong> {selectedProduct.reorder_level || 0}</div>
+                  {selectedProduct.cost_price && <div style={{ padding: 8, background: 'var(--surface)', borderRadius: 8 }}><strong>Cost Price:</strong> ₦{parseFloat(selectedProduct.cost_price).toLocaleString('en-NG', { minimumFractionDigits: 2 })}</div>}
+                  {selectedProduct.unit && <div style={{ padding: 8, background: 'var(--surface)', borderRadius: 8 }}><strong>Unit:</strong> {selectedProduct.unit}</div>}
+                </div>
+                <div style={{ padding: 10, background: selectedProduct.stock <= 0 ? 'rgba(239,68,68,0.08)' : selectedProduct.stock <= selectedProduct.reorder_level ? 'rgba(245,158,11,0.08)' : 'rgba(22,163,74,0.08)', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600, color: selectedProduct.stock <= 0 ? '#991b1b' : selectedProduct.stock <= selectedProduct.reorder_level ? '#92400e' : '#166534' }}>
+                  {selectedProduct.stock <= 0 ? '❌ Out of Stock' : selectedProduct.stock <= selectedProduct.reorder_level ? `⚠️ Low Stock — Only ${selectedProduct.stock} left` : `✅ In Stock — ${selectedProduct.stock} units available`}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                  <button className="btn primary" style={{ flex: 1 }} onClick={() => { if (selectedProduct.stock > 0) { addToCart(selectedProduct); setSelectedProduct(null); } }} disabled={selectedProduct.stock <= 0}>
+                    {selectedProduct.stock <= 0 ? 'Out of Stock' : '🛒 Add to Cart'}
+                  </button>
+                  <button className="btn secondary" onClick={() => { setSelectedProduct(null); }}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Phone Scanner Modal with Walkthrough */}
       {showScannerModal && (() => {
@@ -1479,11 +1634,43 @@ function ProductsPage() {
   }
   function startNew() { setEditProduct(null); setForm(formDefault); setDupWarnings({ barcode: null, name: null }); setImageFile(null); setImagePreview(null); setShowForm(true); }
 
+  const [dragOver, setDragOver] = useState(false);
+
   function handleImageChange(e) {
     const file = e.target.files[0];
     if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('Please select an image file.'); return; }
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('Please drop an image file.'); return; }
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+  }
+
+  function removeImage(e) {
+    e.stopPropagation();
+    setImageFile(null);
+    setImagePreview(null);
   }
 
   async function handleSubmit(e) {
@@ -1547,11 +1734,14 @@ function ProductsPage() {
               <label>Batch Number<input value={form.batchNumber} onChange={e => setForm({ ...form, batchNumber: e.target.value })} placeholder="e.g. BATCH-2026-001" /></label>
               <label>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></label>
               <label>Product Image
-                <div className="image-upload-area">
+                <div className={`image-upload-area ${dragOver ? 'dragover' : ''}`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
                   {imagePreview ? (
-                    <img src={imagePreview} alt="Preview" className="image-preview" />
+                    <>
+                      <img src={imagePreview} alt="Preview" className="image-preview" />
+                      <button type="button" className="image-remove-btn" onClick={removeImage} title="Remove image">✕</button>
+                    </>
                   ) : (
-                    <div className="image-placeholder">📷 Click to upload image</div>
+                    <div className="image-placeholder">📷 {dragOver ? 'Drop image here' : 'Drag & drop or click to upload'}</div>
                   )}
                   <input type="file" accept="image/*" onChange={handleImageChange} className="image-input" />
                 </div>
@@ -1590,7 +1780,8 @@ function ProductsPage() {
                 <td>{p.expiry_date ? (() => { const d = new Date(p.expiry_date); const days = Math.ceil((d - new Date()) / 86400000); return <span style={{ color: days <= 0 ? 'var(--danger)' : days <= 30 ? 'var(--warning)' : 'var(--muted)' }}>{d.toLocaleDateString('en-NG', { dateStyle: 'short' })}{days <= 0 ? ' ⚠️' : days <= 30 ? ` (${days}d)` : ''}</span>; })() : '—'}</td>
                 <td>{p.unit}</td>
                 <td><span className={`status-badge ${p.is_active ? "active" : "inactive"}`}>{p.is_active ? "Active" : "Inactive"}</span></td>
-                {isAdmin && <td>
+                {isAdmin && <td style={{ whiteSpace: 'nowrap' }}>
+                  <a href={`/product/${p.id}`} style={{ fontSize: '0.78rem', color: 'var(--accent, #16a34a)', textDecoration: 'none', fontWeight: 600, marginRight: 6 }}>Detail</a>
                   <button className="btn-sm" onClick={() => startEdit(p)}>Edit</button>
                   {user?.role === "ADMIN" && <button className="btn-sm danger" onClick={() => handleDelete(p.id, p.name)}>Delete</button>}
                 </td>}
@@ -7029,6 +7220,1262 @@ class ErrorBoundary extends React.Component {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PRODUCT DETAIL PAGE (Store Commerce style)
+// ═══════════════════════════════════════════════════════════════════
+function ProductDetailPage() {
+  const { fetchProductDetail, user } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  // Extract product ID from URL: /product/:id
+  const productId = location.pathname.split('/').pop();
+
+  useEffect(() => {
+    if (!productId) return;
+    setLoading(true);
+    fetchProductDetail(productId)
+      .then(setDetail)
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [productId, fetchProductDetail]);
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const API_BASE = resolveApiUrl(import.meta.env.VITE_API_URL).replace(/\/api$/, "");
+
+  if (loading) return <div className="loading">Loading product details...</div>;
+  if (error) return <div className="error-msg">{error}</div>;
+  if (!detail?.product) return <div className="error-msg">Product not found.</div>;
+
+  const p = detail.product;
+  const maxTrendQty = Math.max(...(detail.salesTrend || []).map(d => d.qty || 1), 1);
+
+  return (
+    <div>
+      <div className="page-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button className="btn secondary" onClick={() => navigate(-1)}>← Back</button>
+          <h2 style={{ margin: 0 }}>Product Detail</h2>
+        </div>
+      </div>
+
+      {/* Hero Section */}
+      <div className="pd-hero">
+        <div className="pd-hero-image">
+          {p.image_url ? (
+            <img src={`${API_BASE}${p.image_url}`} alt={p.name} />
+          ) : (
+            <div className="pd-hero-placeholder">{p.name?.[0]?.toUpperCase() || '?'}</div>
+          )}
+        </div>
+        <div className="pd-hero-info">
+          <h1>{p.name}</h1>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="category-tag" style={{ fontSize: '0.8rem', padding: '3px 10px' }}>{p.category || 'Uncategorized'}</span>
+            <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Barcode: <code>{p.barcode || '—'}</code></span>
+            {p.unit && <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Unit: {p.unit}</span>}
+          </div>
+          {p.description && <p style={{ color: 'var(--text)', fontSize: '0.9rem', lineHeight: 1.5 }}>{p.description}</p>}
+          <div className="pd-stats">
+            <div className="summary-card accent"><span>Price</span><strong>{fmt(p.price)}</strong></div>
+            {p.cost_price > 0 && <div className="summary-card"><span>Cost</span><strong>{fmt(p.cost_price)}</strong></div>}
+            <div className="summary-card" style={{ borderLeft: `3px solid ${p.stock <= 0 ? 'var(--danger)' : p.stock <= p.reorder_level ? 'var(--warning)' : 'var(--accent, #16a34a)'}` }}><span>Stock</span><strong style={{ color: p.stock <= 0 ? 'var(--danger)' : p.stock <= p.reorder_level ? 'var(--warning)' : 'inherit' }}>{p.stock}</strong></div>
+            <div className="summary-card"><span>Reorder Level</span><strong>{p.reorder_level || 0}</strong></div>
+            <div className="summary-card"><span>30d Sales</span><strong>{p.recent_qty_sold || 0}</strong><small>{p.recent_sales_count || 0} transactions</small></div>
+            {p.price > 0 && p.cost_price > 0 && (
+              <div className="summary-card"><span>Margin</span><strong>{(((p.price - p.cost_price) / p.price) * 100).toFixed(1)}%</strong></div>
+            )}
+          </div>
+          {p.expiry_date && (
+            <div style={{ padding: '8px 12px', background: new Date(p.expiry_date) < new Date() ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)', borderRadius: 8, fontSize: '0.85rem', color: new Date(p.expiry_date) < new Date() ? '#991b1b' : '#92400e' }}>
+              ⏰ Expires: {new Date(p.expiry_date).toLocaleDateString('en-NG', { dateStyle: 'long' })}
+              {p.batch_number && <> · Batch: <code>{p.batch_number}</code></>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sales Trend (7 days) */}
+      {detail.salesTrend?.length > 0 && (
+        <div className="pd-section panel">
+          <h2>📈 Sales Trend (Last 7 Days)</h2>
+          <div className="pd-trend-bar">
+            {detail.salesTrend.map((d, i) => (
+              <div key={i} style={{ flex: 1, textAlign: 'center' }}>
+                <div className="pd-trend-col" style={{ height: `${((d.qty || 1) / maxTrendQty) * 100}%` }} title={`${d.day}: ${d.qty} units, ${fmt(d.revenue)}`} />
+                <small style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>{new Date(d.day).getDate()}</small>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid-2">
+        {/* Recent Sales */}
+        <div className="pd-section panel">
+          <h2>💰 Recent Sales</h2>
+          {detail.recentSales?.length > 0 ? (
+            <table><thead><tr><th>Date</th><th>Receipt</th><th>Qty</th><th>Total</th><th>Cashier</th></tr></thead>
+              <tbody>{detail.recentSales.map(s => (
+                <tr key={s.id}>
+                  <td style={{ fontSize: '0.8rem' }}>{new Date(s.created_at).toLocaleDateString()}</td>
+                  <td><code style={{ fontSize: '0.8rem' }}>{s.receipt_number || `#${s.id}`}</code></td>
+                  <td><strong>{s.quantity}</strong></td>
+                  <td>{fmt(s.total)}</td>
+                  <td style={{ fontSize: '0.8rem' }}>{s.cashier_name}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p className="muted">No sales recorded yet.</p>}
+        </div>
+
+        {/* Top Buyers */}
+        <div className="pd-section panel">
+          <h2>👥 Top Buyers</h2>
+          {detail.topBuyers?.length > 0 ? (
+            <table><thead><tr><th>Customer</th><th>Purchases</th><th>Total Qty</th></tr></thead>
+              <tbody>{detail.topBuyers.map(b => (
+                <tr key={b.id}>
+                  <td><strong>{b.name}</strong><br /><small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{b.phone || b.email || '—'}</small></td>
+                  <td>{b.purchase_count}</td>
+                  <td><strong>{b.total_qty}</strong></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p className="muted">No customer data yet.</p>}
+        </div>
+      </div>
+
+      {/* Bundles containing this product */}
+      {detail.bundles?.length > 0 && (
+        <div className="pd-section">
+          <h2 style={{ fontSize: '1.1rem', marginBottom: 12 }}>📦 This Product is in {detail.bundles.length} Bundle(s)</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            {detail.bundles.map(b => (
+              <div key={b.id} className="pd-bundle-card">
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>{b.name}</h3>
+                {b.description && <p className="muted" style={{ margin: '4px 0', fontSize: '0.82rem' }}>{b.description}</p>}
+                <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: '0.85rem' }}>
+                  <span>{b.item_count} items</span>
+                  {b.bundle_price ? <span>Bundle: <strong>{fmt(b.bundle_price)}</strong></span> : <span>Total: <strong>{fmt(b.calculated_total)}</strong></span>}
+                  {b.discount_percent > 0 && <span style={{ color: 'var(--accent, #16a34a)' }}>-{b.discount_percent}%</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Related Products */}
+      {detail.relatedProducts?.length > 0 && (
+        <div className="pd-section">
+          <h2 style={{ fontSize: '1.1rem', marginBottom: 12 }}>🔍 Related Products ({p.category})</h2>
+          <div className="pd-related-grid">
+            {detail.relatedProducts.map(rp => (
+              <div key={rp.id} className="pd-related-card" onClick={() => navigate(`/product/${rp.id}`)}>
+                {rp.image_url ? (
+                  <img src={`${API_BASE}${rp.image_url}`} alt={rp.name} style={{ width: '100%', height: 100, objectFit: 'cover', borderRadius: 6, marginBottom: 8 }} />
+                ) : (
+                  <div style={{ width: '100%', height: 80, borderRadius: 6, background: 'linear-gradient(135deg, var(--primary, #16a34a), #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '1.5rem', fontWeight: 700, marginBottom: 8 }}>{rp.name?.[0]?.toUpperCase() || '?'}</div>
+                )}
+                <div style={{ fontWeight: 600, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rp.name}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                  <span style={{ fontWeight: 700, color: 'var(--primary, #16a34a)' }}>{fmt(rp.price)}</span>
+                  <span style={{ fontSize: '0.75rem', color: rp.stock <= rp.reorder_level ? 'var(--danger)' : 'var(--muted)' }}>{rp.stock} in stock</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Inventory Movements */}
+      {detail.movements?.length > 0 && (
+        <div className="pd-section panel">
+          <h2>📋 Inventory Movements</h2>
+          <table><thead><tr><th>Date</th><th>Type</th><th>Quantity</th><th>Notes</th><th>User</th></tr></thead>
+            <tbody>{detail.movements.map(m => (
+              <tr key={m.id}>
+                <td style={{ fontSize: '0.8rem' }}>{new Date(m.created_at).toLocaleString()}</td>
+                <td><span className={`status-badge ${m.type === 'sale' ? 'warning' : m.type === 'adjustment' ? 'active' : ''}`}>{m.type}</span></td>
+                <td style={{ color: m.quantity > 0 ? 'var(--accent, #16a34a)' : 'var(--danger, #ef4444)', fontWeight: 700 }}>{m.quantity > 0 ? '+' : ''}{m.quantity}</td>
+                <td style={{ fontSize: '0.82rem' }}>{m.notes || '—'}</td>
+                <td style={{ fontSize: '0.82rem' }}>{m.user_name || '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STORE COMMERCE FEATURES
+// ═══════════════════════════════════════════════════════════════════
+
+// ── GIFT CARDS ─────────────────────────────────────────────────
+function GiftCardsPage() {
+  const { fetchGiftCards, createGiftCard, deleteGiftCard, user } = useAuth();
+  const [cards, setCards] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [form, setForm] = useState({ initialBalance: "", customerId: "", expiresAt: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [transactions, setTransactions] = useState([]);
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (search) params.search = search;
+      if (statusFilter) params.status = statusFilter;
+      const d = await fetchGiftCards(params);
+      setCards(d?.data || []);
+      setTotal(d?.total || 0);
+    } catch (e) { console.error(e); }
+  }, [fetchGiftCards, search, statusFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await createGiftCard({ initialBalance: Number(form.initialBalance), customerId: form.customerId || null, expiresAt: form.expiresAt || null });
+      setShowForm(false); setForm({ initialBalance: "", customerId: "", expiresAt: "" });
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function viewTransactions(card) {
+    setSelectedCard(card);
+    try {
+      const d = await fetchGiftCardTransactions(card.id);
+      setTransactions(d || []);
+    } catch (e) { setTransactions([]); }
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>🎁 Gift Cards</h2>
+        <div className="header-actions">
+          <input placeholder="Search by code..." value={search} onChange={e => setSearch(e.target.value)} className="search-input" style={{ maxWidth: 200 }} />
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="form-select">
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="redeemed">Redeemed</option>
+            <option value="expired">Expired</option>
+          </select>
+          {(user?.role === "ADMIN" || user?.role === "MANAGER") && (
+            <button className="btn primary" onClick={() => setShowForm(!showForm)}>+ Issue Gift Card</button>
+          )}
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Issue New Gift Card</h3>
+          {error && <div className="error-msg">{error}</div>}
+          <form onSubmit={handleCreate} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <label>Amount (₦)<input type="number" min="100" step="50" value={form.initialBalance} onChange={e => setForm({ ...form, initialBalance: e.target.value })} required /></label>
+            <label>Customer ID (optional)<input type="text" value={form.customerId} onChange={e => setForm({ ...form, customerId: e.target.value })} /></label>
+            <label>Expires At<input type="date" value={form.expiresAt} onChange={e => setForm({ ...form, expiresAt: e.target.value })} /></label>
+            <div style={{ alignSelf: "end" }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? "Issuing..." : "Issue Card"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {selectedCard && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: "4px solid var(--accent)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3>Gift Card: <code>{selectedCard.code}</code></h3>
+            <button className="btn secondary" onClick={() => setSelectedCard(null)}>✕ Close</button>
+          </div>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card"><span>Balance</span><strong>{fmt(selectedCard.current_balance)}</strong></div>
+            <div className="summary-card"><span>Initial</span><strong>{fmt(selectedCard.initial_balance)}</strong></div>
+            <div className="summary-card"><span className={selectedCard.status === 'active' ? '' : 'low-stock'}>Status</span><strong>{selectedCard.status}</strong></div>
+          </div>
+          {transactions.length > 0 && (
+            <table style={{ marginTop: 8 }}><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance After</th><th>User</th></tr></thead>
+              <tbody>{transactions.map(t => (
+                <tr key={t.id}><td>{new Date(t.created_at).toLocaleString()}</td><td><span className={`status-badge ${t.type === 'redemption' ? 'warning' : 'active'}`}>{t.type}</span></td><td>{fmt(t.amount)}</td><td>{fmt(t.balance_after)}</td><td>{t.user_name}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <div className="table-wrap">
+        <table><thead><tr><th>Code</th><th>Balance</th><th>Initial</th><th>Status</th><th>Customer</th><th>Branch</th><th>Issued</th><th>Expires</th><th>Actions</th></tr></thead>
+          <tbody>{cards.map(c => (
+            <tr key={c.id}>
+              <td><code style={{ fontWeight: 600 }}>{c.code}</code></td>
+              <td><strong>{fmt(c.current_balance)}</strong></td>
+              <td>{fmt(c.initial_balance)}</td>
+              <td><span className={`status-badge ${c.status === 'active' ? 'active' : c.status === 'redeemed' ? 'warning' : 'inactive'}`}>{c.status}</span></td>
+              <td>{c.customer_name || '—'}</td>
+              <td>{c.branch_name || '—'}</td>
+              <td>{new Date(c.created_at).toLocaleDateString()}</td>
+              <td>{c.expires_at ? new Date(c.expires_at).toLocaleDateString() : '—'}</td>
+              <td>
+                <button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => viewTransactions(c)}>History</button>
+              </td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {!cards.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No gift cards yet.</p>}
+      </div>
+      <p className="muted" style={{ marginTop: 8 }}>Total: {total} gift cards</p>
+    </div>
+  );
+}
+
+// ── COUPONS ────────────────────────────────────────────────────
+function CouponsPage() {
+  const { fetchCoupons, createCoupon, updateCoupon, deleteCoupon, user } = useAuth();
+  const [coupons, setCoupons] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState("");
+  const [activeOnly, setActiveOnly] = useState(false);
+  const [form, setForm] = useState({ code: "", description: "", discountType: "percentage", discountValue: "", minPurchase: "", maxUses: "", startDate: "", endDate: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (search) params.search = search;
+      if (activeOnly) params.active = "true";
+      const d = await fetchCoupons(params);
+      setCoupons(d?.data || []);
+    } catch (e) { console.error(e); }
+  }, [fetchCoupons, search, activeOnly]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await createCoupon({ ...form, discountValue: Number(form.discountValue), minPurchase: Number(form.minPurchase) || 0, maxUses: Number(form.maxUses) || null });
+      setShowForm(false); setForm({ code: "", description: "", discountType: "percentage", discountValue: "", minPurchase: "", maxUses: "", startDate: "", endDate: "" });
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function toggleActive(coupon) {
+    try {
+      await updateCoupon(coupon.id, { is_active: !coupon.is_active });
+      load();
+    } catch (e) { console.error(e); }
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>🎟️ Coupons</h2>
+        <div className="header-actions">
+          <input placeholder="Search coupons..." value={search} onChange={e => setSearch(e.target.value)} className="search-input" style={{ maxWidth: 200 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.85rem' }}><input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} /> Active only</label>
+          {(user?.role === "ADMIN" || user?.role === "MANAGER") && (
+            <button className="btn primary" onClick={() => setShowForm(!showForm)}>+ Create Coupon</button>
+          )}
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Create New Coupon</h3>
+          {error && <div className="error-msg">{error}</div>}
+          <form onSubmit={handleCreate} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+            <label>Code<input type="text" value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} required placeholder="e.g. SAVE20" /></label>
+            <label>Description<input type="text" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label>
+            <label>Type<select value={form.discountType} onChange={e => setForm({ ...form, discountType: e.target.value })}><option value="percentage">Percentage (%)</option><option value="fixed">Fixed (₦)</option></select></label>
+            <label>Discount Value<input type="number" min="0" step="0.01" value={form.discountValue} onChange={e => setForm({ ...form, discountValue: e.target.value })} required /></label>
+            <label>Min Purchase (₦)<input type="number" min="0" step="0.01" value={form.minPurchase} onChange={e => setForm({ ...form, minPurchase: e.target.value })} /></label>
+            <label>Max Uses<input type="number" min="1" value={form.maxUses} onChange={e => setForm({ ...form, maxUses: e.target.value })} placeholder="Unlimited" /></label>
+            <label>Start Date<input type="datetime-local" value={form.startDate} onChange={e => setForm({ ...form, startDate: e.target.value })} required /></label>
+            <label>End Date<input type="datetime-local" value={form.endDate} onChange={e => setForm({ ...form, endDate: e.target.value })} required /></label>
+            <div style={{ alignSelf: "end" }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? "Creating..." : "Create Coupon"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <div className="table-wrap">
+        <table><thead><tr><th>Code</th><th>Discount</th><th>Min Purchase</th><th>Uses</th><th>Valid Period</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>{coupons.map(c => {
+            const isExpired = new Date(c.end_date) < new Date();
+            return (
+              <tr key={c.id}>
+                <td><code style={{ fontWeight: 600, background: 'var(--surface)', padding: '2px 6px', borderRadius: 4 }}>{c.code}</code></td>
+                <td><strong>{c.discount_type === 'percentage' ? `${c.discount_value}%` : fmt(c.discount_value)}</strong></td>
+                <td>{c.min_purchase > 0 ? fmt(c.min_purchase) : '—'}</td>
+                <td>{c.used_count || 0}{c.max_uses ? ` / ${c.max_uses}` : ''}</td>
+                <td style={{ fontSize: '0.8rem' }}>{new Date(c.start_date).toLocaleDateString()} — {new Date(c.end_date).toLocaleDateString()}</td>
+                <td><span className={`status-badge ${!c.is_active ? 'inactive' : isExpired ? 'warning' : 'active'}`}>{!c.is_active ? 'Disabled' : isExpired ? 'Expired' : 'Active'}</span></td>
+                <td>
+                  {(user?.role === 'ADMIN' || user?.role === 'MANAGER') && (
+                    <button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => toggleActive(c)}>{c.is_active ? 'Disable' : 'Enable'}</button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+        {!coupons.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No coupons yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── SHIFT MANAGEMENT ───────────────────────────────────────────
+function ShiftsPage() {
+  const { fetchShifts, getActiveShift, openShift, closeShift, getShiftSummary, user } = useAuth();
+  const [shifts, setShifts] = useState([]);
+  const [activeShift, setActiveShift] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [showOpenForm, setShowOpenForm] = useState(false);
+  const [showCloseForm, setShowCloseForm] = useState(false);
+  const [openingAmount, setOpeningAmount] = useState("");
+  const [closingAmount, setClosingAmount] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const isSuperAdmin = user?.role === 'ADMIN' && !user?.branchId;
+
+  const load = useCallback(async () => {
+    try {
+      const d = await fetchShifts(isSuperAdmin ? {} : {});
+      setShifts(d?.data || []);
+      const act = await getActiveShift();
+      setActiveShift(act);
+      if (act) { const s = await getShiftSummary(act.id); setSummary(s); }
+    } catch (e) { console.error(e); }
+  }, [fetchShifts, getActiveShift, getShiftSummary, isSuperAdmin]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleOpen(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await openShift({ openingAmount: Number(openingAmount) || 0, notes });
+      setShowOpenForm(false); setOpeningAmount(""); setNotes("");
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleClose(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      await closeShift(activeShift.id, { actualAmount: Number(closingAmount) || 0, notes });
+      setShowCloseForm(false); setClosingAmount(""); setNotes("");
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>⏱️ Shift Management</h2>
+        <div className="header-actions">
+          {!activeShift ? (
+            <button className="btn primary" onClick={() => setShowOpenForm(true)}>▶ Open Shift</button>
+          ) : (
+            <button className="btn danger" onClick={() => setShowCloseForm(true)}>⏹ Close Shift</button>
+          )}
+        </div>
+      </div>
+
+      {error && <div className="error-msg">{error}</div>}
+
+      {/* Active Shift Card */}
+      {activeShift && (
+        <div className="panel" style={{ borderLeft: '4px solid var(--accent, #16a34a)', marginBottom: 16 }}>
+          <h3>🟢 Current Shift — {activeShift.shift_number}</h3>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card accent"><span>Started</span><strong>{new Date(activeShift.opened_at).toLocaleTimeString()}</strong></div>
+            <div className="summary-card"><span>Opening</span><strong>{fmt(activeShift.opening_amount)}</strong></div>
+            {summary?.paymentBreakdown && summary.paymentBreakdown.map(p => (
+              <div className="summary-card" key={p.payment_method}><span>{p.payment_method}</span><strong>{fmt(p.total)}</strong><small>{p.count} sales</small></div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!activeShift && (
+        <div className="panel" style={{ borderLeft: '4px solid var(--muted, #9ca3af)', marginBottom: 16 }}>
+          <h3>⚪ No Active Shift</h3>
+          <p className="muted">Open a new shift to start processing transactions.</p>
+        </div>
+      )}
+
+      {/* Open Shift Form */}
+      {showOpenForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Open New Shift</h3>
+          <form onSubmit={handleOpen} style={{ maxWidth: 400 }}>
+            <label>Opening Amount (₦)<input type="number" min="0" step="0.01" value={openingAmount} onChange={e => setOpeningAmount(e.target.value)} /></label>
+            <label>Notes<textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} /></label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Opening...' : 'Open Shift'}</button>
+              <button type="button" className="btn secondary" onClick={() => setShowOpenForm(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Close Shift Form */}
+      {showCloseForm && activeShift && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Close Shift — {activeShift.shift_number}</h3>
+          {summary && (
+            <div style={{ marginBottom: 12, padding: 12, background: 'var(--surface)', borderRadius: 8 }}>
+              <p>Expected Amount: <strong>{fmt(summary.shift?.expected_amount || 0)}</strong></p>
+              <p>Opening Amount: <strong>{fmt(activeShift.opening_amount)}</strong></p>
+            </div>
+          )}
+          <form onSubmit={handleClose} style={{ maxWidth: 400 }}>
+            <label>Actual Amount Counted (₦)<input type="number" min="0" step="0.01" value={closingAmount} onChange={e => setClosingAmount(e.target.value)} required /></label>
+            <label>Notes<textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} /></label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit" className="btn danger" disabled={busy}>{busy ? 'Closing...' : 'Close Shift'}</button>
+              <button type="button" className="btn secondary" onClick={() => setShowCloseForm(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Shift History */}
+      <div className="table-wrap">
+        <table><thead><tr><th>Shift #</th><th>Employee</th><th>Branch</th><th>Opened</th><th>Closed</th><th>Opening</th><th>Closing</th><th>Variance</th><th>Status</th></tr></thead>
+          <tbody>{shifts.map(s => (
+            <tr key={s.id}>
+              <td><code>{s.shift_number}</code></td>
+              <td>{s.user_name}</td>
+              <td>{s.branch_name}</td>
+              <td>{new Date(s.opened_at).toLocaleString()}</td>
+              <td>{s.closed_at ? new Date(s.closed_at).toLocaleString() : '—'}</td>
+              <td>{fmt(s.opening_amount)}</td>
+              <td>{s.closing_amount != null ? fmt(s.closing_amount) : '—'}</td>
+              <td style={{ color: s.variance > 0 ? 'var(--accent, #16a34a)' : s.variance < 0 ? 'var(--danger, #ef4444)' : 'inherit' }}>
+                {s.variance != null ? fmt(s.variance) : '—'}
+              </td>
+              <td><span className={`status-badge ${s.status === 'open' ? 'active' : 'inactive'}`}>{s.status}</span></td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {!shifts.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No shifts recorded yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── TASKS ──────────────────────────────────────────────────────
+function TasksPage() {
+  const { fetchTasks, createTask, updateTask, deleteTask, fetchUsers, user } = useAuth();
+  const [tasks, setTasks] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [showForm, setShowForm] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ title: "", description: "", priority: "medium", assignedTo: "", dueDate: "", category: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [editingTask, setEditingTask] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      if (priorityFilter) params.priority = priorityFilter;
+      const d = await fetchTasks(params);
+      setTasks(d?.data || []);
+      setTotal(d?.total || 0);
+    } catch (e) { console.error(e); }
+  }, [fetchTasks, statusFilter, priorityFilter]);
+
+  useEffect(() => { load(); fetchUsers().then(setUsers).catch(() => {}); }, [load, fetchUsers]);
+
+  async function handleCreate(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      if (editingTask) {
+        await updateTask(editingTask.id, { title: form.title, description: form.description, priority: form.priority, assigned_to: form.assignedTo || null, due_date: form.dueDate || null, category: form.category || null });
+      } else {
+        await createTask({ title: form.title, description: form.description, priority: form.priority, assignedTo: form.assignedTo || null, dueDate: form.dueDate || null, category: form.category || null });
+      }
+      setShowForm(false); setEditingTask(null);
+      setForm({ title: "", description: "", priority: "medium", assignedTo: "", dueDate: "", category: "" });
+      load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  function startEdit(task) {
+    setEditingTask(task);
+    setForm({ title: task.title, description: task.description || "", priority: task.priority, assignedTo: task.assigned_to || "", dueDate: task.due_date ? task.due_date.slice(0, 10) : "", category: task.category || "" });
+    setShowForm(true);
+  }
+
+  async function handleStatusChange(task, newStatus) {
+    try { await updateTask(task.id, { status: newStatus }); load(); } catch (e) { console.error(e); }
+  }
+
+  const priorityColors = { urgent: '#ef4444', high: '#f59e0b', medium: '#0ea5e9', low: '#6b7280' };
+  const statusIcons = { pending: '⏳', in_progress: '🔄', completed: '✅', cancelled: '❌' };
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>✅ Tasks</h2>
+        <div className="header-actions">
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="form-select">
+            <option value="">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="in_progress">In Progress</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <select value={priorityFilter} onChange={e => setPriorityFilter(e.target.value)} className="form-select">
+            <option value="">All Priority</option>
+            <option value="urgent">Urgent</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <button className="btn primary" onClick={() => { setShowForm(!showForm); setEditingTask(null); setForm({ title: "", description: "", priority: "medium", assignedTo: "", dueDate: "", category: "" }); }}>+ New Task</button>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>{editingTask ? 'Edit Task' : 'Create New Task'}</h3>
+          {error && <div className="error-msg">{error}</div>}
+          <form onSubmit={handleCreate} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <label style={{ gridColumn: '1 / -1' }}>Title<input type="text" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required /></label>
+            <label style={{ gridColumn: '1 / -1' }}>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></label>
+            <label>Priority<select value={form.priority} onChange={e => setForm({ ...form, priority: e.target.value })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+            <label>Assigned To<select value={form.assignedTo} onChange={e => setForm({ ...form, assignedTo: e.target.value })}><option value="">Unassigned</option>{users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}</select></label>
+            <label>Due Date<input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} /></label>
+            <label>Category<input type="text" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder="e.g. restocking, cleaning" /></label>
+            <div style={{ alignSelf: "end" }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving...' : editingTask ? 'Update Task' : 'Create Task'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Task Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
+        {tasks.map(t => (
+          <div key={t.id} className="panel" style={{ borderLeft: `4px solid ${priorityColors[t.priority] || '#6b7280'}`, opacity: t.status === 'cancelled' ? 0.6 : 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{statusIcons[t.status] || ''} {t.title}</div>
+                {t.description && <p style={{ fontSize: '0.82rem', color: 'var(--muted)', margin: '4px 0' }}>{t.description}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className="btn secondary" style={{ fontSize: '0.7rem', padding: '2px 6px' }} onClick={() => startEdit(t)}>✏️</button>
+                <button className="btn danger" style={{ fontSize: '0.7rem', padding: '2px 6px' }} onClick={() => { if (confirm('Delete task?')) { deleteTask(t.id).then(load); } }}>🗑</button>
+              </div>
+            </div>
+            <div style={{ marginTop: 8, fontSize: '0.78rem', color: 'var(--muted)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <span className="status-badge" style={{ background: priorityColors[t.priority] + '20', color: priorityColors[t.priority] }}>{t.priority}</span>
+              {t.assigned_to_name && <span>👤 {t.assigned_to_name}</span>}
+              {t.due_date && <span>📅 {new Date(t.due_date).toLocaleDateString()}</span>}
+              {t.category && <span>🏷️ {t.category}</span>}
+            </div>
+            {/* Status Buttons */}
+            <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {t.status !== 'pending' && t.status !== 'completed' && t.status !== 'cancelled' && (
+                <button className="btn secondary" style={{ fontSize: '0.7rem' }} onClick={() => handleStatusChange(t, 'pending')}>⏳ Pending</button>
+              )}
+              {t.status !== 'in_progress' && t.status !== 'completed' && t.status !== 'cancelled' && (
+                <button className="btn primary" style={{ fontSize: '0.7rem' }} onClick={() => handleStatusChange(t, 'in_progress')}>🔄 In Progress</button>
+              )}
+              {t.status !== 'completed' && t.status !== 'cancelled' && (
+                <button className="btn primary" style={{ fontSize: '0.7rem', background: 'var(--accent, #16a34a)' }} onClick={() => handleStatusChange(t, 'completed')}>✅ Complete</button>
+              )}
+              {t.status !== 'cancelled' && t.status !== 'completed' && (
+                <button className="btn danger" style={{ fontSize: '0.7rem' }} onClick={() => handleStatusChange(t, 'cancelled')}>❌ Cancel</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {!tasks.length && <p className="muted" style={{ padding: 40, textAlign: 'center' }}>No tasks found. Create one to get started!</p>}
+      <p className="muted" style={{ marginTop: 8 }}>Total: {total} tasks</p>
+    </div>
+  );
+}
+
+// ── COMMISSIONS ────────────────────────────────────────────────
+function CommissionsPage() {
+  const { fetchCommissions, approveCommissions, payCommissions, fetchCommissionSummary, fetchCommissionRules, createCommissionRule, user } = useAuth();
+  const [commissions, setCommissions] = useState([]);
+  const [summary, setSummary] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [activeTab, setActiveTab] = useState("commissions");
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [showRuleForm, setShowRuleForm] = useState(false);
+  const [ruleForm, setRuleForm] = useState({ role: "CASHIER", commissionRate: "1.0", minSaleAmount: "0" });
+  const [busy, setBusy] = useState(false);
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+  const canManage = user?.role === "ADMIN" || user?.role === "MANAGER";
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      const [c, s, r] = await Promise.allSettled([fetchCommissions(params), fetchCommissionSummary(), fetchCommissionRules()]);
+      if (c.status === 'fulfilled') setCommissions(c.value?.data || []);
+      if (s.status === 'fulfilled') setSummary(s.value || []);
+      if (r.status === 'fulfilled') setRules(r.value || []);
+    } catch (e) { console.error(e); }
+  }, [fetchCommissions, fetchCommissionSummary, fetchCommissionRules, statusFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleApprove() {
+    if (!selectedIds.length) return;
+    setBusy(true);
+    try { await approveCommissions(selectedIds); setSelectedIds([]); load(); } finally { setBusy(false); }
+  }
+
+  async function handlePay() {
+    if (!selectedIds.length) return;
+    setBusy(true);
+    try { await payCommissions(selectedIds); setSelectedIds([]); load(); } finally { setBusy(false); }
+  }
+
+  async function handleCreateRule(e) {
+    e.preventDefault(); setBusy(true);
+    try {
+      await createCommissionRule({ ...ruleForm, commissionRate: Number(ruleForm.commissionRate), minSaleAmount: Number(ruleForm.minSaleAmount) });
+      setShowRuleForm(false); load();
+    } finally { setBusy(false); }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>💼 Sales Commissions</h2>
+        <div className="header-actions">
+          <div className="tab-group">
+            <button className={`tab ${activeTab === 'commissions' ? 'active' : ''}`} onClick={() => setActiveTab('commissions')}>Commissions</button>
+            <button className={`tab ${activeTab === 'summary' ? 'active' : ''}`} onClick={() => setActiveTab('summary')}>Summary</button>
+            {isSuperAdmin && <button className={`tab ${activeTab === 'rules' ? 'active' : ''}`} onClick={() => setActiveTab('rules')}>Rules</button>}
+          </div>
+        </div>
+      </div>
+
+      {activeTab === 'commissions' && (
+        <>
+          <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="form-select">
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="paid">Paid</option>
+            </select>
+            {canManage && selectedIds.length > 0 && (
+              <>
+                <button className="btn primary" onClick={handleApprove} disabled={busy}>✅ Approve ({selectedIds.length})</button>
+                {isSuperAdmin && <button className="btn primary" onClick={handlePay} disabled={busy} style={{ background: 'var(--accent, #16a34a)' }}>💰 Mark Paid ({selectedIds.length})</button>}
+              </>
+            )}
+          </div>
+          <div className="table-wrap">
+            <table><thead><tr><th>{canManage && <input type="checkbox" onChange={e => { if (e.target.checked) setSelectedIds(commissions.map(c => c.id)); else setSelectedIds([]); }} />}</th><th>Employee</th><th>Sale</th><th>Sale Amount</th><th>Rate</th><th>Commission</th><th>Status</th><th>Date</th></tr></thead>
+              <tbody>{commissions.map(c => (
+                <tr key={c.id}>
+                  {canManage && <td><input type="checkbox" checked={selectedIds.includes(c.id)} onChange={() => toggleSelect(c.id)} /></td>}
+                  <td>{c.user_name}</td>
+                  <td><code>{c.receipt_number || `#${c.sale_id}`}</code></td>
+                  <td>{fmt(c.sale_amount)}</td>
+                  <td>{c.commission_rate}%</td>
+                  <td><strong>{fmt(c.commission_amount)}</strong></td>
+                  <td><span className={`status-badge ${c.status === 'paid' ? 'active' : c.status === 'approved' ? '' : 'warning'}`}>{c.status}</span></td>
+                  <td style={{ fontSize: '0.8rem' }}>{new Date(c.created_at).toLocaleDateString()}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+            {!commissions.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No commissions recorded.</p>}
+          </div>
+        </>
+      )}
+
+      {activeTab === 'summary' && (
+        <div className="table-wrap">
+          <table><thead><tr><th>Employee</th><th>Role</th><th>Total Sales</th><th>Revenue</th><th>Total Commission</th><th>Pending</th><th>Approved</th><th>Paid</th></tr></thead>
+            <tbody>{summary.map(s => (
+              <tr key={s.user_id}>
+                <td><strong>{s.user_name}</strong></td>
+                <td><span className="role-tag">{s.role}</span></td>
+                <td>{s.total_sales}</td>
+                <td>{fmt(s.total_revenue)}</td>
+                <td><strong>{fmt(s.total_commission)}</strong></td>
+                <td>{s.pending}</td>
+                <td>{s.approved}</td>
+                <td>{s.paid}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!summary.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No commission data.</p>}
+        </div>
+      )}
+
+      {activeTab === 'rules' && isSuperAdmin && (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <button className="btn primary" onClick={() => setShowRuleForm(!showRuleForm)}>+ Add Rule</button>
+          </div>
+          {showRuleForm && (
+            <div className="panel" style={{ marginBottom: 16 }}>
+              <form onSubmit={handleCreateRule} style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
+                <label>Role<select value={ruleForm.role} onChange={e => setRuleForm({ ...ruleForm, role: e.target.value })}><option value="CASHIER">Cashier</option><option value="MANAGER">Manager</option><option value="ADMIN">Admin</option></select></label>
+                <label>Rate (%)<input type="number" min="0" step="0.1" value={ruleForm.commissionRate} onChange={e => setRuleForm({ ...ruleForm, commissionRate: e.target.value })} required style={{ width: 80 }} /></label>
+                <label>Min Sale (₦)<input type="number" min="0" step="0.01" value={ruleForm.minSaleAmount} onChange={e => setRuleForm({ ...ruleForm, minSaleAmount: e.target.value })} style={{ width: 120 }} /></label>
+                <button type="submit" className="btn primary" disabled={busy}>Save Rule</button>
+              </form>
+            </div>
+          )}
+          <div className="table-wrap">
+            <table><thead><tr><th>Role</th><th>Employee</th><th>Commission Rate</th><th>Min Sale</th><th>Status</th></tr></thead>
+              <tbody>{rules.map(r => (
+                <tr key={r.id}>
+                  <td><span className="role-tag">{r.role || 'Custom'}</span></td>
+                  <td>{r.user_name || '— (All with role)'}</td>
+                  <td><strong>{r.commission_rate}%</strong></td>
+                  <td>{r.min_sale_amount > 0 ? fmt(r.min_sale_amount) : '—'}</td>
+                  <td><span className={`status-badge ${r.is_active ? 'active' : 'inactive'}`}>{r.is_active ? 'Active' : 'Disabled'}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── PRODUCT BUNDLES ────────────────────────────────────────────
+function BundlesPage() {
+  const { fetchBundles, getBundle, createBundle, updateBundle, deleteBundle, fetchProducts, user } = useAuth();
+  const [bundles, setBundles] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState("");
+  const [products, setProducts] = useState([]);
+  const [form, setForm] = useState({ name: "", description: "", bundlePrice: "", discountPercent: "0", category: "" });
+  const [bundleItems, setBundleItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [editingBundle, setEditingBundle] = useState(null);
+  const [selectedBundle, setSelectedBundle] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (search) params.search = search;
+      const d = await fetchBundles(params);
+      setBundles(d?.data || []);
+      fetchProducts().then(setProducts).catch(() => {});
+    } catch (e) { console.error(e); }
+  }, [fetchBundles, fetchProducts, search]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function addBundleItem() {
+    setBundleItems([...bundleItems, { productId: "", quantity: 1 }]);
+  }
+
+  function updateBundleItem(index, field, value) {
+    setBundleItems(bundleItems.map((item, i) => i === index ? { ...item, [field]: value } : item));
+  }
+
+  function removeBundleItem(index) {
+    setBundleItems(bundleItems.filter((_, i) => i !== index));
+  }
+
+  async function handleSave(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      const data = { ...form, bundlePrice: form.bundlePrice ? Number(form.bundlePrice) : null, discountPercent: Number(form.discountPercent) || 0, items: bundleItems.filter(i => i.productId).map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity) || 1 })) };
+      if (editingBundle) { await updateBundle(editingBundle.id, data); }
+      else { await createBundle(data); }
+      resetForm(); load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  function resetForm() {
+    setShowForm(false); setEditingBundle(null);
+    setForm({ name: "", description: "", bundlePrice: "", discountPercent: "0", category: "" });
+    setBundleItems([]); setError("");
+  }
+
+  async function startEdit(bundle) {
+    setEditingBundle(bundle);
+    try {
+      const detail = await getBundle(bundle.id);
+      setForm({ name: detail.name, description: detail.description || "", bundlePrice: detail.bundle_price || "", discountPercent: detail.discount_percent || "0", category: detail.category || "" });
+      setBundleItems((detail.items || []).map(i => ({ productId: String(i.product_id), quantity: i.quantity })));
+      setShowForm(true);
+    } catch (e) { console.error(e); }
+  }
+
+  async function viewBundle(bundle) {
+    try {
+      const detail = await getBundle(bundle.id);
+      setSelectedBundle(detail);
+    } catch (e) { console.error(e); }
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>📦 Product Bundles</h2>
+        <div className="header-actions">
+          <input placeholder="Search bundles..." value={search} onChange={e => setSearch(e.target.value)} className="search-input" style={{ maxWidth: 200 }} />
+          {(user?.role === "ADMIN" || user?.role === "MANAGER") && (
+            <button className="btn primary" onClick={() => { setShowForm(!showForm); resetForm(); }}>+ Create Bundle</button>
+          )}
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>{editingBundle ? 'Edit Bundle' : 'Create New Bundle'}</h3>
+          {error && <div className="error-msg">{error}</div>}
+          <form onSubmit={handleSave}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+              <label style={{ gridColumn: '1 / -1' }}>Bundle Name<input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></label>
+              <label style={{ gridColumn: '1 / -1' }}>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></label>
+              <label>Bundle Price (₦)<input type="number" min="0" step="0.01" value={form.bundlePrice} onChange={e => setForm({ ...form, bundlePrice: e.target.value })} placeholder="Leave empty for auto-calculate" /></label>
+              <label>Discount %<input type="number" min="0" max="100" step="0.1" value={form.discountPercent} onChange={e => setForm({ ...form, discountPercent: e.target.value })} /></label>
+              <label>Category<input type="text" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} /></label>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <strong>Bundle Items</strong>
+                <button type="button" className="btn secondary" onClick={addBundleItem}>+ Add Item</button>
+              </div>
+              {bundleItems.map((item, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+                  <select value={item.productId} onChange={e => updateBundleItem(i, 'productId', e.target.value)} style={{ flex: 1 }} required>
+                    <option value="">Select product...</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name} ({fmt(p.price)})</option>)}
+                  </select>
+                  <input type="number" min="1" value={item.quantity} onChange={e => updateBundleItem(i, 'quantity', e.target.value)} style={{ width: 70 }} />
+                  <button type="button" className="btn danger" style={{ padding: '2px 8px' }} onClick={() => removeBundleItem(i)}>✕</button>
+                </div>
+              ))}
+              {!bundleItems.length && <p className="muted">No items added yet.</p>}
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving...' : editingBundle ? 'Update Bundle' : 'Create Bundle'}</button>
+              <button type="button" className="btn secondary" onClick={resetForm}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {selectedBundle && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: '4px solid var(--accent)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <h3>{selectedBundle.name}</h3>
+            <button className="btn secondary" onClick={() => setSelectedBundle(null)}>✕ Close</button>
+          </div>
+          {selectedBundle.description && <p className="muted" style={{ marginTop: 4 }}>{selectedBundle.description}</p>}
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card"><span>Bundle Price</span><strong>{selectedBundle.bundle_price ? fmt(selectedBundle.bundle_price) : 'Auto'}</strong></div>
+            <div className="summary-card"><span>Discount</span><strong>{selectedBundle.discount_percent}%</strong></div>
+            <div className="summary-card"><span>Items</span><strong>{selectedBundle.items?.length || 0}</strong></div>
+          </div>
+          {selectedBundle.items?.length > 0 && (
+            <table style={{ marginTop: 8 }}><thead><tr><th>Product</th><th>Qty</th><th>Unit Price</th><th>Subtotal</th></tr></thead>
+              <tbody>{selectedBundle.items.map(item => (
+                <tr key={item.id}>
+                  <td>{item.product_name || 'Unknown'}</td>
+                  <td>{item.quantity}</td>
+                  <td>{fmt(item.unit_price)}</td>
+                  <td><strong>{fmt(item.unit_price * item.quantity)}</strong></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+        {bundles.map(b => (
+          <div key={b.id} className="panel" style={{ cursor: 'pointer' }} onClick={() => viewBundle(b)}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>{b.name}</h3>
+                {b.description && <p className="muted" style={{ margin: '4px 0', fontSize: '0.82rem' }}>{b.description}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                <button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => startEdit(b)}>✏️</button>
+                <button className="btn danger" style={{ padding: '2px 8px' }} onClick={() => { if (confirm('Delete bundle?')) deleteBundle(b.id).then(load); }}>🗑</button>
+              </div>
+            </div>
+            <div style={{ marginTop: 8, display: 'flex', gap: 12, fontSize: '0.85rem' }}>
+              <span><strong>{b.item_count || 0}</strong> items</span>
+              <span>Total: <strong>{fmt(b.calculated_total)}</strong></span>
+              {b.discount_percent > 0 && <span style={{ color: 'var(--accent, #16a34a)' }}>-{b.discount_percent}%</span>}
+              {b.bundle_price && <span>Bundle: <strong>{fmt(b.bundle_price)}</strong></span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {!bundles.length && <p className="muted" style={{ padding: 40, textAlign: 'center' }}>No bundles yet. Create one to bundle products together!</p>}
+    </div>
+  );
+}
+
+// ── QUOTATIONS ─────────────────────────────────────────────────
+function QuotationsPage() {
+  const { fetchQuotations, getQuotation, createQuotation, updateQuotation, convertQuotation, deleteQuotation, fetchProducts, fetchCustomers, user } = useAuth();
+  const [quotations, setQuotations] = useState([]);
+  const [quotesTotal, setQuotesTotal] = useState(0);
+  const [showForm, setShowForm] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [products, setProducts] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [form, setForm] = useState({ customerName: "", customerEmail: "", customerPhone: "", customerId: "", notes: "", validUntil: "", discount: "0", tax: "0" });
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [selectedQuote, setSelectedQuote] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      if (search) params.search = search;
+      const d = await fetchQuotations(params);
+      setQuotations(d?.data || []);
+      setQuotesTotal(d?.total || 0);
+      fetchProducts().then(setProducts).catch(() => {});
+      fetchCustomers().then(setCustomers).catch(() => {});
+    } catch (e) { console.error(e); }
+  }, [fetchQuotations, fetchProducts, fetchCustomers, statusFilter, search]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function addItem() { setItems([...items, { productId: "", productName: "", quantity: 1, unitPrice: 0, discount: 0 }]); }
+  function updateItem(idx, field, val) {
+    setItems(items.map((item, i) => {
+      if (i !== idx) return item;
+      const updated = { ...item, [field]: val };
+      if (field === 'productId' && val) {
+        const prod = products.find(p => String(p.id) === String(val));
+        if (prod) { updated.productName = prod.name; updated.unitPrice = prod.price; }
+      }
+      return updated;
+    }));
+  }
+  function removeItem(idx) { setItems(items.filter((_, i) => i !== idx)); }
+
+  const subtotal = items.reduce((sum, i) => sum + (i.unitPrice || 0) * (i.quantity || 1) - (i.discount || 0), 0);
+  const total = subtotal - (Number(form.discount) || 0) + (Number(form.tax) || 0);
+
+  async function handleCreate(e) {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      const validItems = items.filter(i => i.productId);
+      if (!validItems.length) { setError('Add at least one item'); setBusy(false); return; }
+      await createQuotation({ ...form, customerId: form.customerId || null, items: validItems.map(i => ({ productId: Number(i.productId), productName: i.productName, quantity: Number(i.quantity), unitPrice: Number(i.unitPrice), discount: Number(i.discount) || 0 })), discount: Number(form.discount) || 0, tax: Number(form.tax) || 0 });
+      resetForm(); load();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  function resetForm() {
+    setShowForm(false); setForm({ customerName: "", customerEmail: "", customerPhone: "", customerId: "", notes: "", validUntil: "", discount: "0", tax: "0" });
+    setItems([]); setError("");
+  }
+
+  async function viewQuote(q) {
+    try {
+      const detail = await getQuotation(q.id);
+      setSelectedQuote(detail);
+    } catch (e) { console.error(e); }
+  }
+
+  async function handleConvert(id) {
+    if (!confirm('Convert this quotation to a sale? Stock will be deducted.')) return;
+    setBusy(true);
+    try { await convertQuotation(id); setSelectedQuote(null); load(); } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleStatusChange(id, status) {
+    try { await updateQuotation(id, { status }); load(); if (selectedQuote?.id === id) setSelectedQuote({ ...selectedQuote, status }); } catch (e) { console.error(e); }
+  }
+
+  const fmt = (n) => "₦" + (parseFloat(n) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+  const statusColors = { draft: '#6b7280', sent: '#0ea5e9', accepted: '#16a34a', rejected: '#ef4444', expired: '#f59e0b', converted: '#8b5cf6' };
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>📄 Quotations</h2>
+        <div className="header-actions">
+          <input placeholder="Search quotations..." value={search} onChange={e => setSearch(e.target.value)} className="search-input" style={{ maxWidth: 200 }} />
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="form-select">
+            <option value="">All Status</option>
+            <option value="draft">Draft</option>
+            <option value="sent">Sent</option>
+            <option value="accepted">Accepted</option>
+            <option value="converted">Converted</option>
+            <option value="expired">Expired</option>
+          </select>
+          <button className="btn primary" onClick={() => { setShowForm(!showForm); }}>+ New Quotation</button>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Create Quotation</h3>
+          {error && <div className="error-msg">{error}</div>}
+          <form onSubmit={handleCreate}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+              <label>Customer<select value={form.customerId} onChange={e => { const c = customers.find(x => String(x.id) === e.target.value); setForm({ ...form, customerId: e.target.value, customerName: c?.name || form.customerName, customerEmail: c?.email || form.customerEmail, customerPhone: c?.phone || form.customerPhone }); }}><option value="">Walk-in</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+              <label>Customer Name<input type="text" value={form.customerName} onChange={e => setForm({ ...form, customerName: e.target.value })} /></label>
+              <label>Email<input type="email" value={form.customerEmail} onChange={e => setForm({ ...form, customerEmail: e.target.value })} /></label>
+              <label>Phone<input type="text" value={form.customerPhone} onChange={e => setForm({ ...form, customerPhone: e.target.value })} /></label>
+              <label>Valid Until<input type="date" value={form.validUntil} onChange={e => setForm({ ...form, validUntil: e.target.value })} required /></label>
+              <label>Discount (₦)<input type="number" min="0" step="0.01" value={form.discount} onChange={e => setForm({ ...form, discount: e.target.value })} /></label>
+              <label>Tax (₦)<input type="number" min="0" step="0.01" value={form.tax} onChange={e => setForm({ ...form, tax: e.target.value })} /></label>
+              <label style={{ gridColumn: '1 / -1' }}>Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} /></label>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <strong>Quotation Items</strong>
+                <button type="button" className="btn secondary" onClick={addItem}>+ Add Item</button>
+              </div>
+              {items.map((item, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select value={item.productId} onChange={e => updateItem(i, 'productId', e.target.value)} style={{ flex: 1, minWidth: 150 }} required>
+                    <option value="">Product...</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name} ({fmt(p.price)})</option>)}
+                  </select>
+                  <input type="number" min="1" value={item.quantity} onChange={e => updateItem(i, 'quantity', e.target.value)} style={{ width: 60 }} placeholder="Qty" />
+                  <input type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => updateItem(i, 'unitPrice', e.target.value)} style={{ width: 100 }} placeholder="Price" />
+                  <input type="number" min="0" step="0.01" value={item.discount} onChange={e => updateItem(i, 'discount', e.target.value)} style={{ width: 80 }} placeholder="Disc" />
+                  <span style={{ minWidth: 80, fontWeight: 600 }}>{fmt((item.unitPrice || 0) * (item.quantity || 1) - (item.discount || 0))}</span>
+                  <button type="button" className="btn danger" style={{ padding: '2px 8px' }} onClick={() => removeItem(i)}>✕</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--surface)', borderRadius: 8, display: 'flex', justifyContent: 'space-between' }}>
+              <span>Subtotal: <strong>{fmt(subtotal)}</strong></span>
+              <span>Discount: -{fmt(form.discount)}</span>
+              <span>Tax: +{fmt(form.tax)}</span>
+              <span style={{ fontSize: '1.1rem' }}>Total: <strong>{fmt(total)}</strong></span>
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Creating...' : 'Create Quotation'}</button>
+              <button type="button" className="btn secondary" onClick={resetForm}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {selectedQuote && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: `4px solid ${statusColors[selectedQuote.status] || '#6b7280'}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h3 style={{ margin: 0 }}>{selectedQuote.quote_number}</h3>
+              <p className="muted" style={{ margin: '4px 0' }}>{selectedQuote.customer_name || 'Walk-in'} · {selectedQuote.customer_email || ''} · {selectedQuote.customer_phone || ''}</p>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span className="status-badge" style={{ background: statusColors[selectedQuote.status] + '20', color: statusColors[selectedQuote.status] }}>{selectedQuote.status}</span>
+              <button className="btn secondary" onClick={() => setSelectedQuote(null)}>✕</button>
+            </div>
+          </div>
+          <div className="summary-grid" style={{ marginTop: 8 }}>
+            <div className="summary-card"><span>Subtotal</span><strong>{fmt(selectedQuote.subtotal)}</strong></div>
+            <div className="summary-card"><span>Discount</span><strong>-{fmt(selectedQuote.discount)}</strong></div>
+            <div className="summary-card"><span>Tax</span><strong>+{fmt(selectedQuote.tax)}</strong></div>
+            <div className="summary-card accent"><span>Total</span><strong>{fmt(selectedQuote.total)}</strong></div>
+          </div>
+          {selectedQuote.items?.length > 0 && (
+            <table style={{ marginTop: 8 }}><thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Disc</th><th>Total</th></tr></thead>
+              <tbody>{selectedQuote.items.map(item => (
+                <tr key={item.id}><td>{item.product_name}</td><td>{item.quantity}</td><td>{fmt(item.unit_price)}</td><td>{fmt(item.discount)}</td><td><strong>{fmt(item.total)}</strong></td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          {selectedQuote.valid_until && <p style={{ marginTop: 8, fontSize: '0.85rem' }}>Valid until: <strong>{new Date(selectedQuote.valid_until).toLocaleDateString()}</strong></p>}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {selectedQuote.status === 'draft' && <button className="btn primary" onClick={() => handleStatusChange(selectedQuote.id, 'sent')}>📤 Send</button>}
+            {selectedQuote.status === 'sent' && <><button className="btn primary" onClick={() => handleStatusChange(selectedQuote.id, 'accepted')}>✅ Accept</button><button className="btn danger" onClick={() => handleStatusChange(selectedQuote.id, 'rejected')}>❌ Reject</button></>}
+            {(selectedQuote.status === 'sent' || selectedQuote.status === 'accepted') && (
+              <button className="btn primary" style={{ background: 'var(--accent, #16a34a)' }} onClick={() => handleConvert(selectedQuote.id)} disabled={busy}>🔄 Convert to Sale</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="table-wrap">
+        <table><thead><tr><th>Quote #</th><th>Customer</th><th>Total</th><th>Valid Until</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody>{quotations.map(q => (
+            <tr key={q.id} style={{ cursor: 'pointer' }} onClick={() => viewQuote(q)}>
+              <td><code>{q.quote_number}</code></td>
+              <td>{q.customer_name || 'Walk-in'}</td>
+              <td><strong>{fmt(q.total)}</strong></td>
+              <td>{q.valid_until ? new Date(q.valid_until).toLocaleDateString() : '—'}</td>
+              <td><span className="status-badge" style={{ background: (statusColors[q.status] || '#6b7280') + '20', color: statusColors[q.status] || '#6b7280' }}>{q.status}</span></td>
+              <td style={{ fontSize: '0.8rem' }}>{new Date(q.created_at).toLocaleDateString()}</td>
+              <td onClick={e => e.stopPropagation()}>
+                <button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => viewQuote(q)}>View</button>
+              </td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {!quotations.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No quotations yet.</p>}
+      </div>
+      <p className="muted" style={{ marginTop: 8 }}>Total: {quotesTotal} quotations</p>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -7076,6 +8523,14 @@ export default function App() {
           <Route path="/audit-cycle" element={<InventoryAuditPage />} />
           <Route path="/alerts" element={<StockAlertsPage />} />
           <Route path="/notifications" element={<NotificationCenterPage />} />           <Route path="/notification-prefs" element={<NotificationPreferencesPage />} />
+           <Route path="/product/:id" element={<ProductDetailPage />} />
+          <Route path="/giftcards" element={<GiftCardsPage />} />
+           <Route path="/coupons" element={<CouponsPage />} />
+           <Route path="/quotations" element={<QuotationsPage />} />
+           <Route path="/shifts" element={<ShiftsPage />} />
+           <Route path="/tasks" element={<TasksPage />} />
+           <Route path="/commissions" element={<CommissionsPage />} />
+           <Route path="/bundles" element={<BundlesPage />} />
            <Route path="/payment-settings" element={<PaymentSettingsPage />} />
            <Route path="/terminals" element={<TerminalPage />} />
            <Route path="*" element={<Navigate to="/dashboard" replace />} />
