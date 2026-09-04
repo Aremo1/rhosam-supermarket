@@ -330,6 +330,52 @@ export function AuthProvider({ children }) {
     fetchPriceChecks: (params) => request(`/price-checks${params ? `?${new URLSearchParams(params)}` : ""}`),
     // Product Detail
     fetchProductDetail: (id) => request(`/products/${id}/detail`),
+    // ── Priority Gaps ─────────────────────────────────────────────
+    // 1. Offline Mode
+    syncOfflineData: (data) => request("/offline/sync", { method: "POST", body: JSON.stringify(data) }),
+    getOfflineSyncStatus: (params) => request(`/offline/sync/status${params ? `?${new URLSearchParams(params)}` : ""}`),
+    processOfflineSync: () => request("/offline/sync/process", { method: "POST" }),
+    cacheOfflineData: (data) => request("/offline/cache", { method: "POST", body: JSON.stringify(data) }),
+    getOfflineCache: (params) => request(`/offline/cache?${new URLSearchParams(params)}`),
+    // 2. Product Variants
+    fetchProductVariants: (id) => request(`/products/${id}/variants`),
+    fetchProductVariantOptions: (id) => request(`/products/${id}/variant-options`),
+    createProductVariants: (id, data) => request(`/products/${id}/variants`, { method: "POST", body: JSON.stringify(data) }),
+    updateVariant: (id, data) => request(`/variants/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteVariant: (id) => request(`/variants/${id}`, { method: "DELETE" }),
+    // 3. Discount Rules
+    fetchDiscountRules: (params) => request(`/discount-rules${params ? `?${new URLSearchParams(params)}` : ""}`),
+    createDiscountRule: (data) => request("/discount-rules", { method: "POST", body: JSON.stringify(data) }),
+    calculateDiscounts: (data) => request("/discount-rules/calculate", { method: "POST", body: JSON.stringify(data) }),
+    updateDiscountRule: (id, data) => request(`/discount-rules/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteDiscountRule: (id) => request(`/discount-rules/${id}`, { method: "DELETE" }),
+    // 4. Multi-Currency
+    fetchCurrencies: () => request("/currencies"),
+    fetchCurrencyRates: (params) => request(`/currencies/rates${params ? `?${new URLSearchParams(params)}` : ""}`),
+    convertCurrency: (data) => request("/currencies/convert", { method: "POST", body: JSON.stringify(data) }),
+    updateCurrencyRates: (data) => request("/currencies/rates", { method: "PUT", body: JSON.stringify(data) }),
+    createCurrency: (data) => request("/currencies", { method: "POST", body: JSON.stringify(data) }),
+    // 5. Digital Wallets
+    getDigitalWalletStatus: () => request("/digital-wallets/status"),
+    updateDigitalWallets: (data) => request("/digital-wallets", { method: "PUT", body: JSON.stringify(data) }),
+    // 6. Wish Lists
+    fetchWishlists: (customerId) => request(`/wishlists/${customerId}`),
+    addWishlistItem: (data) => request("/wishlists", { method: "POST", body: JSON.stringify(data) }),
+    removeWishlistItem: (id) => request(`/wishlists/${id}`, { method: "DELETE" }),
+    // 7. Receipt Templates
+    fetchReceiptTemplates: () => request("/receipt-templates"),
+    getReceiptTemplate: (id) => request(`/receipt-templates/${id}`),
+    createReceiptTemplate: (data) => request("/receipt-templates", { method: "POST", body: JSON.stringify(data) }),
+    updateReceiptTemplate: (id, data) => request(`/receipt-templates/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteReceiptTemplate: (id) => request(`/receipt-templates/${id}`, { method: "DELETE" }),
+    previewReceiptTemplate: (id) => request(`/receipt-templates/${id}/preview`, { method: "POST" }),
+    // 8. Fulfillment
+    fetchFulfillments: (params) => request(`/fulfillments${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getFulfillment: (id) => request(`/fulfillments/${id}`),
+    createFulfillment: (data) => request("/fulfillments", { method: "POST", body: JSON.stringify(data) }),
+    updateFulfillmentStatus: (id, data) => request(`/fulfillments/${id}/status`, { method: "PATCH", body: JSON.stringify(data) }),
+    updateFulfillmentItem: (fulfillmentId, itemId, data) => request(`/fulfillments/${fulfillmentId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(data) }),
+    deleteFulfillment: (id) => request(`/fulfillments/${id}`, { method: "DELETE" }),
   }), [user, loading, login, logout, request, notifyDataChange, dataVersion]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

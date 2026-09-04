@@ -5812,6 +5812,10 @@ app.get("/api/scanner/lookup", async (req, res, next) => {
 const registerStoreCommerceRoutes = require("./store-commerce-routes");
 registerStoreCommerceRoutes(app, pool, auth, allow);
 
+// ── Priority Gaps Routes (8 features) ──────────────────────────
+const registerPriorityGapsRoutes = require("./priority-gaps-routes");
+registerPriorityGapsRoutes(app, pool, auth, allow);
+
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));

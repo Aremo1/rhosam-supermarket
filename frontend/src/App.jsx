@@ -20,9 +20,9 @@ function resolveApiUrl(val) {
 // Super-admin (ADMIN without branch_id) gets full access to all management features
 // Branch-admin (ADMIN with branch_id) gets operational access but no cross-branch management
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","bundles","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals"],
-  MANAGER: ["dashboard","pos","products","bundles","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals"],
-  CASHIER: ["dashboard","pos","cashdrawer","giftcards","quotations","shifts","tasks","sales","notification-prefs","change-password","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","products","bundles","variants","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals","digitalwallets"],
+  MANAGER: ["dashboard","pos","products","bundles","variants","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals","digitalwallets"],
+  CASHIER: ["dashboard","pos","cashdrawer","giftcards","quotations","shifts","tasks","fulfillment","offline","sales","notification-prefs","change-password","wifiqr"],
 };
 // Items restricted to super-admin only (ADMIN without branch_id)
 const SUPER_ADMIN_ONLY = ["executive","branches","users","audit","loginhistory","payment-settings"];
@@ -36,7 +36,10 @@ const LABELS = {
   cashdrawer: "Cash Drawer", branches: "Branches", messages: "Messages", transfers: "Stock Transfers", display: "Customer Display", supplierportal: "Supplier Portal",
   "change-password": "Change Password", mfa: "MFA / Security", loginhistory: "Login History", wifiqr: "Wi-Fi QR", "payment-settings": "Payment Settings", terminals: "Payment Terminals",
   giftcards: "Gift Cards", coupons: "Coupons", quotations: "Quotations", shifts: "Shift Management",
-  tasks: "Tasks", commissions: "Commissions", bundles: "Product Bundles",
+  tasks: "Tasks", commissions: "Commissions", bundles: "Product Bundles", variants: "Variants",
+  discounts: "Discount Rules", currencies: "Multi-Currency", wishlists: "Wish Lists",
+  receipts: "Receipt Templates", fulfillment: "Fulfillment", offline: "Offline Sync",
+  digitalwallets: "Digital Wallets",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
@@ -47,7 +50,10 @@ const ICONS = {
   cashdrawer: "💵", branches: "🏢", messages: "💬", transfers: "🔄", display: "🖥️", supplierportal: "🏭",
   "change-password": "🔐", mfa: "🛡️", loginhistory: "🕐", wifiqr: "📶", "payment-settings": "⚙️", terminals: "💳",
   giftcards: "🎁", coupons: "🎟️", quotations: "📄", shifts: "⏱️",
-  tasks: "✅", commissions: "💼", bundles: "📦",
+  tasks: "✅", commissions: "💼", bundles: "📦", variants: "🎨",
+  discounts: "🎯", currencies: "💱", wishlists: "💝",
+  receipts: "🧾", fulfillment: "📦", offline: "📴",
+  digitalwallets: "📱",
 };function Layout({ children }) {
   const { user, logout, fetchStockAlerts, fetchInAppNotifications, markNotificationsRead } = useAuth();
 
@@ -7413,6 +7419,565 @@ function ProductDetailPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PRIORITY GAP FEATURES (8)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── 1. OFFLINE SYNC STATUS ────────────────────────────────────
+function OfflineSyncPage() {
+  const { getOfflineSyncStatus, processOfflineSync, user } = useAuth();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const d = await getOfflineSyncStatus({});
+      setStatus(d);
+    } catch (e) { console.error(e); }
+  }, [getOfflineSyncStatus]);
+  useEffect(() => { load(); }, [load]);
+  async function handleProcess() {
+    setBusy(true);
+    try { await processOfflineSync(); load(); } finally { setBusy(false); }
+  }
+  return (
+    <div>
+      <div className="page-header"><h2>📴 Offline Sync</h2></div>
+      <div className="summary-grid" style={{ marginBottom: 16 }}>
+        <div className="summary-card"><span>Total</span><strong>{status?.total || 0}</strong></div>
+        <div className="summary-card warning"><span>Pending</span><strong>{status?.pending || 0}</strong></div>
+        <div className="summary-card"><span>Synced</span><strong>{status?.synced || 0}</strong></div>
+        <div className="summary-card"><span>Failed</span><strong>{status?.failed || 0}</strong></div>
+      </div>
+      <div className="panel">
+        <h3>How Offline Mode Works</h3>
+        <p style={{ fontSize: '0.9rem', lineHeight: 1.6, color: 'var(--muted)' }}>When internet is unavailable, the POS queues sales locally. Once reconnected, click <strong>Process Sync</strong> to push offline transactions to the server.</p>
+        <button className="btn primary" onClick={handleProcess} disabled={busy || !status?.pending} style={{ marginTop: 12 }}>{busy ? 'Processing...' : '🔄 Process Pending Sync'}</button>
+      </div>
+    </div>
+  );
+}
+
+// ── 2. DISCOUNT RULES ─────────────────────────────────────────
+function DiscountRulesPage() {
+  const { fetchDiscountRules, createDiscountRule, updateDiscountRule, deleteDiscountRule, fetchProducts, user } = useAuth();
+  const [rules, setRules] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingRule, setEditingRule] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [form, setForm] = useState({ name: '', description: '', discountType: 'quantity', discountValue: '', discountAppliesTo: 'transaction', minQuantity: '', minSpend: '', buyQuantity: '', getQuantity: '', getDiscountPercent: '100', applicablePaymentMethods: '', maxUses: '', priority: '0', startDate: '', endDate: '' });
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { const d = await fetchDiscountRules(); setRules(d?.data || []); fetchProducts().then(setProducts).catch(() => {}); } catch (e) { console.error(e); }
+  }, [fetchDiscountRules, fetchProducts]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave(e) {
+    e.preventDefault(); setBusy(true);
+    try {
+      const data = { ...form, discountValue: Number(form.discountValue), minQuantity: form.minQuantity ? Number(form.minQuantity) : null, minSpend: form.minSpend ? Number(form.minSpend) : null, buyQuantity: form.buyQuantity ? Number(form.buyQuantity) : null, getQuantity: form.getQuantity ? Number(form.getQuantity) : null, getDiscountPercent: Number(form.getDiscountPercent) || 100, maxUses: form.maxUses ? Number(form.maxUses) : null, priority: Number(form.priority) || 0 };
+      if (editingRule) await updateDiscountRule(editingRule.id, data);
+      else await createDiscountRule(data);
+      setShowForm(false); setEditingRule(null); resetForm(); load();
+    } catch (err) { alert(err.message); } finally { setBusy(false); }
+  }
+
+  function resetForm() { setForm({ name: '', description: '', discountType: 'quantity', discountValue: '', discountAppliesTo: 'transaction', minQuantity: '', minSpend: '', buyQuantity: '', getQuantity: '', getDiscountPercent: '100', applicablePaymentMethods: '', maxUses: '', priority: '0', startDate: '', endDate: '' }); }
+  function startEdit(r) { setEditingRule(r); setForm({ name: r.name, description: r.description || '', discountType: r.discount_type, discountValue: r.discount_value, discountAppliesTo: r.discount_applies_to || 'transaction', minQuantity: r.min_quantity || '', minSpend: r.min_spend || '', buyQuantity: r.buy_quantity || '', getQuantity: r.get_quantity || '', getDiscountPercent: r.get_discount_percent || '100', applicablePaymentMethods: r.applicable_payment_methods || '', maxUses: r.max_uses || '', priority: r.priority || '0', startDate: r.start_date ? r.start_date.slice(0,10) : '', endDate: r.end_date ? r.end_date.slice(0,10) : '' }); setShowForm(true); }
+
+  const typeLabels = { simple: '💲 Simple', quantity: '📦 Quantity', threshold: '🎯 Threshold', mix_and_match: '🔀 Mix & Match', tender_based: '💳 Tender-Based', buy_x_get_y: '🎁 Buy X Get Y' };
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>🎯 Discount Rules</h2>
+        <div className="header-actions">
+          {(user?.role === 'ADMIN' || user?.role === 'MANAGER') && <button className="btn primary" onClick={() => { setShowForm(!showForm); setEditingRule(null); resetForm(); }}>+ New Rule</button>}
+        </div>
+      </div>
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>{editingRule ? 'Edit Rule' : 'New Discount Rule'}</h3>
+          <form onSubmit={handleSave} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <label style={{ gridColumn: '1/-1' }}>Name<input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></label>
+            <label>Type<select value={form.discountType} onChange={e => setForm({...form, discountType: e.target.value})}><option value="quantity">Quantity (buy N get % off)</option><option value="threshold">Threshold (spend X get % off)</option><option value="mix_and_match">Mix & Match</option><option value="tender_based">Tender-Based</option><option value="buy_x_get_y">Buy X Get Y Free</option><option value="simple">Simple Discount</option></select></label>
+            <label>Discount Value<input type="number" step="0.01" value={form.discountValue} onChange={e => setForm({...form, discountValue: e.target.value})} required /></label>
+            <label>Applies To<select value={form.discountAppliesTo} onChange={e => setForm({...form, discountAppliesTo: e.target.value})}><option value="transaction">Transaction</option><option value="line">Line Item</option><option value="cheapest">Cheapest Item</option></select></label>
+            {(form.discountType === 'quantity') && <label>Min Quantity<input type="number" value={form.minQuantity} onChange={e => setForm({...form, minQuantity: e.target.value})} /></label>}
+            {(form.discountType === 'threshold') && <label>Min Spend (₦)<input type="number" step="0.01" value={form.minSpend} onChange={e => setForm({...form, minSpend: e.target.value})} /></label>}
+            {(form.discountType === 'buy_x_get_y') && <><label>Buy Quantity<input type="number" value={form.buyQuantity} onChange={e => setForm({...form, buyQuantity: e.target.value})} /></label><label>Get Quantity<input type="number" value={form.getQuantity} onChange={e => setForm({...form, getQuantity: e.target.value})} /></label><label>Get Discount %<input type="number" value={form.getDiscountPercent} onChange={e => setForm({...form, getDiscountPercent: e.target.value})} /></label></>}
+            {(form.discountType === 'tender_based') && <label>Payment Methods<input value={form.applicablePaymentMethods} onChange={e => setForm({...form, applicablePaymentMethods: e.target.value})} placeholder="Cash,Card,Transfer" /></label>}
+            <label>Max Uses<input type="number" value={form.maxUses} onChange={e => setForm({...form, maxUses: e.target.value})} placeholder="Unlimited" /></label>
+            <label>Priority<input type="number" value={form.priority} onChange={e => setForm({...form, priority: e.target.value})} /></label>
+            <label>Start Date<input type="date" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} required /></label>
+            <label>End Date<input type="date" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} /></label>
+            <div style={{ gridColumn: '1/-1', display: 'flex', gap: 8 }}>
+              <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving...' : 'Save Rule'}</button>
+              <button type="button" className="btn secondary" onClick={() => { setShowForm(false); setEditingRule(null); }}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+      <div className="table-wrap">
+        <table><thead><tr><th>Rule</th><th>Type</th><th>Value</th><th>Condition</th><th>Uses</th><th>Priority</th><th>Active</th><th>Actions</th></tr></thead>
+          <tbody>{rules.map(r => (
+            <tr key={r.id}>
+              <td><strong>{r.name}</strong></td>
+              <td><span className="status-badge">{typeLabels[r.discount_type] || r.discount_type}</span></td>
+              <td><strong>{r.discount_type?.includes('threshold') || r.discount_type === 'simple' ? fmt(r.discount_value) : r.discount_value + '%'}</strong></td>
+              <td style={{ fontSize: '0.8rem' }}>{r.min_quantity && `Qty ≥ ${r.min_quantity}`}{r.min_spend && `Spend ≥ ${fmt(r.min_spend)}`}{r.buy_quantity && `Buy ${r.buy_quantity} Get ${r.get_quantity}`}{r.applicable_payment_methods && `Pay: ${r.applicable_payment_methods}`}</td>
+              <td>{r.used_count || 0}{r.max_uses ? ` / ${r.max_uses}` : ''}</td>
+              <td>{r.priority}</td>
+              <td><span className={`status-badge ${r.is_active ? 'active' : 'inactive'}`}>{r.is_active ? 'Active' : 'Off'}</span></td>
+              <td><button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => startEdit(r)}>Edit</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {!rules.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No discount rules yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── 3. MULTI-CURRENCY ─────────────────────────────────────────
+function MultiCurrencyPage() {
+  const { fetchCurrencies, fetchCurrencyRates, updateCurrencyRates, user } = useAuth();
+  const [currencies, setCurrencies] = useState([]);
+  const [rates, setRates] = useState([]);
+  const [editing, setEditing] = useState({});
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [c, r] = await Promise.allSettled([fetchCurrencies(), fetchCurrencyRates()]);
+      if (c.status === 'fulfilled') setCurrencies(c.value || []);
+      if (r.status === 'fulfilled') setRates(r.value || []);
+    } catch (e) { console.error(e); }
+  }, [fetchCurrencies, fetchCurrencyRates]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSaveRates() {
+    setBusy(true);
+    try {
+      const ratesToUpdate = Object.entries(editing).filter(([k, v]) => v !== '' && v !== undefined).map(([k, v]) => {
+        const [from, to] = k.split('_');
+        return { from, to, rate: Number(v) };
+      });
+      if (ratesToUpdate.length) await updateCurrencyRates({ rates: ratesToUpdate });
+      setEditing({}); load();
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <div className="page-header"><h2>💱 Multi-Currency</h2></div>
+      <div className="summary-grid" style={{ marginBottom: 16 }}>
+        {currencies.filter(c => c.is_active).map(c => (
+          <div key={c.id} className="summary-card" style={{ borderLeft: c.is_base_currency ? '3px solid var(--accent)' : 'none' }}>
+            <span>{c.code}</span>
+            <strong>{c.symbol} {c.name}</strong>
+            {c.is_base_currency && <small>Base Currency</small>}
+          </div>
+        ))}
+      </div>
+      <div className="panel">
+        <h3>Exchange Rates (vs Base Currency)</h3>
+        <p className="muted" style={{ marginBottom: 12 }}>Update rates below. Base currency is {currencies.find(c => c.is_base_currency)?.symbol} {currencies.find(c => c.is_base_currency)?.code}.</p>
+        <table><thead><tr><th>From</th><th>To</th><th>Rate</th><th>Last Updated</th></tr></thead>
+          <tbody>{rates.filter(r => currencies.find(c => c.id === r.from_currency_id && c.is_base_currency) || currencies.find(c => c.id === r.to_currency_id && c.is_base_currency)).map(r => (
+            <tr key={r.id}>
+              <td><strong>{r.from_code}</strong> {r.from_symbol}</td>
+              <td><strong>{r.to_code}</strong> {r.to_symbol}</td>
+              <td><input type="number" step="0.000001" value={editing[`${r.from_code}_${r.to_code}`] ?? r.rate} onChange={e => setEditing({...editing, [`${r.from_code}_${r.to_code}`]: e.target.value})} style={{ width: 140 }} /></td>
+              <td style={{ fontSize: '0.8rem' }}>{new Date(r.effective_from).toLocaleString()}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {Object.keys(editing).length > 0 && (
+          <button className="btn primary" onClick={handleSaveRates} disabled={busy} style={{ marginTop: 12 }}>{busy ? 'Saving...' : '💾 Save Rates'}</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 4. WISH LISTS ─────────────────────────────────────────────
+function WishListsPage() {
+  const { fetchWishlists, addWishlistItem, removeWishlistItem, fetchCustomers, fetchProducts, user } = useAuth();
+  const [customers, setCustomers] = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState('');
+  const [wishlist, setWishlist] = useState([]);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => { fetchCustomers().then(setCustomers).catch(() => {}); fetchProducts().then(setProducts).catch(() => {}); }, [fetchCustomers, fetchProducts]);
+  useEffect(() => { if (selectedCustomer) { fetchWishlists(selectedCustomer).then(setWishlist).catch(() => {}); } }, [selectedCustomer, fetchWishlists]);
+
+  async function handleAdd() {
+    if (!selectedCustomer || !selectedProduct) return;
+    try {
+      await addWishlistItem({ customerId: selectedCustomer, productId: Number(selectedProduct), notes });
+      setShowAddForm(false); setSelectedProduct(''); setNotes('');
+      fetchWishlists(selectedCustomer).then(setWishlist).catch(() => {});
+    } catch (e) { alert(e.message); }
+  }
+
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>💝 Wish Lists</h2>
+        <div className="header-actions">
+          <select value={selectedCustomer} onChange={e => setSelectedCustomer(e.target.value)} className="form-select"><option value="">Select Customer</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          {selectedCustomer && <button className="btn primary" onClick={() => setShowAddForm(!showAddForm)}>+ Add Item</button>}
+        </div>
+      </div>
+      {showAddForm && selectedCustomer && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Add to Wish List</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+            <select value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)} style={{ flex: 1, minWidth: 200 }}><option value="">Select Product</option>{products.map(p => <option key={p.id} value={p.id}>{p.name} ({fmt(p.price)})</option>)}</select>
+            <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Notes (optional)" style={{ flex: 1, minWidth: 150 }} />
+            <button className="btn primary" onClick={handleAdd}>Add</button>
+          </div>
+        </div>
+      )}
+      {selectedCustomer && (
+        <div className="table-wrap">
+          <table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Notes</th><th>Added</th><th>Actions</th></tr></thead>
+            <tbody>{wishlist.map(w => (
+              <tr key={w.id}>
+                <td><strong>{w.product_name || 'Unknown'}</strong><br /><small style={{ color: 'var(--muted)' }}>{w.category}</small></td>
+                <td>{fmt(w.price)}</td>
+                <td><span className={`status-badge ${w.stock > 0 ? 'active' : 'inactive'}`}>{w.stock > 0 ? `${w.stock} in stock` : 'Out of stock'}</span></td>
+                <td style={{ fontSize: '0.8rem' }}>{w.notes || '—'}</td>
+                <td style={{ fontSize: '0.8rem' }}>{new Date(w.created_at).toLocaleDateString()}</td>
+                <td><button className="btn danger" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => { removeWishlistItem(w.id).then(() => fetchWishlists(selectedCustomer).then(setWishlist)); }}>Remove</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!wishlist.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No items in wish list yet.</p>}
+        </div>
+      )}
+      {!selectedCustomer && <p className="muted" style={{ padding: 40, textAlign: 'center' }}>Select a customer to view their wish list.</p>}
+    </div>
+  );
+}
+
+// ── 5. RECEIPT TEMPLATES ──────────────────────────────────────
+function ReceiptTemplatesPage() {
+  const { fetchReceiptTemplates, createReceiptTemplate, updateReceiptTemplate, deleteReceiptTemplate, previewReceiptTemplate, user } = useAuth();
+  const [templates, setTemplates] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [form, setForm] = useState({ name: '', headerText: '', footerText: '', showLogo: true, showBarcode: true, showCustomerInfo: true, showCashierName: true, showBranchInfo: true, showLoyaltyPoints: true, showTaxBreakdown: true, showSavings: false, paperWidth: 80, fontSize: 12, themeColor: '#16a34a' });
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => { try { setTemplates(await fetchReceiptTemplates()); } catch(e) { console.error(e); } }, [fetchReceiptTemplates]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave(e) {
+    e.preventDefault(); setBusy(true);
+    try {
+      if (editing) await updateReceiptTemplate(editing.id, form);
+      else await createReceiptTemplate(form);
+      setShowForm(false); setEditing(null); setForm({ name: '', headerText: '', footerText: '', showLogo: true, showBarcode: true, showCustomerInfo: true, showCashierName: true, showBranchInfo: true, showLoyaltyPoints: true, showTaxBreakdown: true, showSavings: false, paperWidth: 80, fontSize: 12, themeColor: '#16a34a' });
+      load();
+    } catch (err) { alert(err.message); } finally { setBusy(false); }
+  }
+
+  function startEdit(t) { setEditing(t); setForm({ name: t.name, headerText: t.header_text || '', footerText: t.footer_text || '', showLogo: t.show_logo, showBarcode: t.show_barcode, showCustomerInfo: t.show_customer_info, showCashierName: t.show_cashier_name, showBranchInfo: t.show_branch_info, showLoyaltyPoints: t.show_loyalty_points, showTaxBreakdown: t.show_tax_breakdown, showSavings: t.show_savings, paperWidth: t.paper_width, fontSize: t.font_size, themeColor: t.theme_color }); setShowForm(true); }
+
+  async function handlePreview(id) { try { setPreview(await previewReceiptTemplate(id)); } catch(e) { console.error(e); } }
+
+  return (
+    <div>
+      <div className="page-header"><h2>🧾 Receipt Templates</h2><button className="btn primary" onClick={() => { setShowForm(!showForm); setEditing(null); }}>+ New Template</button></div>
+      {showForm && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>{editing ? 'Edit' : 'New'} Receipt Template</h3>
+          <form onSubmit={handleSave} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+            <label style={{ gridColumn: '1/-1' }}>Name<input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></label>
+            <label style={{ gridColumn: '1/-1' }}>Header Text<textarea value={form.headerText} onChange={e => setForm({...form, headerText: e.target.value})} rows={2} /></label>
+            <label style={{ gridColumn: '1/-1' }}>Footer Text<textarea value={form.footerText} onChange={e => setForm({...form, footerText: e.target.value})} rows={2} /></label>
+            <label>Paper Width<select value={form.paperWidth} onChange={e => setForm({...form, paperWidth: Number(e.target.value)})}><option value={58}>58mm</option><option value={80}>80mm</option></select></label>
+            <label>Theme Color<input type="color" value={form.themeColor} onChange={e => setForm({...form, themeColor: e.target.value})} /></label>
+            {[['showLogo','Show Logo'],['showBarcode','Show Barcode'],['showCustomerInfo','Customer Info'],['showCashierName','Cashier Name'],['showBranchInfo','Branch Info'],['showLoyaltyPoints','Loyalty Points'],['showTaxBreakdown','Tax Breakdown'],['showSavings','Show Savings']].map(([key, label]) => (
+              <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={form[key]} onChange={e => setForm({...form, [key]: e.target.checked})} /> {label}</label>
+            ))}
+            <div style={{ gridColumn: '1/-1', display: 'flex', gap: 8 }}><button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving...' : 'Save'}</button><button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button></div>
+          </form>
+        </div>
+      )}
+      {preview && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: '4px solid var(--accent)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><h3>Receipt Preview</h3><button className="btn secondary" onClick={() => setPreview(null)}>✕</button></div>
+          <pre style={{ background: '#f8f9fa', padding: 16, borderRadius: 8, fontSize: '0.8rem', overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+{`${preview.template.header_text}
+${'─'.repeat(32)}
+Store: ${preview.preview.storeName}
+Receipt: ${preview.preview.receiptNumber}
+Date: ${preview.preview.date}
+Cashier: ${preview.preview.cashier}
+Branch: ${preview.preview.branch}
+${'─'.repeat(32)}
+${preview.preview.items.map(i => `${i.name} x${i.qty}  ₦${i.total.toLocaleString()}`).join('\n')}
+${'─'.repeat(32)}
+Subtotal: ₦${preview.preview.subtotal.toLocaleString()}
+Total: ₦${preview.preview.total.toLocaleString()}
+${'─'.repeat(32)}
+${preview.template.footer_text}`}</pre>
+        </div>
+      )}
+      <div className="table-wrap">
+        <table><thead><tr><th>Template</th><th>Paper</th><th>Color</th><th>Sections</th><th>Default</th><th>Actions</th></tr></thead>
+          <tbody>{templates.map(t => (
+            <tr key={t.id}>
+              <td><strong>{t.name}</strong></td>
+              <td>{t.paper_width}mm</td>
+              <td><span style={{ display: 'inline-block', width: 16, height: 16, borderRadius: 4, background: t.theme_color, verticalAlign: 'middle' }} /></td>
+              <td style={{ fontSize: '0.75rem' }}>{[t.show_logo && 'Logo', t.show_barcode && 'Barcode', t.show_customer_info && 'Customer', t.show_loyalty_points && 'Loyalty'].filter(Boolean).join(', ')}</td>
+              <td>{t.is_default ? '✅' : ''}</td>
+              <td><button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => handlePreview(t.id)}>Preview</button> <button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => startEdit(t)}>Edit</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── 6. FULFILLMENT ────────────────────────────────────────────
+function FulfillmentPage() {
+  const { fetchFulfillments, getFulfillment, updateFulfillmentStatus, updateFulfillmentItem, user } = useAuth();
+  const [fulfillments, setFulfillments] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { const d = await fetchFulfillments(statusFilter ? { status: statusFilter } : {}); setFulfillments(d?.data || []); } catch(e) { console.error(e); }
+  }, [fetchFulfillments, statusFilter]);
+  useEffect(() => { load(); }, [load]);
+
+  async function viewDetail(id) { setSelected(id); try { const d = await getFulfillment(id); setDetail(d); } catch(e) { console.error(e); } }
+
+  async function handleStatusChange(id, newStatus) {
+    setBusy(true);
+    try { await updateFulfillmentStatus(id, { status: newStatus }); viewDetail(id); load(); } finally { setBusy(false); }
+  }
+
+  async function handleItemUpdate(fId, itemId, data) {
+    try { await updateFulfillmentItem(fId, itemId, data); viewDetail(fId); } catch(e) { console.error(e); }
+  }
+
+  const statusFlow = ['pending', 'picking', 'packed', 'ready', 'shipped', 'delivered'];
+  const statusColors = { pending: '#6b7280', picking: '#0ea5e9', packed: '#8b5cf6', ready: '#f59e0b', shipped: '#3b82f6', delivered: '#16a34a', cancelled: '#ef4444' };
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>📦 Fulfillment</h2>
+        <div className="header-actions">
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="form-select">
+            <option value="">All Status</option>
+            {statusFlow.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+      {selected && detail && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: `4px solid ${statusColors[detail.status]}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div><h3 style={{ margin: 0 }}>{detail.fulfillment_number}</h3><p className="muted">{detail.customer_name || 'Walk-in'} · {detail.shipping_method} · {detail.priority}</p></div>
+            <button className="btn secondary" onClick={() => { setSelected(null); setDetail(null); }}>✕</button>
+          </div>
+          <div className="summary-grid" style={{ marginTop: 12 }}>
+            <div className="summary-card"><span>Total Items</span><strong>{detail.total_items}</strong></div>
+            <div className="summary-card"><span>Picked</span><strong>{detail.total_picked}</strong></div>
+            <div className="summary-card"><span>Packed</span><strong>{detail.total_packed}</strong></div>
+            {detail.sale_total && <div className="summary-card accent"><span>Sale Total</span><strong>{fmt(detail.sale_total)}</strong></div>}
+          </div>
+          {detail.tracking_number && <p style={{ marginTop: 8, fontSize: '0.85rem' }}>Tracking: <code>{detail.tracking_number}</code> ({detail.carrier_name})</p>}
+          <div style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {statusFlow.filter(s => s !== detail.status).map(s => {
+              const currentIdx = statusFlow.indexOf(detail.status);
+              const targetIdx = statusFlow.indexOf(s);
+              if (targetIdx <= currentIdx && s !== 'cancelled') return null;
+              return <button key={s} className={`btn ${s === 'cancelled' ? 'danger' : 'primary'}`} style={{ fontSize: '0.78rem' }} onClick={() => handleStatusChange(detail.id, s)} disabled={busy}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>;
+            })}
+          </div>
+          {detail.items?.length > 0 && (
+            <table style={{ marginTop: 12 }}><thead><tr><th>Product</th><th>Need</th><th>Picked</th><th>Packed</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody>{detail.items.map(item => (
+                <tr key={item.id}>
+                  <td><strong>{item.product_name}</strong><br /><small style={{ color: 'var(--muted)' }}>{item.location || 'No location set'}</small></td>
+                  <td><strong>{item.quantity_needed}</strong></td>
+                  <td><input type="number" min="0" value={item.quantity_picked} onChange={e => handleItemUpdate(detail.id, item.id, { quantityPicked: Number(e.target.value) })} style={{ width: 60 }} /></td>
+                  <td><input type="number" min="0" value={item.quantity_packed} onChange={e => handleItemUpdate(detail.id, item.id, { quantityPacked: Number(e.target.value) })} style={{ width: 60 }} /></td>
+                  <td><span className="status-badge" style={{ background: statusColors[item.status] + '20', color: statusColors[item.status] }}>{item.status}</span></td>
+                  <td><button className="btn secondary" style={{ fontSize: '0.7rem' }} onClick={() => handleItemUpdate(detail.id, item.id, { status: item.quantity_picked >= item.quantity_needed ? 'picked' : 'short' })}>Mark Picked</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          )}
+        </div>
+      )}
+      <div className="table-wrap">
+        <table><thead><tr><th>#</th><th>Customer</th><th>Method</th><th>Items</th><th>Priority</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody>{fulfillments.map(f => (
+            <tr key={f.id} style={{ cursor: 'pointer' }} onClick={() => viewDetail(f.id)}>
+              <td><code>{f.fulfillment_number}</code></td>
+              <td>{f.customer_name || '—'}</td>
+              <td>{f.shipping_method}</td>
+              <td>{f.total_picked}/{f.total_items}</td>
+              <td><span className="status-badge" style={{ background: f.priority === 'urgent' ? 'rgba(239,68,68,0.1)' : 'transparent', color: f.priority === 'urgent' ? '#ef4444' : 'inherit' }}>{f.priority}</span></td>
+              <td><span className="status-badge" style={{ background: statusColors[f.status] + '20', color: statusColors[f.status] }}>{f.status}</span></td>
+              <td style={{ fontSize: '0.8rem' }}>{new Date(f.created_at).toLocaleDateString()}</td>
+              <td onClick={e => e.stopPropagation()}><button className="btn secondary" style={{ fontSize: '0.75rem', padding: '2px 8px' }} onClick={() => viewDetail(f.id)}>View</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+        {!fulfillments.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No fulfillments yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── 7. DIGITAL WALLETS SETTINGS ───────────────────────────────
+function DigitalWalletsPage() {
+  const { getDigitalWalletStatus, updateDigitalWallets, user } = useAuth();
+  const [status, setStatus] = useState(null);
+  const [form, setForm] = useState({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { getDigitalWalletStatus().then(d => { setStatus(d); setForm(d); }).catch(() => {}); }, [getDigitalWalletStatus]);
+
+  async function handleSave() {
+    setBusy(true);
+    try { await updateDigitalWallets(form); const d = await getDigitalWalletStatus(); setStatus(d); alert('Saved!'); } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <div className="page-header"><h2>📱 Digital Wallets</h2></div>
+      <div className="panel" style={{ maxWidth: 500 }}>
+        <h3>Apple Pay & Google Pay Settings</h3>
+        <p className="muted" style={{ marginBottom: 16 }}>Configure Apple Pay and Google Pay integration for the POS. These use the same payment gateway (Paystack/Flutterwave) but enable one-tap payments on compatible devices.</p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}><input type="checkbox" checked={form?.apple_pay_enabled || false} onChange={e => setForm({...form, apple_pay_enabled: e.target.checked})} /> <strong>Apple Pay</strong></label>
+        {form?.apple_pay_enabled && <label>Apple Pay Merchant ID<input value={form?.apple_pay_merchant_id || ''} onChange={e => setForm({...form, apple_pay_merchant_id: e.target.value})} placeholder="merchant.com.yourstore" /></label>}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, marginTop: 12 }}><input type="checkbox" checked={form?.google_pay_enabled || false} onChange={e => setForm({...form, google_pay_enabled: e.target.checked})} /> <strong>Google Pay</strong></label>
+        {form?.google_pay_enabled && <label>Google Pay Merchant ID<input value={form?.google_pay_merchant_id || ''} onChange={e => setForm({...form, google_pay_merchant_id: e.target.value})} placeholder="your-merchant-id" /></label>}
+        <label style={{ marginTop: 12 }}>Environment<select value={form?.digital_wallet_env || 'sandbox'} onChange={e => setForm({...form, digital_wallet_env: e.target.value})}><option value="sandbox">Sandbox (Testing)</option><option value="production">Production</option></select></label>
+        <button className="btn primary" onClick={handleSave} disabled={busy} style={{ marginTop: 16 }}>{busy ? 'Saving...' : 'Save Settings'}</button>
+      </div>
+    </div>
+  );
+}
+
+// ── 8. PRODUCT VARIANTS PAGE ──────────────────────────────────
+function VariantsPage() {
+  const { fetchProducts, fetchProductVariants, fetchProductVariantOptions, createProductVariants, deleteVariant, user } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [variants, setVariants] = useState([]);
+  const [options, setOptions] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [newVariant, setNewVariant] = useState({ name: '', sku: '', barcode: '', price: '', stock: '', attributes: {} });
+  const [newOptions, setNewOptions] = useState([{ name: 'Color', values: '' }]);
+
+  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); }, [fetchProducts]);
+  useEffect(() => { if (selectedProduct) {
+    fetchProductVariants(selectedProduct).then(setVariants).catch(() => {});
+    fetchProductVariantOptions(selectedProduct).then(setOptions).catch(() => {});
+  } }, [selectedProduct, fetchProductVariants, fetchProductVariantOptions]);
+
+  async function handleCreate() {
+    if (!selectedProduct || !newVariant.name) return;
+    try {
+      const attrs = {};
+      newOptions.forEach(o => { if (o.name && o.values) attrs[o.name] = o.values.split(',').map(v => v.trim())[0]; });
+      await createProductVariants(selectedProduct, {
+        options: newOptions.filter(o => o.name && o.values).map(o => ({ name: o.name, values: o.values.split(',').map(v => v.trim()) })),
+        variants: [{ ...newVariant, attributes: attrs, price: newVariant.price ? Number(newVariant.price) : null, stock: Number(newVariant.stock) || 0 }]
+      });
+      setShowForm(false); setNewVariant({ name: '', sku: '', barcode: '', price: '', stock: '', attributes: {} });
+      fetchProductVariants(selectedProduct).then(setVariants).catch(() => {});
+    } catch (e) { alert(e.message); }
+  }
+
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>🎨 Product Variants</h2>
+        <div className="header-actions">
+          <select value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)} className="form-select"><option value="">Select Product</option>{products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          {selectedProduct && <button className="btn primary" onClick={() => setShowForm(!showForm)}>+ Add Variant</button>}
+        </div>
+      </div>
+      {showForm && selectedProduct && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>New Variant</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <label style={{ gridColumn: '1/-1' }}>Variant Name<input value={newVariant.name} onChange={e => setNewVariant({...newVariant, name: e.target.value})} required placeholder="e.g. Red - Large" /></label>
+            <label>SKU<input value={newVariant.sku} onChange={e => setNewVariant({...newVariant, sku: e.target.value})} /></label>
+            <label>Barcode<input value={newVariant.barcode} onChange={e => setNewVariant({...newVariant, barcode: e.target.value})} /></label>
+            <label>Price Override (₦)<input type="number" step="0.01" value={newVariant.price} onChange={e => setNewVariant({...newVariant, price: e.target.value})} placeholder="Leave empty for parent price" /></label>
+            <label>Stock<input type="number" value={newVariant.stock} onChange={e => setNewVariant({...newVariant, stock: e.target.value})} /></label>
+            <div style={{ gridColumn: '1/-1' }}><strong>Variant Options</strong></div>
+            {newOptions.map((opt, i) => (
+              <div key={i} style={{ gridColumn: '1/-1', display: 'flex', gap: 8, alignItems: 'end' }}>
+                <input value={opt.name} onChange={e => { const n = [...newOptions]; n[i].name = e.target.value; setNewOptions(n); }} placeholder="Option name" style={{ width: 120 }} />
+                <input value={opt.values} onChange={e => { const n = [...newOptions]; n[i].values = e.target.value; setNewOptions(n); }} placeholder="Values (comma separated)" style={{ flex: 1 }} />
+                <button type="button" className="btn danger" style={{ padding: '2px 8px' }} onClick={() => setNewOptions(newOptions.filter((_, j) => j !== i))}>✕</button>
+              </div>
+            ))}
+            <button type="button" className="btn secondary" onClick={() => setNewOptions([...newOptions, { name: '', values: '' }])}>+ Add Option</button>
+            <div style={{ gridColumn: '1/-1', display: 'flex', gap: 8 }}><button className="btn primary" onClick={handleCreate}>Create Variant</button><button className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button></div>
+          </div>
+        </div>
+      )}
+      {selectedProduct && (
+        <>
+          {options.length > 0 && (
+            <div className="panel" style={{ marginBottom: 16 }}>
+              <h3>Variant Options</h3>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{options.map(o => (
+                <div key={o.id} style={{ padding: 8, background: 'var(--surface)', borderRadius: 8 }}><strong>{o.option_name}:</strong> {o.option_values?.join(', ')}</div>
+              ))}</div>
+            </div>
+          )}
+          <div className="table-wrap">
+            <table><thead><tr><th>Variant</th><th>SKU</th><th>Barcode</th><th>Attributes</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>
+              <tbody>{variants.map(v => (
+                <tr key={v.id}>
+                  <td><strong>{v.variant_name}</strong></td>
+                  <td><code>{v.sku || '—'}</code></td>
+                  <td>{v.barcode || '—'}</td>
+                  <td style={{ fontSize: '0.8rem' }}>{typeof v.attributes === 'object' ? Object.entries(v.attributes).map(([k,val]) => `${k}: ${val}`).join(', ') : '—'}</td>
+                  <td>{v.price != null ? fmt(v.price) : <span className="muted">Parent price</span>}</td>
+                  <td className={v.stock <= 0 ? 'low-stock' : ''}>{v.stock}</td>
+                  <td><span className={`status-badge ${v.is_active ? 'active' : 'inactive'}`}>{v.is_active ? 'Active' : 'Inactive'}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+            {!variants.length && <p className="muted" style={{ padding: 20, textAlign: 'center' }}>No variants for this product.</p>}
+          </div>
+        </>
+      )}
+      {!selectedProduct && <p className="muted" style={{ padding: 40, textAlign: 'center' }}>Select a product to manage its variants.</p>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // STORE COMMERCE FEATURES
 // ═══════════════════════════════════════════════════════════════════
 
@@ -8531,6 +9096,14 @@ export default function App() {
            <Route path="/tasks" element={<TasksPage />} />
            <Route path="/commissions" element={<CommissionsPage />} />
            <Route path="/bundles" element={<BundlesPage />} />
+          <Route path="/variants" element={<VariantsPage />} />
+          <Route path="/discounts" element={<DiscountRulesPage />} />
+          <Route path="/currencies" element={<MultiCurrencyPage />} />
+          <Route path="/wishlists" element={<WishListsPage />} />
+          <Route path="/receipts" element={<ReceiptTemplatesPage />} />
+          <Route path="/fulfillment" element={<FulfillmentPage />} />
+          <Route path="/offline" element={<OfflineSyncPage />} />
+          <Route path="/digitalwallets" element={<DigitalWalletsPage />} />
            <Route path="/payment-settings" element={<PaymentSettingsPage />} />
            <Route path="/terminals" element={<TerminalPage />} />
            <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -106,6 +106,7 @@ async function runMigrations(pool) {
     "migration-paystack-terminal.sql",
     "migration-po-payments.sql",
     "migration-store-commerce.sql",
+    "migration-priority-gaps.sql",
   ];
 
   const sqlDir = path.join(__dirname, "..", "sql");
