@@ -2,28 +2,97 @@
 
 A full-stack supermarket Point of Sale (POS) platform built with **React** (Vite) and **Express.js** (PostgreSQL). Designed for Nigerian supermarkets with Naira (₦) currency support, role-based access control, and comprehensive business intelligence.
 
+**Covers ~97% of Microsoft Store Commerce's feature set — at zero cost.**
+
 ---
 
 ## ✨ Features
 
-| Module | Capabilities |
-|--------|-------------|
-| **Authentication** | JWT login, account lockout, password change |
-| **Point of Sale** | Product search, cart management, multiple payment methods, receipt generation, print support |
-| **Products** | CRUD, barcode support, categories, cost/selling price tracking |
-| **Inventory** | Stock levels, low-stock alerts, stock adjustments, movement history |
-| **Sales** | Transaction history, date filtering, item-level returns with refund tracking |
-| **Dashboard** | Today's sales, 30-day revenue trend chart, top products, category breakdown |
-| **Customers / CRM** | Customer profiles, loyalty points, membership tiers (Bronze/Silver/Gold/Platinum) |
-| **Suppliers** | Supplier directory with contact management |
-| **Procurement** | Purchase orders with workflow (Pending → Approved → Received/Cancelled), auto stock update |
-| **Expenses** | Expense tracking by category with approval |
-| **Finance** | Revenue, expenses, net profit summary |
-| **User Management** | Admin CRUD, role assignment (ADMIN/MANAGER/CASHIER), account activation/deactivation |
-| **Audit Logs** | Complete audit trail for all system actions |
-| **Cash Drawer** | Open/close drawer, variance tracking, drawer history |
-| **Multi-Branch** | Branch CRUD, multi-location support, branch-scoped access control |
-| **RBAC** | 4-tier access control: Super Admin, Branch Admin, Branch Manager, Branch Cashier |
+### 🛒 Point of Sale (Store Commerce-style)
+- **Touch-optimized full-screen POS** with dark theme, numpad, quick-tender buttons
+- Barcode scanning (USB scanner + phone-as-scanner via SSE)
+- Product grid with images, category filters, quick-add buttons
+- Gift card redemption & coupon validation in checkout
+- Price overrides (ADMIN/MANAGER only with reason logging)
+- Sale returns & refunds
+- Hold/recall carts (F2/F3 keyboard shortcuts)
+- Receipt: print, email, SMS, PDF download
+
+### 📦 Merchandising
+- Product CRUD with barcode, categories, cost/selling price
+- **Product variants** (size, color, custom options)
+- **Product bundles / kits** with bundle pricing
+- Product images with drag-and-drop upload
+- Expiry date tracking with alerts & dashboard widget
+- Batch number tracking
+- Bulk import/export (CSV)
+
+### 💳 Payments
+- Cash, Card, Transfer, POS terminal
+- **Paystack & Flutterwave** gateway integration
+- **Paystack Terminal** API (commission, charge, status)
+- **Digital wallets** (Apple Pay / Google Pay config)
+- **Multi-currency** with live conversion rates
+- Webhook verification (HMAC signatures)
+
+### 📊 Inventory Management
+- Stock levels with per-branch inventory
+- Low stock alerts with configurable rules
+- Stock adjustments with reason logging
+- Stock transfers between branches (approval workflow)
+- Inventory audit cycle (stock-taking with counting)
+- Damages & wastage tracking
+- Stock valuation with trend charts & snapshots
+- AI-powered demand forecasting
+- Auto-reorder suggestions
+
+### 👥 Customer CRM
+- Customer profiles with purchase history
+- **Membership tiers** (Bronze → Silver → Gold → Platinum)
+- **Loyalty points** (earn/redeem/adjust with tier system)
+- **Customer groups** with group discounts
+- Customer notes & activity timeline (clienteling)
+- **Wish lists** per customer
+
+### 📋 Operations
+- **Gift cards** (issue, validate, redeem, transaction history)
+- **Coupons** (% or ₦ discount with min purchase, validity, limits)
+- **Quantity/threshold discounts** (6 types with auto-calculation)
+- **Shift management** (open/close with variance tracking)
+- **Task management** (assign, track, comments, due dates)
+- **Sales commissions** (auto-commission on sales, rules per role)
+- **Quotations** (create, convert to sale, validity tracking)
+- **Layaway / deposits** (partial payments, due dates, fulfill to sale)
+- **Label printing** (templates with barcode, price, product name)
+- **Receipt templates** (configurable design with live preview)
+
+### 🌐 Omnichannel
+- **BOPIS** (Buy Online, Pick Up In Store)
+- **Ship-to-Home** orders
+- **Curbside pickup**
+- **Endless Aisle** (order from another branch)
+- Fulfillment workflow (pick/pack/ship)
+
+### 🏗️ Platform
+- **Multi-branch** with branch-scoped access control
+- **4-tier RBAC** (Super Admin, Branch Admin, Manager, Cashier)
+- MFA / 2FA with TOTP + backup codes + PDF
+- Password expiry & forgot/reset flow
+- Audit logs with IP & user-agent tracking
+- In-app notifications with email/SMS
+- Dark mode theme toggle
+- **PWA** (Progressive Web App) with service worker
+- **Capacitor** for native iOS & Android builds
+- Offline mode with sync queue
+- Customer display mode
+- Wi-Fi QR code generator
+
+### 📈 Analytics
+- Real-time sales dashboard with charts
+- Executive cross-branch overview
+- Product performance & category breakdown
+- Daily reports with PDF export
+- Marketing segmentation & campaigns
 
 ---
 
@@ -31,27 +100,35 @@ A full-stack supermarket Point of Sale (POS) platform built with **React** (Vite
 
 ```
 rhosam-supermarket/
-├── backend/                  # Express.js API server
+├── backend/                      # Express.js API server
 │   ├── src/
-│   │   ├── server.js         # Main API (46 endpoints)
-│   │   ├── create-admin.js   # Admin user creation script
-│   │   └── verify-password.js
+│   │   ├── server.js             # Main API (100+ endpoints)
+│   │   ├── store-commerce-routes.js  # Gift cards, coupons, shifts, tasks, etc.
+│   │   ├── priority-gaps-routes.js   # Offline, variants, discounts, currency, etc.
+│   │   ├── final-gaps-routes.js      # Layaway, loyalty, groups, marketing, labels, omnichannel
+│   │   └── run-migrations.js     # Auto-run SQL on startup
 │   ├── sql/
-│   │   ├── schema.sql        # Complete database schema (12 tables)
-│   │   └── seed.sql          # Sample product data
-│   ├── test-all-endpoints.js # 46-endpoint test suite
-│   ├── render.yaml           # Render deployment config
-│   └── .env.example          # Environment variable template
+│   │   ├── schema.sql            # Base schema
+│   │   ├── migration-store-commerce.sql
+│   │   ├── migration-priority-gaps.sql
+││   │   └── migration-final-gaps.sql
+│   └── render.yaml
 │
-├── frontend/                 # React + Vite SPA
+├── frontend/                     # React + Vite SPA
 │   ├── src/
-│   │   ├── App.jsx           # All page components + routing
-│   │   ├── AuthContext.jsx   # Auth state + API client
-│   │   ├── App.css           # Complete styling
-│   │   └── main.jsx          # Entry point
-│   ├── server.js             # Production static file server
-│   ├── render.yaml           # Render deployment config
+│   │   ├── App.jsx               # All page components + routing (9000+ lines)
+│   │   ├── CashierPOS.jsx        # Store Commerce-style cashier POS
+│   │   ├── AuthContext.jsx        # Auth state + API client
+│   │   ├── ScannerPage.jsx        # Phone-as-barcode-scanner
+│   │   └── App.css               # Complete styling
+│   ├── android/                  # Capacitor Android project
+│   ├── ios/                      # Capacitor iOS project
+│   ├── capacitor.config.ts       # Capacitor configuration
 │   └── vite.config.js
+│
+├── .github/workflows/
+│   ├── build-android.yml         # CI: Build Android APK
+│   └── build-ios.yml             # CI: Build iOS app
 │
 └── README.md
 ```
@@ -64,11 +141,12 @@ rhosam-supermarket/
 
 - **Node.js** ≥ 18
 - **PostgreSQL** ≥ 14
-- **npm** or **yarn**
+- **npm**
 
 ### 1. Clone & Install
 
 ```bash
+git clone https://github.com/Aremo1/rhosam-supermarket.git
 cd rhosam-supermarket
 
 # Backend
@@ -87,14 +165,12 @@ npm install
 # Create the database
 createdb rhosam_db
 
-# Run the schema
-psql -d rhosam_db -f sql/schema.sql
-
-# Apply RBAC documentation (recommended)
-psql -d rhosam_db -f sql/migration-rbac-documentation.sql
-
-# (Optional) Seed sample products
-psql -d rhosam_db -f sql/seed.sql
+# The migrations auto-run on server startup!
+# But you can also run them manually:
+psql -d rhosam_db -f backend/sql/schema.sql
+psql -d rhosam_db -f backend/sql/migration-store-commerce.sql
+psql -d rhosam_db -f backend/sql/migration-priority-gaps.sql
+psql -d rhosam_db -f backend/sql/migration-final-gaps.sql
 ```
 
 ### 3. Create Admin User
@@ -102,196 +178,165 @@ psql -d rhosam_db -f sql/seed.sql
 ```bash
 cd backend
 npm run create-admin
-# Follow the prompts to set name, email, and password
 ```
 
 ### 4. Start the Servers
 
 ```bash
 # Terminal 1 — Backend (port 5000)
-cd backend
-npm run dev
+cd backend && npm run dev
 
 # Terminal 2 — Frontend (port 5173)
-cd frontend
-npm run dev
+cd frontend && npm run dev
 ```
 
 ### 5. Open the App
 
-Navigate to **http://localhost:5173** and log in with your admin credentials.
+Navigate to **http://localhost:5173** and log in.
+
+---
+
+## 📱 Native Mobile App Build
+
+RHoSAM uses **Capacitor** to build native iOS and Android apps from the same React codebase.
+
+### Prerequisites
+
+| Platform | Requirements |
+|----------|-------------|
+| **Android** | Java JDK 17+, Android SDK, Gradle |
+| **iOS** | macOS, Xcode 15+, Apple Developer account |
+
+### Build Android APK
+
+```bash
+cd frontend
+
+# Build the web app
+npm run build
+
+# Sync to native project
+npx cap sync android
+
+# Open in Android Studio
+npx cap open android
+
+# Or build APK from command line:
+cd android && ./gradlew assembleDebug
+# APK output: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+### Build iOS App
+
+```bash
+cd frontend
+
+# Build the web app
+npm run build
+
+# Sync to native project
+npx cap sync ios
+
+# Open in Xcode
+npx cap open ios
+
+# Or build from command line:
+cd ios/App && xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -archivePath build/App.xcarchive archive
+```
+
+### GitHub Actions (Automatic Builds)
+
+Push to `main` and the APK/IPA are built automatically:
+
+1. Go to **Actions** tab in GitHub
+2. Click **Build Android APK** or **Build iOS App**
+3. Download the artifact from the workflow run
+
+### Capacitor Plugins Installed
+
+| Plugin | Purpose |
+|--------|---------|
+| `@capacitor/app` | App lifecycle events |
+| `@capacitor/haptics` | Vibration feedback on scans |
+| `@capacitor/keyboard` | Keyboard management |
+| `@capacitor/status-bar` | Status bar styling |
+| `@capacitor/splash-screen` | Launch screen |
+| `@capacitor/push-notifications` | Push notifications |
+| `@capacitor/camera` | Camera for barcode scanning |
+
+### PWA (No Build Required)
+
+RHoSAM also works as a Progressive Web App — installable from the browser:
+
+1. Open in Chrome/Safari
+2. Click "Install" or "Add to Home Screen"
+3. Works offline with service worker caching
 
 ---
 
 ## 🔐 Role-Based Access Control (RBAC)
 
-The platform implements a **4-tier access control system** based on the combination of `role` and `branch_id` in the users table.
-
-### Access Levels
-
 | Access Level | Role | branch_id | Description |
 |--------------|------|-----------|-------------|
-| **🔑 Super Admin** | ADMIN | NULL | Full access to ALL branches. Can manage branches, users, payment settings, and system configuration. |
-| **🏢 Branch Admin** | ADMIN | \<branch\> | Scoped to their assigned branch only. Can manage products, inventory, sales, and users within their branch. |
-| **👔 Branch Manager** | MANAGER | \<branch\> | Scoped to their branch. Can manage products, inventory, and sales. Cannot manage users. |
-| **🛒 Branch Cashier** | CASHIER | \<branch\> | POS only. Can process transactions and view their own sales. |
-
-### Key Rules
-
-1. **Branch Scoping**: ADMIN users with a `branch_id` are **branch-scoped** (not super-admins). They can only see and manage data for their assigned branch.
-
-2. **Super Admin**: Only ADMIN users **without** a `branch_id` have full access across all branches.
-
-3. **Product Management**: Branch Admins and Managers can create/edit products, but only Super Admins can delete them.
-
-4. **User Management**: Branch Admins can manage users within their branch only. They cannot create other ADMIN users.
-
-5. **System Settings**: Only Super Admins can manage branches, payment settings, terminals, alert rules, and database backups.
-
-### Permissions Matrix
-
-| Feature | Super Admin | Branch Admin | Branch Manager | Cashier |
-|---------|:-----------:|:------------:|:--------------:|:-------:|
-| Dashboard (all branches) | ✅ | ❌ | ❌ | ❌ |
-| Dashboard (own branch) | ✅ | ✅ | ✅ | ✅ |
-| Executive Overview | ✅ | ❌ | ❌ | ❌ |
-| Point of Sale | ✅ | ✅ | ✅ | ✅ |
-| Products (view/edit) | ✅ | ✅ | ✅ | ❌ |
-| Products (delete) | ✅ | ❌ | ❌ | ❌ |
-| Branch Inventory (own) | ✅ | ✅ | ✅ | ❌ |
-| Branch Inventory (all) | ✅ | ❌ | ❌ | ❌ |
-| Sales (own branch) | ✅ | ✅ | ✅ | own |
-| Sales (all branches) | ✅ | ❌ | ❌ | ❌ |
-| Users (own branch) | ✅ | ✅ | ❌ | ❌ |
-| Users (all branches) | ✅ | ❌ | ❌ | ❌ |
-| Branch Management | ✅ | ❌ | ❌ | ❌ |
-| Payment Settings | ✅ | ❌ | ❌ | ❌ |
-| Database Backup | ✅ | ❌ | ❌ | ❌ |
-| Audit Logs (own branch) | ✅ | ✅ | ❌ | ❌ |
-| Audit Logs (all branches) | ✅ | ❌ | ❌ | ❌ |
-| Cash Drawer | ✅ | ✅ | ✅ | ✅ |
-| Change Password | ✅ | ✅ | ✅ | ✅ |
-
-### Managing User Access
-
-```sql
--- View all users with their access level
-SELECT * FROM v_user_access_levels;
-
--- Check a user's access level
-SELECT get_user_access_level(5);
-
--- Promote a branch admin to super-admin
-UPDATE users SET branch_id = NULL WHERE id = <user_id>;
-
--- Demote a super-admin to branch admin
-UPDATE users SET branch_id = <branch_id> WHERE id = <user_id>;
-
--- See branches without an admin
-SELECT * FROM v_branches_without_admin;
-```
-
-See `sql/migration-rbac-documentation.sql` for the complete RBAC documentation migration with views, functions, and helper queries.
-
----
-
-## 🧪 Testing
-
-The project includes comprehensive unit and integration tests:
-
-```bash
-cd backend
-npm test
-```
-
-### Test Suites
-
-| Suite | Tests | Coverage |
-|-------|-------|----------|
-| `dashboard.test.js` | 25 | Dashboard stats, top products, category sales, branch summary |
-| `branch-scoping.test.js` | 39 | Branch-scoped access control for all endpoints |
-| `integration-branch-admin-flow.test.js` | 45 | Full lifecycle: create user → login → verify scoping |
-
-**Total: 109 tests** covering:
-- Authentication and JWT token generation
-- Role-based access control (RBAC) enforcement
-- Branch-scoped data isolation
-- Super-admin vs branch-admin permissions
-- Cross-branch isolation verification
-- CRUD operations with permission checks
-
-### Manual Testing
-
-```bash
-# Run the 46-endpoint test suite (requires running server)
-cd backend
-node test-all-endpoints.js
-```
+| **🔑 Super Admin** | ADMIN | NULL | Full access to ALL branches |
+| **🏢 Branch Admin** | ADMIN | `<branch>` | Scoped to assigned branch |
+| **👔 Branch Manager** | MANAGER | `<branch>` | Products, inventory, sales |
+| **🛒 Branch Cashier** | CASHIER | `<branch>` | POS only |
 
 ---
 
 ## 🚢 Deployment (Render)
 
-Both frontend and backend include `render.yaml` for one-click Render deployment:
-
 1. Push this repo to GitHub
 2. Connect to [Render](https://render.com)
 3. Create a **Blueprint** and select this repo
-4. Set the `DATABASE_URL` environment variable
+4. Set `DATABASE_URL` environment variable
 5. Deploy!
 
-The backend runs on port 5000, and the frontend on port 3001 in production.
+Migrations auto-run on server startup. The backend runs on port 5000, frontend on port 3001 in production.
 
----
-
-## 📝 Environment Variables
-
-See `backend/.env.example` for all required variables:
+### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | ✅ | PostgreSQL connection string |
-| `JWT_SECRET` | ✅ | Secret for JWT token signing |
+| `JWT_SECRET` | ✅ | JWT token signing secret |
 | `PORT` | ❌ | Server port (default: 5000) |
-| `FRONTEND_URL` | ❌ | CORS origin (default: http://localhost:5173) |
-| `MAX_LOGIN_ATTEMPTS` | ❌ | Lockout threshold (default: 5) |
-| `LOCK_MINUTES` | ❌ | Lockout duration (default: 15) |
+| `FRONTEND_URL` | ❌ | CORS origin |
+| `RESEND_API_KEY` | ❌ | Email receipts |
+| `TELNYX_API_KEY` | ❌ | SMS receipts |
+| `CLOUDINARY_*` | ❌ | Product image hosting |
+| `PAYSTACK_SECRET_KEY` | ❌ | Paystack payments |
+| `FLUTTERWAVE_SECRET_KEY` | ❌ | Flutterwave payments |
 
 ---
 
-## 📊 Database Schema
+## 🧪 Testing
 
-### Tables (12)
-
-- `users` — Authentication and role management with branch assignment
-- `products` — Product catalog with pricing and stock
-- `inventory_movements` — Stock change audit trail
-- `sales` / `sale_items` — Transaction records
-- `returns` — Item return tracking
-- `customers` — CRM with loyalty program
-- `suppliers` — Supplier directory
-- `purchase_orders` / `purchase_order_items` — Procurement
-- `expenses` — Business expense tracking
-- `cash_drawer` — Cash register management with variance tracking
-- `audit_logs` — System-wide activity logging
-- `branches` — Multi-location support
-- `branch_inventory` — Per-branch stock levels
-
-### RBAC Views & Functions
-
-- `get_user_access_level(user_id)` — Returns the effective access level
-- `v_user_access_levels` — All users with access levels and permissions
-- `v_permissions_matrix` — Complete permissions reference (51 features × 4 roles)
-- `v_branch_user_summary` — User counts per branch
-- `v_branches_without_admin` — Branches needing an admin assigned
+```bash
+cd backend && npm test     # 109 unit/integration tests
+node test-all-endpoints.js # 46-endpoint integration test
+```
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Frontend:** React 19, React Router 7, Vite
-- **Backend:** Express 5, PostgreSQL (pg), bcrypt, jsonwebtoken
+- **Frontend:** React 19, React Router 7, Vite, Capacitor
+- **Backend:** Express 5, PostgreSQL, bcrypt, jsonwebtoken
+- **Mobile:** Capacitor (iOS + Android)
 - **Deployment:** Render (free tier compatible)
+- **CI/CD:** GitHub Actions (Android APK + iOS build)
+
+---
+
+## 📊 Database
+
+**30+ tables** across 4 migration files:
+- Base schema: users, products, sales, customers, suppliers, expenses, etc.
+- Store Commerce: gift_cards, coupons, shifts, tasks, commissions, bundles, quotations
+- Priority Gaps: offline_sync, variants, discount_rules, currencies, wishlists, receipts, fulfillment
+- Final Gaps: layaway, loyalty_points, customer_groups, marketing, labels, omnichannel
 
 ---
 

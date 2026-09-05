@@ -1,0 +1,70 @@
+# ═══════════════════════════════════════════════════════════════════
+# GitHub Actions: Build Android APK (Capacitor)
+# Triggers on push to main or manual dispatch
+# Produces a signed APK artifact downloadable from the Actions tab
+# ═══════════════════════════════════════════════════════════════════
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Setup Java (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build APK (Debug)
+        run: cd android && ./gradlew assembleDebug
+
+      - name: Build APK (Release)
+        run: cd android && ./gradlew assembleRelease
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhosam-debug-apk
+          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhosam-release-apk
+          path: frontend/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 30

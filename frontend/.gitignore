@@ -14,6 +14,13 @@ dist-ssr
 .env
 .env.*
 
+# Capacitor / Native builds
+android/app/build/
+android/.gradle/
+ios/App/build/
+ios/App/Pods/
+*.xcworkspace/xcuserdata/
+
 # User database
 users.json
 users.db
