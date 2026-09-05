@@ -21,9 +21,9 @@ function resolveApiUrl(val) {
 // Super-admin (ADMIN without branch_id) gets full access to all management features
 // Branch-admin (ADMIN with branch_id) gets operational access but no cross-branch management
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","cashierpos","products","bundles","variants","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals","digitalwallets"],
-  MANAGER: ["dashboard","pos","cashierpos","products","bundles","variants","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals","digitalwallets"],
-  CASHIER: ["dashboard","cashierpos","cashdrawer","giftcards","quotations","shifts","tasks","fulfillment","offline","layaway","sales","notification-prefs","change-password","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","cashierpos","products","bundles","variants","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals","digitalwallets","timeclock","linkeditems","warranties","productcompare"],
+  MANAGER: ["dashboard","pos","cashierpos","products","bundles","variants","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","timeclock","linkeditems","warranties","productcompare","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals","digitalwallets"],
+  CASHIER: ["dashboard","cashierpos","timeclock","cashdrawer","giftcards","quotations","shifts","tasks","fulfillment","offline","layaway","sales","notification-prefs","change-password","wifiqr"],
 };
 // Items restricted to super-admin only (ADMIN without branch_id)
 const SUPER_ADMIN_ONLY = ["executive","branches","users","audit","loginhistory","payment-settings"];
@@ -44,6 +44,8 @@ const LABELS = {
   cashierpos: "Cashier POS", layaway: "Layaway Orders", loyalty: "Loyalty Points",
   customergroups: "Customer Groups", marketing: "Marketing", labels: "Label Printing",
   omnichannel: "Omnichannel Orders",
+  timeclock: "Time Clock", linkeditems: "Linked Items", warranties: "Warranties",
+  productcompare: "Product Compare",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
@@ -61,6 +63,8 @@ const ICONS = {
   cashierpos: "🏪", layaway: "📋", loyalty: "⭐",
   customergroups: "👥", marketing: "📢", labels: "🏷️",
   omnichannel: "🌐",
+  timeclock: "⏱️", linkeditems: "🔗", warranties: "🛡️",
+  productcompare: "📊",
 };function Layout({ children }) {
   const { user, logout, fetchStockAlerts, fetchInAppNotifications, markNotificationsRead } = useAuth();
 
@@ -9925,6 +9929,399 @@ function OmnichannelPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// FINAL FEATURES: Time Attendance, Linked Items, Warranties, Product Compare
+// ═══════════════════════════════════════════════════════════════════
+function TimeAttendancePage() {
+  const { clockIn, clockOut, getActiveClock, fetchTimeClock, startBreak, endBreak, getTimeClockSummary, user } = useAuth();
+  const [active, setActive] = useState(null);
+  const [records, setRecords] = useState([]);
+  const [summary, setSummary] = useState([]);
+  const [tab, setTab] = useState('clock');
+  const [loading, setLoading] = useState(true);
+  const [clock, setClock] = useState(new Date());
+  const [onBreak, setOnBreak] = useState(false);
+  const [period, setPeriod] = useState({ start: new Date(Date.now() - 14*86400000).toISOString().slice(0,10), end: new Date().toISOString().slice(0,10) });
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  useEffect(() => { const t = setInterval(() => setClock(new Date()), 1000); return () => clearInterval(t); }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const [a, r] = await Promise.all([getActiveClock(), fetchTimeClock({ startDate: period.start, endDate: period.end })]);
+      setActive(a); setRecords(r || []);
+      if (a && isAdmin) { const s = await getTimeClockSummary(period); setSummary(s || []); }
+    } catch {} finally { setLoading(false); }
+  }, [getActiveClock, fetchTimeClock, getTimeClockSummary, period, isAdmin]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleClockIn() { try { await clockIn(); load(); } catch (err) { alert(err.message); } }
+  async function handleClockOut() { try { await clockOut(); load(); } catch (err) { alert(err.message); } }
+  async function handleBreak() {
+    try {
+      if (onBreak) { await endBreak(); setOnBreak(false); }
+      else { await startBreak({ breakType: 'SHORT' }); setOnBreak(true); }
+      load();
+    } catch (err) { alert(err.message); }
+  }
+
+  const fmt = (n) => (parseFloat(n) || 0).toFixed(2);
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'clock' ? 'active' : ''} onClick={() => setTab('clock')}>⏱️ Time Clock</button>
+          <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>📋 History</button>
+          {isAdmin && <button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}>📊 Summary</button>}
+        </div>
+      </div>
+      {tab === 'clock' && (
+        <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+          <div style={{ fontSize: '4rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', margin: '0 0 8px' }}>{clock.toLocaleTimeString('en-NG')}</div>
+          <div style={{ fontSize: '1.1rem', color: 'var(--muted)', marginBottom: 32 }}>{clock.toLocaleDateString('en-NG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div>
+          {active ? (
+            <div>
+              <div style={{ padding: '16px 24px', background: 'rgba(22,163,74,0.08)', borderRadius: 12, display: 'inline-block', marginBottom: 24 }}>
+                <p style={{ margin: 0, fontSize: '0.9rem', color: '#166534' }}>✅ Clocked in at {new Date(active.clock_in).toLocaleTimeString('en-NG')}</p>
+                {active.total_hours && <p style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>Hours worked: <strong>{fmt(active.total_hours)}</strong></p>}
+              </div>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                <button className="btn primary" onClick={handleBreak} style={{ padding: '14px 28px', fontSize: '1rem' }}>{onBreak ? '▶️ End Break' : '⏸️ Start Break'}</button>
+                <button className="btn danger" onClick={handleClockOut} style={{ padding: '14px 28px', fontSize: '1rem' }}>⏹️ Clock Out</button>
+              </div>
+            </div>
+          ) : (
+            <button className="btn primary" onClick={handleClockIn} style={{ padding: '20px 48px', fontSize: '1.2rem', borderRadius: 16 }}>▶️ Clock In</button>
+          )}
+        </div>
+      )}
+      {tab === 'history' && (
+        <div className="table-wrap">
+          {records.length ? (
+            <table>
+              <thead><tr><th>Date</th><th>Clock In</th><th>Clock Out</th><th>Hours</th><th>Status</th></tr></thead>
+              <tbody>{records.map(r => (
+                <tr key={r.id}>
+                  <td>{new Date(r.clock_in).toLocaleDateString('en-NG')}</td>
+                  <td>{new Date(r.clock_in).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{r.clock_out ? new Date(r.clock_out).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                  <td>{r.total_hours ? fmt(r.total_hours) : '—'}</td>
+                  <td><span className={`status-badge ${r.status === 'APPROVED' ? 'active' : r.status === 'REJECTED' ? 'inactive' : 'warning'}`}>{r.status}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p className="muted">No records yet.</p>}
+        </div>
+      )}
+      {tab === 'summary' && isAdmin && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <label style={{ fontSize: '0.82rem' }}>From <input type="date" value={period.start} onChange={e => setPeriod({...period, start: e.target.value})} /></label>
+            <label style={{ fontSize: '0.82rem' }}>To <input type="date" value={period.end} onChange={e => setPeriod({...period, end: e.target.value})} /></label>
+          </div>
+          <div className="table-wrap">
+            {summary.length ? (
+              <table>
+                <thead><tr><th>Employee</th><th>Shifts</th><th>Total Hours</th><th>Break Hours</th><th>Net Hours</th></tr></thead>
+                <tbody>{summary.map(s => (
+                  <tr key={s.user_id}>
+                    <td><strong>{s.user_name}</strong></td>
+                    <td>{s.shift_count}</td>
+                    <td>{fmt(s.total_hours)}</td>
+                    <td>{fmt(s.break_hours)}</td>
+                    <td><strong>{fmt(s.net_hours)}</strong></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No data for this period.</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LinkedItemsPage() {
+  const { fetchProducts, getLinkedItems, addLinkedItem, deleteLinkedItem, user } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [linkedItems, setLinkedItems] = useState([]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [form, setForm] = useState({ linkedProductId: '', linkType: 'UPSELL' });
+  const [search, setSearch] = useState('');
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); }, [fetchProducts]);
+
+  async function selectProduct(p) {
+    setSelectedProduct(p);
+    try { const linked = await getLinkedItems(p.id); setLinkedItems(linked || []); } catch { setLinkedItems([]); }
+  }
+
+  async function handleAdd() {
+    if (!form.linkedProductId || !selectedProduct) return;
+    try { await addLinkedItem(selectedProduct.id, { ...form, linkedProductId: Number(form.linkedProductId) }); setShowAddModal(false); setForm({ linkedProductId: '', linkType: 'UPSELL' }); selectProduct(selectedProduct); } catch (err) { alert(err.message); }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Remove linked item?')) return;
+    try { await deleteLinkedItem(id); selectProduct(selectedProduct); } catch (err) { alert(err.message); }
+  }
+
+  const filtered = products.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()));
+  const linkTypes = { UPSELL: '⬆️ Upsell', CROSS_SELL: '🔄 Cross-sell', ACCESSORY: '🔧 Accessory', REPLACEMENT: '🔄 Replacement' };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header"><h2 style={{ margin: 0 }}>🔗 Linked Items (Upsell)</h2></div>
+      <div className="grid-2">
+        <div className="panel">
+          <input className="search-input" placeholder="Search products…" value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 8 }} />
+          <div style={{ maxHeight: 500, overflowY: 'auto' }}>
+            {filtered.slice(0, 100).map(p => (
+              <div key={p.id} onClick={() => selectProduct(p)} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedProduct?.id === p.id ? 'var(--primary, #16a34a)10' : 'transparent', borderRadius: 8, borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div><strong style={{ fontSize: '0.85rem' }}>{p.name}</strong><br /><small style={{ color: 'var(--muted)' }}>{p.category} · {fmt(p.price)}</small></div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{p.stock} in stock</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="panel">
+          {selectedProduct ? (
+            <div>
+              <h3>{selectedProduct.name}</h3>
+              <p className="muted" style={{ fontSize: '0.82rem' }}>{fmt(selectedProduct.price)} · {selectedProduct.category}</p>
+              {isAdmin && <button className="btn primary" onClick={() => setShowAddModal(true)} style={{ marginBottom: 12 }}>+ Add Linked Item</button>}
+              {linkedItems.length ? linkedItems.map(li => (
+                <div key={li.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div>
+                    <strong style={{ fontSize: '0.85rem' }}>{li.linked_name}</strong><br />
+                    <small style={{ color: 'var(--muted)' }}>{linkTypes[li.link_type] || li.link_type} · {fmt(li.linked_price)}</small>
+                  </div>
+                  {isAdmin && <button className="btn-sm danger" onClick={() => handleDelete(li.id)}>✕</button>}
+                </div>
+              )) : <p className="muted">No linked items yet.</p>}
+            </div>
+          ) : <p className="muted" style={{ textAlign: 'center', padding: 40 }}>← Select a product to manage linked items</p>}
+        </div>
+      </div>
+      {showAddModal && (
+        <div className="modal-overlay" onClick={() => setShowAddModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Add Linked Item</h2>
+            <div className="form-grid">
+              <label>Product<select value={form.linkedProductId} onChange={e => setForm({...form, linkedProductId: e.target.value})} required><option value=''>Select product</option>{products.filter(p => p.id !== selectedProduct?.id).map(p => <option key={p.id} value={p.id}>{p.name} ({fmt(p.price)})</option>)}</select></label>
+              <label>Link Type<select value={form.linkType} onChange={e => setForm({...form, linkType: e.target.value})}>{Object.entries(linkTypes).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+              <div className="form-actions"><button className="btn secondary" onClick={() => setShowAddModal(false)}>Cancel</button><button className="btn primary" onClick={handleAdd}>Add</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WarrantiesPage() {
+  const { fetchWarranties, createWarranty, updateWarranty, deleteWarranty, fetchWarrantyClaims, createWarrantyClaim, updateWarrantyClaim, user } = useAuth();
+  const [tab, setTab] = useState('warranties');
+  const [warranties, setWarranties] = useState([]);
+  const [claims, setClaims] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', description: '', durationMonths: '12', price: '0', coverageType: 'FULL', terms: '' });
+  const [showClaimForm, setShowClaimForm] = useState(false);
+  const [claimForm, setClaimForm] = useState({ productId: '', customerId: '', warrantyId: '', issueDescription: '' });
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try { const [w, c] = await Promise.all([fetchWarranties(), fetchWarrantyClaims()]); setWarranties(w || []); setClaims(c || []); } catch {} finally { setLoading(false); }
+  }, [fetchWarranties, fetchWarrantyClaims]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate(e) {
+    e.preventDefault(); try { await createWarranty(form); setShowForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleDelete(id) { if (!confirm('Delete warranty?')) return; try { await deleteWarranty(id); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleClaim(e) {
+    e.preventDefault(); try { await createWarrantyClaim(claimForm); setShowClaimForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleClaimStatus(id, status) {
+    try { await updateWarrantyClaim(id, { status }); load(); } catch (err) { alert(err.message); }
+  }
+
+  const coverageTypes = { FULL: '🛡️ Full Coverage', LIMITED: '⚠️ Limited', PARTS_ONLY: '🔧 Parts Only', LABOR_ONLY: '👷 Labor Only' };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'warranties' ? 'active' : ''} onClick={() => setTab('warranties')}>🛡️ Warranties</button>
+          <button className={tab === 'claims' ? 'active' : ''} onClick={() => setTab('claims')}>📋 Claims ({claims.filter(c => c.status === 'OPEN').length})</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {isAdmin && tab === 'warranties' && <button className="btn primary" onClick={() => setShowForm(true)}>+ New Warranty</button>}
+          {isAdmin && tab === 'claims' && <button className="btn primary" onClick={() => setShowClaimForm(true)}>+ New Claim</button>}
+        </div>
+      </div>
+      {loading ? <p className="loading">Loading…</p> : (
+        <>
+          {tab === 'warranties' && (
+            <div className="table-wrap">
+              {warranties.length ? (
+                <table>
+                  <thead><tr><th>Name</th><th>Duration</th><th>Price</th><th>Coverage</th><th>Status</th>{isAdmin && <th>Actions</th>}</tr></thead>
+                  <tbody>{warranties.map(w => (
+                    <tr key={w.id}>
+                      <td><strong>{w.name}</strong><br /><small style={{ color: 'var(--muted)' }}>{w.description || ''}</small></td>
+                      <td>{w.duration_months} months</td>
+                      <td>{fmt(w.price)}</td>
+                      <td>{coverageTypes[w.coverage_type] || w.coverage_type}</td>
+                      <td><span className={`status-badge ${w.is_active ? 'active' : 'inactive'}`}>{w.is_active ? 'Active' : 'Inactive'}</span></td>
+                      {isAdmin && <td><button className="btn-sm danger" onClick={() => handleDelete(w.id)}>Delete</button></td>}
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No warranties configured.</p>}
+            </div>
+          )}
+          {tab === 'claims' && (
+            <div className="table-wrap">
+              {claims.length ? (
+                <table>
+                  <thead><tr><th>Claim #</th><th>Product</th><th>Customer</th><th>Issue</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody>{claims.map(c => (
+                    <tr key={c.id}>
+                      <td><strong>{c.claim_number}</strong></td>
+                      <td>{c.product_name}</td>
+                      <td>{c.customer_name || '—'}</td>
+                      <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.issue_description}</td>
+                      <td><span className={`status-badge ${c.status === 'COMPLETED' ? 'active' : c.status === 'REJECTED' ? 'inactive' : 'warning'}`}>{c.status}</span></td>
+                      <td>
+                        {isAdmin && c.status === 'OPEN' && <><button className="btn-sm" onClick={() => handleClaimStatus(c.id, 'IN_PROGRESS')}>Start</button>{' '}</>}
+                        {isAdmin && (c.status === 'OPEN' || c.status === 'IN_PROGRESS') && <><button className="btn-sm" onClick={() => handleClaimStatus(c.id, 'APPROVED')}>Approve</button>{' '}<button className="btn-sm danger" onClick={() => handleClaimStatus(c.id, 'REJECTED')}>Reject</button></>}
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No warranty claims.</p>}
+            </div>
+          )}
+        </>
+      )}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Warranty</h2>
+            <form onSubmit={handleCreate} className="form-grid">
+              <label>Name<input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required placeholder="e.g. 1-Year Extended" /></label>
+              <label>Description<textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} rows={2} /></label>
+              <label>Duration (months)<input type="number" min="1" value={form.durationMonths} onChange={e => setForm({...form, durationMonths: e.target.value})} required /></label>
+              <label>Price (₦)<input type="number" min="0" step="0.01" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></label>
+              <label>Coverage<select value={form.coverageType} onChange={e => setForm({...form, coverageType: e.target.value})}>{Object.entries(coverageTypes).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+              <label>Terms<textarea value={form.terms} onChange={e => setForm({...form, terms: e.target.value})} rows={3} placeholder="Warranty terms and conditions" /></label>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn primary">Create</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+      {showClaimForm && (
+        <div className="modal-overlay" onClick={() => setShowClaimForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Warranty Claim</h2>
+            <form onSubmit={handleClaim} className="form-grid">
+              <label>Product ID<input type="number" value={claimForm.productId} onChange={e => setClaimForm({...claimForm, productId: e.target.value})} required /></label>
+              <label>Customer ID<input type="number" value={claimForm.customerId} onChange={e => setClaimForm({...claimForm, customerId: e.target.value})} /></label>
+              <label>Warranty<select value={claimForm.warrantyId} onChange={e => setClaimForm({...claimForm, warrantyId: e.target.value})}><option value=''>None</option>{warranties.map(w => <option key={w.id} value={w.id}>{w.name} ({w.duration_months}mo)</option>)}</select></label>
+              <label>Issue Description<textarea value={claimForm.issueDescription} onChange={e => setClaimForm({...claimForm, issueDescription: e.target.value})} rows={3} required placeholder="Describe the issue" /></label>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowClaimForm(false)}>Cancel</button><button type="submit" className="btn primary">Submit Claim</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProductComparePage() {
+  const { fetchProducts, compareProducts } = useAuth();
+  const [products, setProducts] = useState([]);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [comparison, setComparison] = useState([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); }, [fetchProducts]);
+
+  function toggle(id) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 4 ? [...prev, id] : prev); }
+
+  async function handleCompare() {
+    if (selectedIds.length < 2) { alert('Select at least 2 products'); return; }
+    setLoading(true);
+    try { const data = await compareProducts(selectedIds.join(',')); setComparison(data || []); } catch (err) { alert(err.message); }
+    finally { setLoading(false); }
+  }
+
+  const filtered = products.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase()));
+
+  // Collect all unique attribute names
+  const allAttributes = [];
+  comparison.forEach(p => { (p.attributes || []).forEach(a => { if (!allAttributes.find(x => x.name === a.name)) allAttributes.push(a); }); });
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header"><h2 style={{ margin: 0 }}>📊 Product Compare</h2></div>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div className="panel" style={{ flex: 1 }}>
+          <input className="search-input" placeholder="Search products…" value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 8 }} />
+          <p className="muted" style={{ fontSize: '0.78rem', marginBottom: 8 }}>Select 2-4 products to compare</p>
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {filtered.slice(0, 100).map(p => (
+              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => toggle(p.id)} disabled={!selectedIds.includes(p.id) && selectedIds.length >= 4} />
+                <span style={{ flex: 1, fontSize: '0.82rem' }}><strong>{p.name}</strong> · {p.category}</span>
+                <small>{fmt(p.price)}</small>
+              </label>
+            ))}
+          </div>
+          <button className="btn primary" onClick={handleCompare} disabled={selectedIds.length < 2 || loading} style={{ marginTop: 12, width: '100%' }}>{loading ? '⏳ Comparing…' : `Compare ${selectedIds.length} Products`}</button>
+        </div>
+        {comparison.length > 0 && (
+          <div className="panel" style={{ flex: 2 }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ minWidth: 120 }}>Feature</th>
+                    {comparison.map(p => <th key={p.id} style={{ minWidth: 140 }}>{p.name}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><strong>Price</strong></td>{comparison.map(p => <td key={p.id} style={{ color: 'var(--primary, #16a34a)', fontWeight: 700 }}>{fmt(p.price)}</td>)}</tr>
+                  <tr><td><strong>Cost Price</strong></td>{comparison.map(p => <td key={p.id}>{fmt(p.cost_price)}</td>)}</tr>
+                  <tr><td><strong>Category</strong></td>{comparison.map(p => <td key={p.id}>{p.category}</td>)}</tr>
+                  <tr><td><strong>Stock</strong></td>{comparison.map(p => <td key={p.id} style={{ color: p.stock <= p.reorder_level ? 'var(--danger)' : 'inherit' }}>{p.stock}</td>)}</tr>
+                  <tr><td><strong>Barcode</strong></td>{comparison.map(p => <td key={p.id}><code>{p.barcode}</code></td>)}</tr>
+                  <tr><td><strong>Unit</strong></td>{comparison.map(p => <td key={p.id}>{p.unit}</td>)}</tr>
+                  <tr><td><strong>Reorder Level</strong></td>{comparison.map(p => <td key={p.id}>{p.reorder_level}</td>)}</tr>
+                  {allAttributes.map(attr => (
+                    <tr key={attr.name}><td><strong>{attr.name}</strong></td>{comparison.map(p => { const val = (p.attributes || []).find(a => a.name === attr.name); return <td key={p.id}>{val?.value || '—'}</td>; })}</tr>
+                  ))}
+                  <tr><td><strong>Margin</strong></td>{comparison.map(p => { const margin = p.cost_price > 0 ? ((p.price - p.cost_price) / p.price * 100).toFixed(1) : '—'; return <td key={p.id} style={{ color: margin > 0 ? 'var(--accent)' : 'var(--danger)' }}>{margin}%</td>; })}</tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -9995,6 +10392,10 @@ export default function App() {
           <Route path="/marketing" element={<MarketingPage />} />
           <Route path="/labels" element={<LabelPrintingPage />} />
           <Route path="/omnichannel" element={<OmnichannelPage />} />
+          <Route path="/timeclock" element={<TimeAttendancePage />} />
+          <Route path="/linkeditems" element={<LinkedItemsPage />} />
+          <Route path="/warranties" element={<WarrantiesPage />} />
+          <Route path="/productcompare" element={<ProductComparePage />} />
            <Route path="/payment-settings" element={<PaymentSettingsPage />} />
            <Route path="/terminals" element={<TerminalPage />} />
            <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -108,6 +108,7 @@ async function runMigrations(pool) {
     "migration-store-commerce.sql",
     "migration-priority-gaps.sql",
     "migration-final-gaps.sql",
+    "migration-final-features.sql",
   ];
 
   const sqlDir = path.join(__dirname, "..", "sql");

@@ -5820,6 +5820,10 @@ registerPriorityGapsRoutes(app, pool, auth, allow);
 const registerFinalGapsRoutes = require("./final-gaps-routes");
 registerFinalGapsRoutes(app, pool, auth, allow);
 
+// ── Final Features Routes (6 features) ──────────────────────────
+const registerFinalFeaturesRoutes = require("./final-features-routes");
+registerFinalFeaturesRoutes(app, pool, auth, allow);
+
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));

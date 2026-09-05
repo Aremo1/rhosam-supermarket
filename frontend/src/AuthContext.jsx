@@ -425,6 +425,43 @@ export function AuthProvider({ children }) {
     deleteOmnichannelOrder: (id) => request(`/omnichannel/${id}`, { method: "DELETE" }),
     fetchEndlessAisle: () => request("/endless-aisle"),
     createEndlessAisle: (data) => request("/endless-aisle", { method: "POST", body: JSON.stringify(data) }),
+    // ── Final Features ──────────────────────────────────────────────
+    // Time & Attendance
+    clockIn: (data) => request("/time-clock/clock-in", { method: "POST", body: JSON.stringify(data || {}) }),
+    clockOut: () => request("/time-clock/clock-out", { method: "POST" }),
+    getActiveClock: () => request("/time-clock/active"),
+    fetchTimeClock: (params) => request(`/time-clock${params ? `?${new URLSearchParams(params)}` : ""}`),
+    startBreak: (data) => request("/time-clock/break/start", { method: "POST", body: JSON.stringify(data || {}) }),
+    endBreak: () => request("/time-clock/break/end", { method: "POST" }),
+    getTimeClockSummary: (params) => request(`/time-clock/summary${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // Product Attributes
+    fetchProductAttributes: () => request("/product-attributes"),
+    createProductAttribute: (data) => request("/product-attributes", { method: "POST", body: JSON.stringify(data) }),
+    updateProductAttribute: (id, data) => request(`/product-attributes/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteProductAttribute: (id) => request(`/product-attributes/${id}`, { method: "DELETE" }),
+    getProductAttributes: (id) => request(`/products/${id}/attributes`),
+    saveProductAttributes: (id, data) => request(`/products/${id}/attributes`, { method: "PUT", body: JSON.stringify({ attributes: data }) }),
+    // Linked Items (Upsell)
+    getLinkedItems: (id) => request(`/products/${id}/linked`),
+    addLinkedItem: (id, data) => request(`/products/${id}/linked`, { method: "POST", body: JSON.stringify(data) }),
+    deleteLinkedItem: (id) => request(`/linked-items/${id}`, { method: "DELETE" }),
+    // Warranties
+    fetchWarranties: () => request("/warranties"),
+    createWarranty: (data) => request("/warranties", { method: "POST", body: JSON.stringify(data) }),
+    updateWarranty: (id, data) => request(`/warranties/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteWarranty: (id) => request(`/warranties/${id}`, { method: "DELETE" }),
+    getProductWarranties: (id) => request(`/products/${id}/warranties`),
+    addProductWarranty: (id, data) => request(`/products/${id}/warranties`, { method: "POST", body: JSON.stringify(data) }),
+    removeProductWarranty: (productId, warrantyId) => request(`/products/${productId}/warranties/${warrantyId}`, { method: "DELETE" }),
+    fetchWarrantyClaims: (params) => request(`/warranty-claims${params ? `?${new URLSearchParams(params)}` : ""}`),
+    createWarrantyClaim: (data) => request("/warranty-claims", { method: "POST", body: JSON.stringify(data) }),
+    updateWarrantyClaim: (id, data) => request(`/warranty-claims/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    // Product Compare
+    compareProducts: (ids) => request(`/product-compare?ids=${ids}`),
+    // WebAuthn (Biometric)
+    getWebAuthnStatus: () => request("/auth/webauthn/status"),
+    registerWebAuthn: () => request("/auth/webauthn/register", { method: "POST" }),
+    verifyWebAuthn: (data) => request("/auth/webauthn/verify", { method: "POST", body: JSON.stringify(data) }),
   }), [user, loading, login, logout, request, notifyDataChange, dataVersion]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
