@@ -107,6 +107,7 @@ async function runMigrations(pool) {
     "migration-po-payments.sql",
     "migration-store-commerce.sql",
     "migration-priority-gaps.sql",
+    "migration-final-gaps.sql",
   ];
 
   const sqlDir = path.join(__dirname, "..", "sql");

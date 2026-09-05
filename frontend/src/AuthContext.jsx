@@ -376,6 +376,55 @@ export function AuthProvider({ children }) {
     updateFulfillmentStatus: (id, data) => request(`/fulfillments/${id}/status`, { method: "PATCH", body: JSON.stringify(data) }),
     updateFulfillmentItem: (fulfillmentId, itemId, data) => request(`/fulfillments/${fulfillmentId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(data) }),
     deleteFulfillment: (id) => request(`/fulfillments/${id}`, { method: "DELETE" }),
+    // ── Final Gaps ────────────────────────────────────────────────
+    // Layaway/Deposits
+    fetchLayawayOrders: (params) => request(`/layaway-orders${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getLayawayOrder: (id) => request(`/layaway-orders/${id}`),
+    createLayawayOrder: (data) => request("/layaway-orders", { method: "POST", body: JSON.stringify(data) }),
+    payLayawayOrder: (id, data) => request(`/layaway-orders/${id}/pay`, { method: "POST", body: JSON.stringify(data) }),
+    fulfillLayawayOrder: (id) => request(`/layaway-orders/${id}/fulfill`, { method: "POST" }),
+    deleteLayawayOrder: (id) => request(`/layaway-orders/${id}`, { method: "DELETE" }),
+    // Loyalty Points
+    fetchLoyaltyPoints: (params) => request(`/loyalty/points${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getLoyaltyPoints: (customerId) => request(`/loyalty/points/${customerId}`),
+    earnLoyaltyPoints: (data) => request("/loyalty/earn", { method: "POST", body: JSON.stringify(data) }),
+    redeemLoyaltyPoints: (data) => request("/loyalty/redeem", { method: "POST", body: JSON.stringify(data) }),
+    adjustLoyaltyPoints: (data) => request("/loyalty/adjust", { method: "POST", body: JSON.stringify(data) }),
+    fetchLoyaltyRules: () => request("/loyalty/rules"),
+    createLoyaltyRule: (data) => request("/loyalty/rules", { method: "POST", body: JSON.stringify(data) }),
+    deleteLoyaltyRule: (id) => request(`/loyalty/rules/${id}`, { method: "DELETE" }),
+    // Customer Groups
+    fetchCustomerGroups: () => request("/customer-groups"),
+    createCustomerGroup: (data) => request("/customer-groups", { method: "POST", body: JSON.stringify(data) }),
+    updateCustomerGroup: (id, data) => request(`/customer-groups/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    deleteCustomerGroup: (id) => request(`/customer-groups/${id}`, { method: "DELETE" }),
+    addGroupMember: (groupId, customerId) => request(`/customer-groups/${groupId}/members`, { method: "POST", body: JSON.stringify({ customerId }) }),
+    removeGroupMember: (groupId, customerId) => request(`/customer-groups/${groupId}/members/${customerId}`, { method: "DELETE" }),
+    fetchGroupMembers: (groupId) => request(`/customer-groups/${groupId}/members`),
+    // Marketing Segmentation
+    fetchMarketingSegments: () => request("/marketing/segments"),
+    createMarketingSegment: (data) => request("/marketing/segments", { method: "POST", body: JSON.stringify(data) }),
+    previewSegment: (id) => request(`/marketing/segments/${id}/preview`, { method: "POST" }),
+    deleteMarketingSegment: (id) => request(`/marketing/segments/${id}`, { method: "DELETE" }),
+    fetchMarketingCampaigns: () => request("/marketing/campaigns"),
+    createMarketingCampaign: (data) => request("/marketing/campaigns", { method: "POST", body: JSON.stringify(data) }),
+    sendCampaign: (id) => request(`/marketing/campaigns/${id}/send`, { method: "POST" }),
+    deleteMarketingCampaign: (id) => request(`/marketing/campaigns/${id}`, { method: "DELETE" }),
+    // Label Printing
+    fetchLabelTemplates: () => request("/label-templates"),
+    createLabelTemplate: (data) => request("/label-templates", { method: "POST", body: JSON.stringify(data) }),
+    updateLabelTemplate: (id, data) => request(`/label-templates/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteLabelTemplate: (id) => request(`/label-templates/${id}`, { method: "DELETE" }),
+    previewLabels: (data) => request("/label-templates/preview", { method: "POST", body: JSON.stringify(data) }),
+    // Omnichannel (BOPIS / Endless Aisle)
+    fetchOmnichannelOrders: (params) => request(`/omnichannel${params ? `?${new URLSearchParams(params)}` : ""}`),
+    getOmnichannelOrder: (id) => request(`/omnichannel/${id}`),
+    createOmnichannelOrder: (data) => request("/omnichannel", { method: "POST", body: JSON.stringify(data) }),
+    updateOmnichannelStatus: (id, data) => request(`/omnichannel/${id}/status`, { method: "PATCH", body: JSON.stringify(data) }),
+    assignOmnichannelOrder: (id, data) => request(`/omnichannel/${id}/assign`, { method: "PATCH", body: JSON.stringify(data) }),
+    deleteOmnichannelOrder: (id) => request(`/omnichannel/${id}`, { method: "DELETE" }),
+    fetchEndlessAisle: () => request("/endless-aisle"),
+    createEndlessAisle: (data) => request("/endless-aisle", { method: "POST", body: JSON.stringify(data) }),
   }), [user, loading, login, logout, request, notifyDataChange, dataVersion]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

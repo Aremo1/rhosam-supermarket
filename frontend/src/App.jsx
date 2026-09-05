@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
 import ScannerPage from "./ScannerPage";
+import CashierPOSPage from "./CashierPOS";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import "./App.css";
 
@@ -20,9 +21,9 @@ function resolveApiUrl(val) {
 // Super-admin (ADMIN without branch_id) gets full access to all management features
 // Branch-admin (ADMIN with branch_id) gets operational access but no cross-branch management
 const MENUS = {
-  ADMIN: ["dashboard","executive","pos","products","bundles","variants","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals","digitalwallets"],
-  MANAGER: ["dashboard","pos","products","bundles","variants","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals","digitalwallets"],
-  CASHIER: ["dashboard","pos","cashdrawer","giftcards","quotations","shifts","tasks","fulfillment","offline","sales","notification-prefs","change-password","wifiqr"],
+  ADMIN: ["dashboard","executive","pos","cashierpos","products","bundles","variants","categories","inventory","branch-inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notifications","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","branches","messages","transfers","display","supplierportal","users","audit","loginhistory","change-password","mfa","wifiqr","payment-settings","terminals","digitalwallets"],
+  MANAGER: ["dashboard","pos","cashierpos","products","bundles","variants","categories","inventory","damages","wastage","stock-valuation","expiry","import-export","audit-cycle","alerts","notification-prefs","giftcards","coupons","discounts","currencies","wishlists","receipts","fulfillment","offline","quotations","shifts","tasks","commissions","layaway","loyalty","customergroups","marketing","labels","omnichannel","sales","customers","suppliers","procurement","expenses","finance","forecast","reorder","dailyreport","cashdrawer","messages","transfers","change-password","mfa","wifiqr","terminals","digitalwallets"],
+  CASHIER: ["dashboard","cashierpos","cashdrawer","giftcards","quotations","shifts","tasks","fulfillment","offline","layaway","sales","notification-prefs","change-password","wifiqr"],
 };
 // Items restricted to super-admin only (ADMIN without branch_id)
 const SUPER_ADMIN_ONLY = ["executive","branches","users","audit","loginhistory","payment-settings"];
@@ -40,6 +41,9 @@ const LABELS = {
   discounts: "Discount Rules", currencies: "Multi-Currency", wishlists: "Wish Lists",
   receipts: "Receipt Templates", fulfillment: "Fulfillment", offline: "Offline Sync",
   digitalwallets: "Digital Wallets",
+  cashierpos: "Cashier POS", layaway: "Layaway Orders", loyalty: "Loyalty Points",
+  customergroups: "Customer Groups", marketing: "Marketing", labels: "Label Printing",
+  omnichannel: "Omnichannel Orders",
 };
 const ICONS = {
   dashboard: "📊", executive: "🎯", pos: "🛒", products: "📦", categories: "🏷️", inventory: "📋", sales: "💰", customers: "👥",
@@ -54,6 +58,9 @@ const ICONS = {
   discounts: "🎯", currencies: "💱", wishlists: "💝",
   receipts: "🧾", fulfillment: "📦", offline: "📴",
   digitalwallets: "📱",
+  cashierpos: "🏪", layaway: "📋", loyalty: "⭐",
+  customergroups: "👥", marketing: "📢", labels: "🏷️",
+  omnichannel: "🌐",
 };function Layout({ children }) {
   const { user, logout, fetchStockAlerts, fetchInAppNotifications, markNotificationsRead } = useAuth();
 
@@ -9041,6 +9048,883 @@ function QuotationsPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// FINAL GAPS: Layaway, Loyalty, Customer Groups, Marketing, Labels, Omnichannel
+// ═══════════════════════════════════════════════════════════════════
+function LayawayPage() {
+  const { fetchLayawayOrders, getLayawayOrder, payLayawayOrder, fulfillLayawayOrder, deleteLayawayOrder, user } = useAuth();
+  const [orders, setOrders] = useState([]);
+  const [active, setActive] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [payModal, setPayModal] = useState(null);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('Cash');
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      const d = await fetchLayawayOrders(Object.keys(params).length ? params : undefined);
+      setOrders(d?.data || []);
+    } catch {} finally { setLoading(false); }
+  }, [fetchLayawayOrders, statusFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function openOrder(id) { try { setActive(await getLayawayOrder(id)); } catch (err) { alert(err.message); } }
+
+  async function handlePay() {
+    if (!payModal || !payAmount) return;
+    try {
+      await payLayawayOrder(payModal.id, { amount: Number(payAmount), paymentMethod: payMethod });
+      setPayModal(null); setPayAmount('');
+      openOrder(payModal.id); load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleFulfill(id) {
+    if (!confirm('Fulfill this layaway order? This will create a sale and deduct stock.')) return;
+    try {
+      const result = await fulfillLayawayOrder(id);
+      alert(`✅ Fulfilled! Receipt: ${result.receiptNumber}`);
+      setActive(null); load();
+    } catch (err) { alert(err.message); }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Cancel this layaway order?')) return;
+    try { await deleteLayawayOrder(id); setActive(null); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={!statusFilter ? 'active' : ''} onClick={() => setStatusFilter('')}>All</button>
+          <button className={statusFilter === 'ACTIVE' ? 'active' : ''} onClick={() => setStatusFilter('ACTIVE')}>Active</button>
+          <button className={statusFilter === 'COMPLETED' ? 'active' : ''} onClick={() => setStatusFilter('COMPLETED')}>Completed</button>
+          <button className={statusFilter === 'CANCELLED' ? 'active' : ''} onClick={() => setStatusFilter('CANCELLED')}>Cancelled</button>
+        </div>
+      </div>
+
+      {!active ? (
+        loading ? <p className="loading">Loading…</p> : (
+          <div className="table-wrap">
+            {orders.length ? (
+              <table>
+                <thead><tr><th>Order #</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th>Due Date</th><th>Actions</th></tr></thead>
+                <tbody>{orders.map(o => (
+                  <tr key={o.id}>
+                    <td><button className="btn-sm" onClick={() => openOrder(o.id)}>{o.order_number}</button></td>
+                    <td>{o.customer_name || 'Walk-in'}</td>
+                    <td>{fmt(o.total_amount)}</td>
+                    <td>{fmt(o.total_paid)}</td>
+                    <td style={{ color: o.balance_due > 0 ? 'var(--danger)' : 'var(--accent)' }}>{fmt(o.balance_due)}</td>
+                    <td><span className={`status-badge ${o.status === 'COMPLETED' ? 'active' : o.status === 'CANCELLED' ? 'inactive' : 'warning'}`}>{o.status}</span></td>
+                    <td>{o.due_date ? new Date(o.due_date).toLocaleDateString('en-NG', { dateStyle: 'medium' }) : '—'}</td>
+                    <td>
+                      {o.status === 'ACTIVE' && <><button className="btn-sm" onClick={() => setPayModal(o)}>💰 Pay</button>{' '}</>}
+                      {o.status === 'COMPLETED' && isAdmin && <button className="btn-sm" onClick={() => handleFulfill(o.id)}>📦 Fulfill</button>}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No layaway orders found.</p>}
+          </div>
+        )
+      ) : (
+        <div>
+          <button className="btn secondary" onClick={() => setActive(null)} style={{ marginBottom: 12 }}>← Back</button>
+          <div className="summary-grid">
+            <div className="summary-card accent"><span>Total</span><strong>{fmt(active.total_amount)}</strong></div>
+            <div className="summary-card"><span>Paid</span><strong>{fmt(active.total_paid)}</strong></div>
+            <div className="summary-card" style={{ color: active.balance_due > 0 ? 'var(--danger)' : 'var(--accent)' }}><span>Balance</span><strong>{fmt(active.balance_due)}</strong></div>
+            <div className="summary-card"><span>Status</span><strong>{active.status}</strong></div>
+          </div>
+          <div className="panel" style={{ marginTop: 12 }}>
+            <h3>Items</h3>
+            <table>
+              <thead><tr><th>Product</th><th>Qty</th><th>Unit Price</th><th>Line Total</th></tr></thead>
+              <tbody>{active.items?.map(i => (
+                <tr key={i.id}><td>{i.product_name}</td><td>{i.quantity}</td><td>{fmt(i.unit_price)}</td><td>{fmt(i.line_total)}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div className="panel" style={{ marginTop: 12 }}>
+            <h3>Payment History</h3>
+            {active.payments?.length ? (
+              <table>
+                <thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>By</th></tr></thead>
+                <tbody>{active.payments.map(p => (
+                  <tr key={p.id}><td>{new Date(p.created_at).toLocaleString('en-NG')}</td><td>{fmt(p.amount)}</td><td>{p.payment_method}</td><td>{p.received_by_name}</td></tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No payments yet.</p>}
+          </div>
+          {active.status === 'ACTIVE' && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="btn primary" onClick={() => setPayModal(active)}>💰 Record Payment</button>
+              {isAdmin && <button className="btn secondary" onClick={() => handleFulfill(active.id)}>📦 Fulfill Order</button>}
+              {isAdmin && <button className="btn danger" onClick={() => handleDelete(active.id)}>Cancel</button>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {payModal && (
+        <div className="modal-overlay" onClick={() => setPayModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Record Payment — {payModal.order_number}</h2>
+            <p className="muted">Balance due: {fmt(payModal.balance_due)}</p>
+            <div className="form-grid">
+              <label>Amount (₦)<input type="number" min="0" max={payModal.balance_due} step="0.01" value={payAmount} onChange={e => setPayAmount(e.target.value)} required autoFocus /></label>
+              <label>Method<select value={payMethod} onChange={e => setPayMethod(e.target.value)}><option>Cash</option><option>Card</option><option>Transfer</option><option>POS</option></select></label>
+              <div className="form-actions">
+                <button className="btn secondary" onClick={() => setPayModal(null)}>Cancel</button>
+                <button className="btn primary" onClick={handlePay}>Save Payment</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LoyaltyPage() {
+  const { fetchLoyaltyPoints, getLoyaltyPoints, earnLoyaltyPoints, redeemLoyaltyPoints, adjustLoyaltyPoints, fetchLoyaltyRules, createLoyaltyRule, deleteLoyaltyRule, user } = useAuth();
+  const [tab, setTab] = useState('points');
+  const [points, setPoints] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [adjModal, setAdjModal] = useState(null);
+  const [adjPoints, setAdjPoints] = useState('');
+  const [adjReason, setAdjReason] = useState('');
+  const [ruleForm, setRuleForm] = useState({ name: '', ruleType: 'EARN_PER_Naira', value: '100' });
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+
+  const load = useCallback(async () => {
+    try { const [p, r] = await Promise.all([fetchLoyaltyPoints(), fetchLoyaltyRules()]); setPoints(p || []); setRules(r || []); } catch {} finally { setLoading(false); }
+  }, [fetchLoyaltyPoints, fetchLoyaltyRules]);
+  useEffect(() => { load(); }, [load]);
+
+  async function viewCustomer(id) { try { setSelectedCustomer(await getLoyaltyPoints(id)); } catch {} }
+  async function handleAdjust() {
+    if (!adjModal || !adjPoints) return;
+    try { await adjustLoyaltyPoints({ customerId: adjModal.customer_id, points: Number(adjPoints), reason: adjReason }); setAdjModal(null); setAdjPoints(''); setAdjReason(''); viewCustomer(adjModal.customer_id); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleCreateRule(e) {
+    e.preventDefault(); try { await createLoyaltyRule(ruleForm); setRuleForm({ name: '', ruleType: 'EARN_PER_Naira', value: '100' }); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleDeleteRule(id) { if (!confirm('Delete rule?')) return; try { await deleteLoyaltyRule(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  const tierColors = { BRONZE: '#d4a574', SILVER: '#94a3b8', GOLD: '#f59e0b', PLATINUM: '#8b5cf6' };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'points' ? 'active' : ''} onClick={() => { setTab('points'); setSelectedCustomer(null); }}>⭐ Points</button>
+          <button className={tab === 'rules' ? 'active' : ''} onClick={() => setTab('rules')}>⚙️ Rules</button>
+        </div>
+      </div>
+      {loading ? <p className="loading">Loading…</p> : (
+        <>
+          {tab === 'points' && !selectedCustomer && (
+            <div className="table-wrap">
+              {points.length ? (
+                <table>
+                  <thead><tr><th>Customer</th><th>Points</th><th>Lifetime Earned</th><th>Lifetime Redeemed</th><th>Tier</th><th>Actions</th></tr></thead>
+                  <tbody>{points.map(p => (
+                    <tr key={p.id}>
+                      <td><button className="btn-sm" onClick={() => viewCustomer(p.customer_id)}>{p.customer_name}</button></td>
+                      <td><strong>{p.points_balance.toLocaleString()}</strong></td>
+                      <td>{p.lifetime_earned.toLocaleString()}</td>
+                      <td>{p.lifetime_redeemed.toLocaleString()}</td>
+                      <td><span className="status-badge" style={{ background: tierColors[p.tier] || '#94a3b8', color: '#fff' }}>{p.tier}</span></td>
+                      <td><button className="btn-sm" onClick={() => setAdjModal(p)}>Adjust</button></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No loyalty data yet. Points are earned automatically on sales.</p>}
+            </div>
+          )}
+          {tab === 'points' && selectedCustomer && (
+            <div>
+              <button className="btn secondary" onClick={() => setSelectedCustomer(null)} style={{ marginBottom: 12 }}>← Back</button>
+              <h3>{selectedCustomer.customer_name} — {selectedCustomer.points_balance?.toLocaleString()} points ({selectedCustomer.tier})</h3>
+              <div className="summary-grid">
+                <div className="summary-card"><span>Balance</span><strong>{selectedCustomer.points_balance?.toLocaleString()}</strong></div>
+                <div className="summary-card"><span>Lifetime Earned</span><strong>{selectedCustomer.lifetime_earned?.toLocaleString()}</strong></div>
+                <div className="summary-card"><span>Lifetime Redeemed</span><strong>{selectedCustomer.lifetime_redeemed?.toLocaleString()}</strong></div>
+              </div>
+              {selectedCustomer.transactions?.length > 0 && (
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table>
+                    <thead><tr><th>Date</th><th>Type</th><th>Points</th><th>Balance After</th><th>Description</th></tr></thead>
+                    <tbody>{selectedCustomer.transactions.map(t => (
+                      <tr key={t.id}>
+                        <td>{new Date(t.created_at).toLocaleDateString('en-NG')}</td>
+                        <td><span className={`status-badge ${t.type === 'EARN' ? 'active' : t.type === 'REDEEM' ? 'warning' : ''}`}>{t.type}</span></td>
+                        <td style={{ color: t.type === 'EARN' ? 'var(--accent)' : 'var(--danger)' }}>{t.type === 'EARN' ? '+' : '-'}{t.points}</td>
+                        <td>{t.balance_after.toLocaleString()}</td>
+                        <td>{t.description}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+          {tab === 'rules' && (
+            <div>
+              <div className="table-wrap">
+                {rules.length ? (
+                  <table>
+                    <thead><tr><th>Name</th><th>Type</th><th>Value</th><th>Actions</th></tr></thead>
+                    <tbody>{rules.map(r => (
+                      <tr key={r.id}><td>{r.name}</td><td>{r.rule_type}</td><td>{r.value}</td><td><button className="btn-sm danger" onClick={() => handleDeleteRule(r.id)}>Delete</button></td></tr>
+                    ))}</tbody>
+                  </table>
+                ) : <p className="muted">No rules configured.</p>}
+              </div>
+              {user?.role === 'ADMIN' && (
+                <div className="panel" style={{ marginTop: 12 }}>
+                  <h3>Add Rule</h3>
+                  <form onSubmit={handleCreateRule} className="form-grid">
+                    <label>Name<input value={ruleForm.name} onChange={e => setRuleForm({...ruleForm, name: e.target.value})} required placeholder="e.g. Earn 1 point per ₦100" /></label>
+                    <label>Type<select value={ruleForm.ruleType} onChange={e => setRuleForm({...ruleForm, ruleType: e.target.value})}><option value="EARN_PER_Naira">Earn per ₦</option><option value="REDEEM_RATE">Redeem rate</option><option value="BONUS_MULTIPLIER">Bonus multiplier</option><option value="TIER_THRESHOLD">Tier threshold</option></select></label>
+                    <label>Value<input type="number" step="0.01" value={ruleForm.value} onChange={e => setRuleForm({...ruleForm, value: e.target.value})} required /></label>
+                    <button type="submit" className="btn primary">Create Rule</button>
+                  </form>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {adjModal && (
+        <div className="modal-overlay" onClick={() => setAdjModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Adjust Points — {adjModal.customer_name}</h2>
+            <p className="muted">Current balance: {adjModal.points_balance?.toLocaleString()} points</p>
+            <div className="form-grid">
+              <label>Points (positive = earn, negative = deduct)<input type="number" value={adjPoints} onChange={e => setAdjPoints(e.target.value)} required autoFocus placeholder="e.g. 100 or -50" /></label>
+              <label>Reason<input value={adjReason} onChange={e => setAdjReason(e.target.value)} placeholder="Admin adjustment" /></label>
+              <div className="form-actions">
+                <button className="btn secondary" onClick={() => setAdjModal(null)}>Cancel</button>
+                <button className="btn primary" onClick={handleAdjust}>Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomerGroupsPage() {
+  const { fetchCustomerGroups, createCustomerGroup, updateCustomerGroup, deleteCustomerGroup, addGroupMember, removeGroupMember, fetchGroupMembers, fetchCustomers, user } = useAuth();
+  const [groups, setGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', description: '', discountPercent: '0', color: '#16a34a' });
+  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [customers, setCustomersList] = useState([]);
+  const [addMemberId, setAddMemberId] = useState('');
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try { setGroups(await fetchCustomerGroups()); } catch {} finally { setLoading(false); }
+  }, [fetchCustomerGroups]);
+  useEffect(() => { load(); }, [load]);
+
+  async function openGroup(g) {
+    setSelectedGroup(g);
+    try {
+      const [m, c] = await Promise.all([fetchGroupMembers(g.id), fetchCustomers()]);
+      setMembers(m || []); setCustomersList(c || []);
+    } catch {}
+  }
+
+  async function handleCreate(e) {
+    e.preventDefault(); try { await createCustomerGroup(form); setShowForm(false); setForm({ name: '', description: '', discountPercent: '0', color: '#16a34a' }); load(); } catch (err) { alert(err.message); }
+  }
+
+  async function handleAddMember() {
+    if (!addMemberId || !selectedGroup) return;
+    try { await addGroupMember(selectedGroup.id, Number(addMemberId)); openGroup(selectedGroup); setAddMemberId(''); } catch (err) { alert(err.message); }
+  }
+
+  async function handleRemoveMember(cid) {
+    try { await removeGroupMember(selectedGroup.id, cid); openGroup(selectedGroup); } catch (err) { alert(err.message); }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Delete this group?')) return;
+    try { await deleteCustomerGroup(id); setSelectedGroup(null); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <h2 style={{ margin: 0 }}>{selectedGroup ? `👥 ${selectedGroup.name}` : 'Customer Groups'}</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {selectedGroup && <button className="btn secondary" onClick={() => setSelectedGroup(null)}>← Back</button>}
+          {!selectedGroup && isAdmin && <button className="btn primary" onClick={() => setShowForm(true)}>+ New Group</button>}
+        </div>
+      </div>
+      {!selectedGroup ? (
+        loading ? <p className="loading">Loading…</p> : (
+          <div className="summary-grid">
+            {groups.length ? groups.map(g => (
+              <div key={g.id} className="panel" style={{ cursor: 'pointer', borderLeft: `4px solid ${g.color || '#16a34a'}` }} onClick={() => openGroup(g)}>
+                <h3 style={{ margin: '0 0 4px', color: g.color || '#16a34a' }}>{g.name}</h3>
+                <p className="muted" style={{ margin: '0 0 8px', fontSize: '0.82rem' }}>{g.description || 'No description'}</p>
+                <div style={{ display: 'flex', gap: 16, fontSize: '0.82rem' }}>
+                  <span>👥 {g.member_count} members</span>
+                  <span>💰 {g.discount_percent}% discount</span>
+                </div>
+              </div>
+            )) : <p className="muted">No groups yet. Create one to segment your customers.</p>}
+          </div>
+        )
+      ) : (
+        <div>
+          <div className="summary-grid" style={{ marginBottom: 12 }}>
+            <div className="summary-card"><span>Members</span><strong>{members.length}</strong></div>
+            <div className="summary-card"><span>Discount</span><strong>{selectedGroup.discount_percent}%</strong></div>
+            <div className="summary-card"><span>Color</span><strong style={{ color: selectedGroup.color }}>{selectedGroup.color}</strong></div>
+          </div>
+          {isAdmin && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <select value={addMemberId} onChange={e => setAddMemberId(e.target.value)} style={{ flex: 1, padding: '8px', border: '1.5px solid var(--border)', borderRadius: 8 }}>
+                <option value=''>Select customer to add…</option>
+                {customers.filter(c => !members.find(m => m.id === c.id)).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button className="btn primary" onClick={handleAddMember} disabled={!addMemberId}>Add</button>
+              <button className="btn danger" onClick={() => handleDelete(selectedGroup.id)}>Delete Group</button>
+            </div>
+          )}
+          <div className="table-wrap">
+            {members.length ? (
+              <table>
+                <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Total Spent</th><th>Joined</th>{isAdmin && <th>Actions</th>}</tr></thead>
+                <tbody>{members.map(m => (
+                  <tr key={m.id}>
+                    <td>{m.name}</td><td>{m.email || '—'}</td><td>{m.phone || '—'}</td>
+                    <td>₦{(parseFloat(m.total_spent) || 0).toLocaleString('en-NG')}</td>
+                    <td>{new Date(m.joined_at).toLocaleDateString('en-NG')}</td>
+                    {isAdmin && <td><button className="btn-sm danger" onClick={() => handleRemoveMember(m.id)}>Remove</button></td>}
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="muted">No members in this group yet.</p>}
+          </div>
+        </div>
+      )}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Customer Group</h2>
+            <form onSubmit={handleCreate} className="form-grid">
+              <label>Name<input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required placeholder="e.g. VIP Customers" /></label>
+              <label>Description<input value={form.description} onChange={e => setForm({...form, description: e.target.value})} placeholder="Optional" /></label>
+              <label>Discount %<input type="number" min="0" max="100" step="0.5" value={form.discountPercent} onChange={e => setForm({...form, discountPercent: e.target.value})} /></label>
+              <label>Color<input type="color" value={form.color} onChange={e => setForm({...form, color: e.target.value})} style={{ height: 40 }} /></label>
+              <div className="form-actions">
+                <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn primary">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarketingPage() {
+  const { fetchMarketingSegments, createMarketingSegment, previewSegment, deleteMarketingSegment, fetchMarketingCampaigns, createMarketingCampaign, sendCampaign, deleteMarketingCampaign, fetchCoupons, user } = useAuth();
+  const [tab, setTab] = useState('segments');
+  const [segments, setSegments] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
+  const [coupons, setCoupons] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showSegForm, setShowSegForm] = useState(false);
+  const [showCampForm, setShowCampForm] = useState(false);
+  const [segForm, setSegForm] = useState({ name: '', description: '', criteria: {} });
+  const [campForm, setCampForm] = useState({ name: '', description: '', segmentId: '', campaignType: 'EMAIL', subject: '', message: '' });
+  const [preview, setPreview] = useState(null);
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try { const [s, c, cp] = await Promise.all([fetchMarketingSegments(), fetchMarketingCampaigns(), fetchCoupons()]); setSegments(s || []); setCampaigns(c || []); setCoupons(cp?.data || []); } catch {} finally { setLoading(false); }
+  }, [fetchMarketingSegments, fetchMarketingCampaigns, fetchCoupons]);
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreateSeg(e) {
+    e.preventDefault(); try { await createMarketingSegment(segForm); setShowSegForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  async function handlePreviewSeg(id) { try { const r = await previewSegment(id); setPreview(r); } catch (err) { alert(err.message); }
+  }
+  async function handleDeleteSeg(id) { if (!confirm('Delete segment?')) return; try { await deleteMarketingSegment(id); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleCreateCamp(e) {
+    e.preventDefault(); try { await createMarketingCampaign(campForm); setShowCampForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleSendCamp(id) {
+    if (!confirm('Send this campaign?')) return;
+    try { const r = await sendCampaign(id); alert(`✅ Sent to ${r.sentCount} customers`); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleDeleteCamp(id) { if (!confirm('Delete campaign?')) return; try { await deleteMarketingCampaign(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'segments' ? 'active' : ''} onClick={() => setTab('segments')}>📊 Segments</button>
+          <button className={tab === 'campaigns' ? 'active' : ''} onClick={() => setTab('campaigns')}>📢 Campaigns</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {isAdmin && tab === 'segments' && <button className="btn primary" onClick={() => setShowSegForm(true)}>+ New Segment</button>}
+          {isAdmin && tab === 'campaigns' && <button className="btn primary" onClick={() => setShowCampForm(true)}>+ New Campaign</button>}
+        </div>
+      </div>
+      {loading ? <p className="loading">Loading…</p> : (
+        <>
+          {tab === 'segments' && (
+            <div>
+              {segments.length ? segments.map(s => (
+                <div key={s.id} className="panel" style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>{s.name}</h3>
+                      <p className="muted" style={{ margin: '4px 0', fontSize: '0.82rem' }}>{s.description || 'No description'} — <strong>{s.customer_count}</strong> customers</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn secondary" onClick={() => handlePreviewSeg(s.id)}>Preview</button>
+                      {isAdmin && <button className="btn-sm danger" onClick={() => handleDeleteSeg(s.id)}>Delete</button>}
+                    </div>
+                  </div>
+                </div>
+              )) : <p className="muted">No segments yet.</p>}
+              {preview && (
+                <div className="panel" style={{ marginTop: 12 }}>
+                  <h3>Preview: {preview.segment?.name} — {preview.segment?.customer_count} customers</h3>
+                  <button className="btn secondary" onClick={() => setPreview(null)} style={{ marginBottom: 8 }}>Close</button>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Total Spent</th><th>Tier</th></tr></thead>
+                      <tbody>{preview.customers?.map(c => (
+                        <tr key={c.id}><td>{c.name}</td><td>{c.email || '—'}</td><td>{c.phone || '—'}</td><td>₦{(parseFloat(c.total_spent) || 0).toLocaleString()}</td><td>{c.membership_tier}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {tab === 'campaigns' && (
+            <div className="table-wrap">
+              {campaigns.length ? (
+                <table>
+                  <thead><tr><th>Name</th><th>Type</th><th>Segment</th><th>Sent</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody>{campaigns.map(c => (
+                    <tr key={c.id}>
+                      <td><strong>{c.name}</strong></td>
+                      <td>{c.campaign_type}</td>
+                      <td>{c.segment_name || 'All'}</td>
+                      <td>{c.sent_count || 0}</td>
+                      <td><span className={`status-badge ${c.status === 'SENT' ? 'active' : c.status === 'DRAFT' ? 'warning' : ''}`}>{c.status}</span></td>
+                      <td>
+                        {c.status === 'DRAFT' && isAdmin && <><button className="btn-sm" onClick={() => handleSendCamp(c.id)}>Send</button>{' '}</>}
+                        {isAdmin && <button className="btn-sm danger" onClick={() => handleDeleteCamp(c.id)}>Delete</button>}
+                      </td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No campaigns yet.</p>}
+            </div>
+          )}
+        </>
+      )}
+      {showSegForm && (
+        <div className="modal-overlay" onClick={() => setShowSegForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Segment</h2>
+            <form onSubmit={handleCreateSeg} className="form-grid">
+              <label>Name<input value={segForm.name} onChange={e => setSegForm({...segForm, name: e.target.value})} required placeholder="e.g. VIP Customers" /></label>
+              <label>Description<textarea value={segForm.description} onChange={e => setSegForm({...segForm, description: e.target.value})} rows={2} /></label>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowSegForm(false)}>Cancel</button><button type="submit" className="btn primary">Create</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+      {showCampForm && (
+        <div className="modal-overlay" onClick={() => setShowCampForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Campaign</h2>
+            <form onSubmit={handleCreateCamp} className="form-grid">
+              <label>Name<input value={campForm.name} onChange={e => setCampForm({...campForm, name: e.target.value})} required /></label>
+              <label>Description<textarea value={campForm.description} onChange={e => setCampForm({...campForm, description: e.target.value})} rows={2} /></label>
+              <label>Segment<select value={campForm.segmentId} onChange={e => setCampForm({...campForm, segmentId: e.target.value})}><option value=''>All customers</option>{segments.map(s => <option key={s.id} value={s.id}>{s.name} ({s.customer_count})</option>)}</select></label>
+              <label>Type<select value={campForm.campaignType} onChange={e => setCampForm({...campForm, campaignType: e.target.value})}><option>EMAIL</option><option>SMS</option><option>DISCOUNT</option></select></label>
+              <label>Subject<input value={campForm.subject} onChange={e => setCampForm({...campForm, subject: e.target.value})} placeholder="Email subject or SMS title" /></label>
+              <label>Message<textarea value={campForm.message} onChange={e => setCampForm({...campForm, message: e.target.value})} rows={4} placeholder="Campaign message" /></label>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowCampForm(false)}>Cancel</button><button type="submit" className="btn primary">Create</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LabelPrintingPage() {
+  const { fetchLabelTemplates, createLabelTemplate, updateLabelTemplate, deleteLabelTemplate, previewLabels, fetchProducts, user } = useAuth();
+  const [templates, setTemplates] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [selectedProducts, setSelectedProducts] = useState([]);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', widthMm: '50', heightMm: '30', layout: { showBarcode: true, showPrice: true, showName: true, fontSize: 10 }, isDefault: false });
+  const [previewData, setPreviewData] = useState(null);
+  const [search, setSearch] = useState('');
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try {
+      const [t, p] = await Promise.all([fetchLabelTemplates(), fetchProducts()]);
+      setTemplates(t || []); setProducts(p || []);
+    } catch {} finally {}
+  }, [fetchLabelTemplates, fetchProducts]);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = products.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.barcode.includes(search));
+
+  function toggleProduct(id) {
+    setSelectedProducts(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+  function selectAll() { setSelectedProducts(filtered.map(p => p.id)); }
+
+  async function handlePreview() {
+    if (!selectedProducts.length) { alert('Select products first'); return; }
+    try { const r = await previewLabels({ productIds: selectedProducts, templateId: selectedTemplate || undefined }); setPreviewData(r); } catch (err) { alert(err.message); }
+  }
+
+  function printLabels() {
+    if (!previewData?.products) return;
+    const tmpl = previewData.template;
+    const win = window.open('', '_blank');
+    const labels = previewData.products.map(p => `
+      <div class="label" style="width:${tmpl?.width_mm || 50}mm;height:${tmpl?.height_mm || 30}mm;border:1px solid #000;padding:2mm;font-family:monospace;page-break-inside:avoid;display:inline-block;margin:2mm;vertical-align:top">
+        ${tmpl?.layout?.showName !== false ? `<div style="font-size:${tmpl?.layout?.fontSize || 10}pt;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</div>` : ''}
+        ${tmpl?.layout?.showBarcode !== false ? `<div style="font-size:8pt;margin:1mm 0">||| ${p.barcode} |||</div>` : ''}
+        ${tmpl?.layout?.showPrice !== false ? `<div style="font-size:${(tmpl?.layout?.fontSize || 10) + 2}pt;font-weight:bold">₦${(parseFloat(p.price) || 0).toFixed(2)}</div>` : ''}
+        ${tmpl?.layout?.showCategory !== false ? `<div style="font-size:7pt;color:#666">${p.category || ''}</div>` : ''}
+      </div>
+    `).join('');
+    win.document.write(`<html><head><title>Labels</title></head><body>${labels}<script>window.print();window.close()</script></body></html>`);
+    win.document.close();
+  }
+
+  async function handleCreate(e) {
+    e.preventDefault(); try { await createLabelTemplate(form); setShowForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleDelete(id) { if (!confirm('Delete template?')) return; try { await deleteLabelTemplate(id); load(); } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <h2 style={{ margin: 0 }}>🏷️ Label Printing</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {isAdmin && <button className="btn primary" onClick={() => setShowForm(true)}>+ New Template</button>}
+        </div>
+      </div>
+      <div className="grid-2" style={{ marginBottom: 16 }}>
+        <div className="panel">
+          <h3>Templates</h3>
+          {templates.length ? templates.map(t => (
+            <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <strong>{t.name}</strong> <small>({t.width_mm}×{t.height_mm}mm)</small>
+                {t.is_default && <span className="status-badge" style={{ marginLeft: 4 }}>Default</span>}
+              </div>
+              {isAdmin && <button className="btn-sm danger" onClick={() => handleDelete(t.id)}>Delete</button>}
+            </div>
+          )) : <p className="muted">No templates. Create one to get started.</p>}
+          <label style={{ marginTop: 12, display: 'block' }}>Use Template
+            <select value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)} style={{ width: '100%', padding: 8, marginTop: 4 }}>
+              <option value=''>Default</option>
+              {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="panel">
+          <h3>Select Products</h3>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input className="search-input" placeholder="Search products…" value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1 }} />
+            <button className="btn secondary" onClick={selectAll}>Select All</button>
+          </div>
+          <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+            {filtered.slice(0, 100).map(p => (
+              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={selectedProducts.includes(p.id)} onChange={() => toggleProduct(p.id)} />
+                <span style={{ flex: 1, fontSize: '0.82rem' }}>{p.name}</span>
+                <small style={{ color: 'var(--muted)' }}>₦{parseFloat(p.price).toFixed(2)}</small>
+              </label>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: '0.78rem', marginTop: 8 }}>{selectedProducts.length} selected</p>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" onClick={handlePreview} disabled={!selectedProducts.length}>👁️ Preview Labels</button>
+        {previewData && <button className="btn primary" onClick={printLabels}>🖨️ Print Labels</button>}
+      </div>
+      {previewData && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <h3>Label Preview — {previewData.products?.length} labels</h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {previewData.products?.map(p => (
+              <div key={p.id} style={{ width: 'auto', padding: '8px 12px', border: '1px solid #000', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.82rem' }}>{p.name}</div>
+                <div>||| {p.barcode} |||</div>
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>₦{(parseFloat(p.price) || 0).toFixed(2)}</div>
+                <div style={{ fontSize: '0.65rem', color: '#666' }}>{p.category}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>New Label Template</h2>
+            <form onSubmit={handleCreate} className="form-grid">
+              <label>Name<input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></label>
+              <label>Width (mm)<input type="number" min="20" value={form.widthMm} onChange={e => setForm({...form, widthMm: e.target.value})} /></label>
+              <label>Height (mm)<input type="number" min="10" value={form.heightMm} onChange={e => setForm({...form, heightMm: e.target.value})} /></label>
+              <label><input type='checkbox' checked={form.layout.showBarcode} onChange={e => setForm({...form, layout: {...form.layout, showBarcode: e.target.checked}})} style={{ width: 'auto' }} /> Show Barcode</label>
+              <label><input type='checkbox' checked={form.layout.showPrice} onChange={e => setForm({...form, layout: {...form.layout, showPrice: e.target.checked}})} style={{ width: 'auto' }} /> Show Price</label>
+              <label><input type='checkbox' checked={form.layout.showName} onChange={e => setForm({...form, layout: {...form.layout, showName: e.target.checked}})} style={{ width: 'auto' }} /> Show Name</label>
+              <label><input type='checkbox' checked={form.isDefault} onChange={e => setForm({...form, isDefault: e.target.checked})} style={{ width: 'auto' }} /> Set as Default</label>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn primary">Create</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OmnichannelPage() {
+  const { fetchOmnichannelOrders, getOmnichannelOrder, createOmnichannelOrder, updateOmnichannelStatus, assignOmnichannelOrder, deleteOmnichannelOrder, fetchEndlessAisle, createEndlessAisle, fetchProducts, fetchBranches, fetchCustomers, user } = useAuth();
+  const [tab, setTab] = useState('orders');
+  const [orders, setOrders] = useState([]);
+  const [endlessAisle, setEndlessAisle] = useState([]);
+  const [active, setActive] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [typeFilter, setTypeFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ orderType: 'BOPIS', customerId: '', items: [{ productId: '', productName: '', quantity: 1, unitPrice: 0 }], pickupBranchId: '', shippingAddress: '', notes: '' });
+  const [products, setProductsList] = useState([]);
+  const [branches, setBranchesList] = useState([]);
+  const [customers, setCustomersList] = useState([]);
+  const fmt = (n) => '₦' + (parseFloat(n) || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+  const isAdmin = ['ADMIN', 'MANAGER'].includes(user?.role);
+
+  const load = useCallback(async () => {
+    try {
+      const params = {};
+      if (typeFilter) params.orderType = typeFilter;
+      if (statusFilter) params.status = statusFilter;
+      const [o, ea] = await Promise.all([
+        fetchOmnichannelOrders(Object.keys(params).length ? params : undefined),
+        fetchEndlessAisle()
+      ]);
+      setOrders(o?.data || []); setEndlessAisle(ea || []);
+    } catch {} finally { setLoading(false); }
+  }, [fetchOmnichannelOrders, fetchEndlessAisle, typeFilter, statusFilter]);
+  useEffect(() => { load(); }, [load]);
+
+  async function openOrder(id) { try { setActive(await getOmnichannelOrder(id)); } catch (err) { alert(err.message); } }
+  async function handleStatusUpdate(id, status) {
+    if (!confirm(`Update status to ${status}?`)) return;
+    try { await updateOmnichannelStatus(id, { status }); openOrder(id); load(); } catch (err) { alert(err.message); }
+  }
+  async function handleDelete(id) {
+    if (!confirm('Cancel this order?')) return;
+    try { await deleteOmnichannelOrder(id); setActive(null); load(); } catch (err) { alert(err.message); }
+  }
+
+  async function openForm() {
+    const [p, b, c] = await Promise.all([fetchProducts(), fetchBranches(), fetchCustomers()]);
+    setProductsList(p || []); setBranchesList(b || []); setCustomersList(c || []);
+    setShowForm(true);
+  }
+  async function handleCreate(e) {
+    e.preventDefault(); try { await createOmnichannelOrder(form); setShowForm(false); load(); } catch (err) { alert(err.message); }
+  }
+  function addFormItem() { setForm({...form, items: [...form.items, { productId: '', productName: '', quantity: 1, unitPrice: 0 }]}); }
+  function updateFormItem(idx, field, val) {
+    const items = [...form.items];
+    items[idx] = { ...items[idx], [field]: val };
+    if (field === 'productId') {
+      const p = products.find(x => x.id === Number(val));
+      if (p) { items[idx].productName = p.name; items[idx].unitPrice = p.price; }
+    }
+    setForm({...form, items});
+  }
+
+  const orderTypes = { BOPIS: '🛒 Buy Online, Pick Up In Store', SHIP_TO_HOME: '📦 Ship to Home', CURBSIDE: '🚗 Curbside Pickup', ENDLESS_AISLE: '♾️ Endless Aisle' };
+  const statusFlow = { PENDING: ['CONFIRMED', 'CANCELLED'], CONFIRMED: ['PICKING', 'CANCELLED'], PICKING: ['READY', 'CANCELLED'], READY: ['DELIVERED'], SHIPPED: ['DELIVERED'] };
+
+  return (
+    <div className="page-panel">
+      <div className="panel-header">
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <button className={tab === 'orders' ? 'active' : ''} onClick={() => { setTab('orders'); setActive(null); }}>📦 Orders</button>
+          <button className={tab === 'endless' ? 'active' : ''} onClick={() => setTab('endless')}>♾️ Endless Aisle</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {!active && tab === 'orders' && <button className="btn primary" onClick={openForm}>+ New Order</button>}
+        </div>
+      </div>
+      {loading ? <p className="loading">Loading…</p> : (
+        <>
+          {tab === 'orders' && !active && (
+            <>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: '1.5px solid var(--border)' }}>
+                  <option value=''>All Types</option>
+                  {Object.entries(orderTypes).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: '1.5px solid var(--border)' }}>
+                  <option value=''>All Statuses</option>
+                  {['PENDING', 'CONFIRMED', 'PICKING', 'READY', 'SHIPPED', 'DELIVERED', 'CANCELLED'].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div className="table-wrap">
+                {orders.length ? (
+                  <table>
+                    <thead><tr><th>Order #</th><th>Type</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Branch</th><th>Actions</th></tr></thead>
+                    <tbody>{orders.map(o => (
+                      <tr key={o.id}>
+                        <td><button className="btn-sm" onClick={() => openOrder(o.id)}>{o.order_number}</button></td>
+                        <td><span className="status-badge">{o.order_type}</span></td>
+                        <td>{o.customer_name || 'Walk-in'}</td>
+                        <td>{o.item_count}</td>
+                        <td>{fmt(o.total)}</td>
+                        <td><span className={`status-badge ${o.status === 'DELIVERED' ? 'active' : o.status === 'CANCELLED' ? 'inactive' : 'warning'}`}>{o.status}</span></td>
+                        <td>{o.pickup_branch_name || '—'}</td>
+                        <td><button className="btn-sm" onClick={() => openOrder(o.id)}>View</button></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                ) : <p className="muted">No omnichannel orders found.</p>}
+              </div>
+            </>
+          )}
+          {tab === 'orders' && active && (
+            <div>
+              <button className="btn secondary" onClick={() => setActive(null)} style={{ marginBottom: 12 }}>← Back</button>
+              <div className="summary-grid">
+                <div className="summary-card accent"><span>Total</span><strong>{fmt(active.total)}</strong></div>
+                <div className="summary-card"><span>Type</span><strong>{active.order_type}</strong></div>
+                <div className="summary-card"><span>Status</span><strong>{active.status}</strong></div>
+                <div className="summary-card"><span>Source</span><strong>{active.source}</strong></div>
+              </div>
+              <div className="panel" style={{ marginTop: 12 }}>
+                <h3>Items</h3>
+                <table>
+                  <thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+                  <tbody>{active.items?.map(i => (
+                    <tr key={i.id}><td>{i.product_name}</td><td>{i.quantity}</td><td>{fmt(i.unit_price)}</td><td>{fmt(i.line_total)}</td></tr>
+                  ))}</tbody>
+                </table>
+              </div>
+              {active.shipping_address && <div className="panel" style={{ marginTop: 12 }}><h3>Shipping Address</h3><p>{active.shipping_address}</p></div>}
+              {active.notes && <div className="panel" style={{ marginTop: 12 }}><h3>Notes</h3><p>{active.notes}</p></div>}
+              {statusFlow[active.status] && isAdmin && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  {statusFlow[active.status].map(s => (
+                    <button key={s} className={s === 'CANCELLED' ? 'btn danger' : 'btn primary'} onClick={() => handleStatusUpdate(active.id, s)}>{s}</button>
+                  ))}
+                </div>
+              )}
+              {isAdmin && active.status !== 'CANCELLED' && active.status !== 'DELIVERED' && (
+                <button className="btn danger" style={{ marginTop: 8 }} onClick={() => handleDelete(active.id)}>Cancel Order</button>
+              )}
+            </div>
+          )}
+          {tab === 'endless' && (
+            <div className="table-wrap">
+              {endlessAisle.length ? (
+                <table>
+                  <thead><tr><th>Product</th><th>Customer</th><th>Requested Branch</th><th>Fulfilled Branch</th><th>Status</th><th>Date</th></tr></thead>
+                  <tbody>{endlessAisle.map(ea => (
+                    <tr key={ea.id}>
+                      <td>{ea.product_name}</td>
+                      <td>{ea.customer_name || '—'}</td>
+                      <td>{ea.requested_branch_name || '—'}</td>
+                      <td>{ea.fulfilled_branch_name || '—'}</td>
+                      <td><span className={`status-badge ${ea.status === 'FULFILLED' ? 'active' : ea.status === 'REQUESTED' ? 'warning' : ''}`}>{ea.status}</span></td>
+                      <td>{new Date(ea.created_at).toLocaleDateString('en-NG')}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="muted">No endless aisle requests.</p>}
+            </div>
+          )}
+        </>
+      )}
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600 }}>
+            <h2>New Omnichannel Order</h2>
+            <form onSubmit={handleCreate} className="form-grid">
+              <label>Type<select value={form.orderType} onChange={e => setForm({...form, orderType: e.target.value})} required>{Object.entries(orderTypes).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+              <label>Customer<select value={form.customerId} onChange={e => setForm({...form, customerId: e.target.value})}><option value=''>Walk-in</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+              {form.orderType === 'BOPIS' && (
+                <label>Pickup Branch<select value={form.pickupBranchId} onChange={e => setForm({...form, pickupBranchId: e.target.value})} required><option value=''>Select branch</option>{branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+              )}
+              {form.orderType === 'SHIP_TO_HOME' && (
+                <label>Shipping Address<textarea value={form.shippingAddress} onChange={e => setForm({...form, shippingAddress: e.target.value})} rows={2} required /></label>
+              )}
+              <label>Notes<input value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} placeholder='Optional' /></label>
+              <div style={{ gridColumn: '1/-1' }}>
+                <h3>Items</h3>
+                {form.items.map((item, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <select value={item.productId} onChange={e => updateFormItem(idx, 'productId', e.target.value)} style={{ flex: 2, padding: 8, borderRadius: 8, border: '1.5px solid var(--border)' }}>
+                      <option value=''>Select product</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name} (₦{parseFloat(p.price).toFixed(2)})</option>)}
+                    </select>
+                    <input type='number' min='1' value={item.quantity} onChange={e => updateFormItem(idx, 'quantity', Number(e.target.value))} style={{ flex: 1, padding: 8, borderRadius: 8, border: '1.5px solid var(--border)' }} />
+                  </div>
+                ))}
+                <button type='button' className='btn secondary' onClick={addFormItem}>+ Add Item</button>
+              </div>
+              <div className="form-actions"><button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn primary">Create Order</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // APP ROUTES
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -9104,6 +9988,13 @@ export default function App() {
           <Route path="/fulfillment" element={<FulfillmentPage />} />
           <Route path="/offline" element={<OfflineSyncPage />} />
           <Route path="/digitalwallets" element={<DigitalWalletsPage />} />
+          <Route path="/cashierpos" element={<CashierPOSPage auth={useAuth()} />} />
+          <Route path="/layaway" element={<LayawayPage />} />
+          <Route path="/loyalty" element={<LoyaltyPage />} />
+          <Route path="/customergroups" element={<CustomerGroupsPage />} />
+          <Route path="/marketing" element={<MarketingPage />} />
+          <Route path="/labels" element={<LabelPrintingPage />} />
+          <Route path="/omnichannel" element={<OmnichannelPage />} />
            <Route path="/payment-settings" element={<PaymentSettingsPage />} />
            <Route path="/terminals" element={<TerminalPage />} />
            <Route path="*" element={<Navigate to="/dashboard" replace />} />
