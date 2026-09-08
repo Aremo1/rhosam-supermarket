@@ -54,3 +54,8 @@ export function usePosStatus() {
   }, []);
   return status;
 }
+
+/** Clear any scanner-buffered scans that were waiting for a held order resume. */
+export function clearScannerBuffer() {
+  setPosStatus({ hasHeldOrder: false, lastHeldAt: null });
+}

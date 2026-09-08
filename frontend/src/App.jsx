@@ -7,7 +7,8 @@ import ScannerPage from "./ScannerPage";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import { useHeldOrders } from "./useHeldOrders";
 import Numpad from "./Numpad";
-import { setPosStatus } from "./posStatusBridge";
+import { setPosStatus, clearScannerBuffer } from "./posStatusBridge";
+import POSLayout from "./POSLayout";
 import "./App.css";
 
 function resolveApiUrl(val) {
@@ -575,12 +576,49 @@ function POSPage() {
   const [activeNumericFieldQty, setActiveNumericFieldQty] = useState(null);
   const [activeNumericFieldMaxQty, setActiveNumericFieldMaxQty] = useState(null);
 
+  const location = useLocation();
+  const navigate = useNavigate();
+
   useEffect(() => {
     setPosStatus({
       hasHeldOrder: heldOrders.length > 0,
       lastHeldAt: heldOrders[0]?.heldAt || null,
     });
   }, [heldOrders]);
+
+  // Resume the most recent held order when the POS is opened with ?resumeHeld=1
+  useEffect(() => {
+    if (location.search.includes("resumeHeld=1") && heldOrders.length > 0) {
+      const first = heldOrders[0];
+      if (!first) {
+        clearScannerBuffer();
+        return;
+      }
+
+      setCart(first.cart || []);
+      setCustomerName(first.customerName || "Walk-in Customer");
+      setCustomerId(first.customerId || null);
+      setPayment(first.payment || "Cash");
+      setCustomerEmail(first.customerEmail || "");
+      setDiscount(first.discount || 0);
+      setTax(first.tax || 0);
+      setAmountPaid(first.amountPaid ?? "");
+      setError("");
+      setHeldPanelOpen(true);
+
+      resumeOrder(first.id);
+      clearScannerBuffer();
+
+      const cleaned = location.search
+        .split("&")
+        .filter((part) => part !== "resumeHeld=1")
+        .join("&");
+      const next = cleaned ? `/pos?${cleaned}` : "/pos";
+      if (next !== location.pathname + location.search) {
+        navigate(next, { replace: true });
+      }
+    }
+  }, [location, heldOrders, resumeOrder, clearScannerBuffer, navigate]);
   const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
   const scanTimeoutRef = useRef(null);
@@ -7186,7 +7224,7 @@ export default function App() {
       <Route path="/*" element={<AuthGate><Layout>
         <Routes>
           <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/pos" element={<POSPage />} />
+          <Route path="/pos" element={<ErrorBoundary><POSLayout><POSPage /></POSLayout></ErrorBoundary>} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
