@@ -26,19 +26,70 @@ process.env.PAYMENT_WEBHOOK_SECRET = '';
 process.env.CLOUDINARY_CLOUD_NAME = '';
 process.env.CLOUDINARY_API_KEY = '';
 process.env.CLOUDINARY_API_SECRET = '';
-process.env.UPLOAD_DIR = './uploads';
-
-// ── Mock pg before requiring server.js ──
+process.env.UPLOAD_DIR = './uploads';// ── Mock pg, dotenv, bcrypt BEFORE requiring server.js ──
 const { mockPool, getQueryCalls, resetMock, mockQueryResults } = require('./helpers/mock-pool');
 
-jest.mock('pg', () => ({
-  Pool: jest.fn(() => mockPool),
-}));
-jest.mock('dotenv', () => ({ config: jest.fn() }));
-jest.mock('bcrypt', () => ({
-  hash: jest.fn(async () => 'hashed-password'),
-  compare: jest.fn(async () => true),
-}));
+const MockPg = { Pool: () => mockPool };
+const MockDotenv = { config: () => ({}) };
+const MockBcrypt = {
+  hash: async () => 'hashed-password',
+  compare: async () => true,
+};
+
+// Install mocks at require-time so server.js picks them up
+const poolFromHelper = require('./helpers/mock-pool');
+MockPg.Pool = MockPg.Pool || poolFromHelper.Pool;
+MockPg.default = MockPg.Pool;
+MockPg.__esModule = true;
+
+if (typeof jest.mock === 'function') {
+  jest.mock('pg', () => MockPg);
+  jest.mock('dotenv', () => MockDotenv);
+  jest.mock('bcrypt', () => MockBcrypt);
+} else {
+  // Fallback for vitest: replace require for the three modules only
+  const mod = globalThis.Module || require('module');
+  const orig = mod.prototype && mod.prototype.require ? mod.prototype.require : (() => {});
+  let pgInstalled = false;
+  let dotenvInstalled = false;
+  let bcryptInstalled = false;
+  if (mod.prototype) {
+    mod.prototype.require = (function(orig) {
+      let pgInstalled = false;
+      let dotenvInstalled = false;
+      let bcryptInstalled = false;
+      return function(path) {
+        if (path === 'pg' && !pgInstalled) {
+          pgInstalled = true;
+          return MockPg;
+        }
+        if (path === 'dotenv' && !dotenvInstalled) {
+          dotenvInstalled = true;
+          return MockDotenv;
+        }
+        if (path === 'bcrypt' && !bcryptInstalled) {
+          bcryptInstalled = true;
+          return MockBcrypt;
+        }
+        return orig.call(this, path);
+      };
+    })(orig);
+  }
+}
+
+// Ensure the mocked pg module exposes a callable Pool constructor accessible
+// both as a factory (MockPg.Pool) and as a property that Module.require can
+// return when server.js does `new Pool(...)`.
+const poolFactory = require('./helpers/mock-pool').Pool;
+MockPg.Pool = poolFactory;
+MockPg.default = MockPg.Pool;
+MockPg.__esModule = true;
+
+// When server.js does `new Pool(...)` it resolves `Pool` from the module
+// exports. Make both the factory callable and the default export resolvable.
+MockPg.__esModule = true;
+MockPg.default = MockPg.Pool;
+MockPg.Pool = MockPg.Pool || poolFactory;
 
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
@@ -71,16 +122,19 @@ const SUPER_ADMIN = { id: 1, role: 'ADMIN', branchId: null, name: 'Super Admin',
 let app;
 
 beforeAll(() => {
-  jest.spyOn(console, 'error').mockImplementation(() => {});
+  const origError = console.error;
+  console.error = () => {};
   process.env.JWT_SECRET = JWT_SECRET;
   process.env.PORT = '0';
   const server = require('../src/server');
   app = server.app;
+  console.error = origError;
 });
 
 afterAll(() => {
-  console.error.mockRestore();
+  // console.error already restored above
 });
+
 
 beforeEach(() => {
   resetMock();

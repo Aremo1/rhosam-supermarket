@@ -1,1 +1,14 @@
-import{defineConfig}from"vite";import react from"@vitejs/plugin-react";export default defineConfig({plugins:[react()],server:{proxy:{"/api":"https://rhosam-backend.onrender.com","/uploads":"https://rhosam-backend.onrender.com"}}});
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    include: ['backend/__tests__/**/*.test.js'],
+    alias: {
+      '@testing-library/jest-dom': '/frontend/node_modules/@testing-library/jest-dom',
+    },
+  },
+});
