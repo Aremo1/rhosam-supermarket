@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Html5Qrcode } from "html5-qrcode";
 import QRCode from "qrcode";
+import { usePosStatus } from "./posStatusBridge";
 
 // Use relative /api path — routes through the frontend server proxy
 // (avoids cross-origin CORS issues on the phone browser)
@@ -1046,6 +1047,27 @@ export default function ScannerPage() {
             🗑️ Removed <strong>{undoToast.productName}</strong> ({undoToast.removedScans.length} scan{undoToast.removedScans.length !== 1 ? "s" : ""})
           </span>
           <button onClick={undoDelete} style={styles.undoToastBtn}>↩ Undo</button>
+        </div>
+      )}
+
+      {/* Held-order banner from POS */}
+      {posStatus.hasHeldOrder && (
+        <div style={styles.heldOrderBanner}>
+          <div style={styles.heldOrderBannerText}>
+            <span style={{ fontWeight: 600 }}>⚠️ POS has a held order</span>
+            <span style={{ color: "var(--muted)", marginLeft: 8 }}>
+              {posStatus.lastHeldAt ? `Held ${new Date(posStatus.lastHeldAt).toLocaleString("en-NG", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            style={styles.heldOrderBannerAction}
+            onClick={() => {
+              window.parent?.location?.href != null && (window.location.href = "/pos");
+            }}
+          >
+            Open POS
+          </button>
         </div>
       )}
 

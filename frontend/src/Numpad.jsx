@@ -14,6 +14,9 @@ export default function Numpad({
   maxLength = 10,
   buttonSize = 56,
   totalWidth,
+  mode = "decimal",
+  maxQty = null,
+  label = null,
 }) {
   const inputRef = useRef(null);
   const focusRef = useRef(false);
@@ -34,6 +37,24 @@ export default function Numpad({
         return;
       }
 
+      if (mode === "quantity") {
+        if (key === ".") {
+          // Ignore decimal input in quantity mode.
+          return;
+        }
+        const digits = value.replace(/[^0-9]/g, "");
+        if (maxQty != null && digits.length >= String(maxQty).length) {
+          // Avoid typing more digits than the max quantity allows.
+          return;
+        }
+        if (value === "0") {
+          onChange(key);
+        } else {
+          onChange(value + key);
+        }
+        return;
+      }
+
       if (key === ".") {
         // Only allow one decimal marker and only in the fractional part.
         const beforeDot = value.slice(0, value.indexOf(".") ?? Infinity);
@@ -51,7 +72,7 @@ export default function Numpad({
         onChange(value + key);
       }
     },
-    [value, onChange, maxLength]
+    [value, onChange, maxLength, mode, maxQty]
   );
 
   const handleKeyDown = useCallback(
@@ -100,21 +121,27 @@ export default function Numpad({
       {/* Invisible input keeps external keyboard + screen reader support. */}
       <input
         ref={inputRef}
-        type="text"
-        inputMode="decimal"
+        type={mode === "quantity" ? "text" : "text"}
+        inputMode={mode === "quantity" ? "numeric" : "decimal"}
         value={value}
         onChange={(e) => {
-          // Allow direct typing but sanitize to digits/one dot.
-          const raw = e.target.value.replace(/[^0-9.]/g, "");
-          const parts = raw.split(".");
-          const sanitized =
-            parts.length > 2
-              ? parts.slice(0, 2).join(".")
-              : raw;
-          if (sanitized !== raw) {
-            e.target.value = sanitized;
+          let raw = e.target.value.replace(/[^0-9.]/g, "");
+          if (mode === "quantity") {
+            // Keep quantity numeric-only and avoid fractional input.
+            raw = raw.replace(/\./g, "");
+            if (maxQty != null) {
+              const numeric = parseInt(raw, 10);
+              if (!isNaN(numeric) && numeric > maxQty) {
+                raw = String(maxQty);
+              }
+            }
+          } else {
+            const parts = raw.split(".");
+            if (parts.length > 2) {
+              raw = parts.slice(0, 2).join(".");
+            }
           }
-          onChange(sanitized.slice(0, maxLength));
+          onChange(raw.slice(0, maxLength));
         }}
         onKeyDown={handleKeyDown}
         onClick={(e) => e.target.select()}
@@ -129,6 +156,7 @@ export default function Numpad({
         }}
         tabIndex={-1}
         aria-hidden="true"
+        aria-label={label || (mode === "quantity" ? "Quantity" : "Amount")}
       />
 
       {totalWidth != null ? (

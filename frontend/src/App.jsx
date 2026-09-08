@@ -7,6 +7,7 @@ import ScannerPage from "./ScannerPage";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
 import { useHeldOrders } from "./useHeldOrders";
 import Numpad from "./Numpad";
+import { setPosStatus } from "./posStatusBridge";
 import "./App.css";
 
 function resolveApiUrl(val) {
@@ -568,7 +569,18 @@ function POSPage() {
   const [customers, setCustomers] = useState([]);
   const { held: heldOrders, hold: holdOrder, resumeById: resumeOrder, remove: removeHeldOrder, clearAll: clearHeldOrders } = useHeldOrders();
   const [heldPanelOpen, setHeldPanelOpen] = useState(false);
-  const [activeNumericField, setActiveNumericField] = useState(null); // 'amountPaid' | 'discount' | 'tax' | null
+  const [activeNumericField, setActiveNumericField] = useState(null); // 'amountPaid' | 'discount' | 'tax' | 'qty:<productId>'
+  const [activeNumericFieldProductId, setActiveNumericFieldProductId] = useState(null);
+  const [activeNumericFieldProductName, setActiveNumericFieldProductName] = useState(null);
+  const [activeNumericFieldQty, setActiveNumericFieldQty] = useState(null);
+  const [activeNumericFieldMaxQty, setActiveNumericFieldMaxQty] = useState(null);
+
+  useEffect(() => {
+    setPosStatus({
+      hasHeldOrder: heldOrders.length > 0,
+      lastHeldAt: heldOrders[0]?.heldAt || null,
+    });
+  }, [heldOrders]);
   const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
   const scanTimeoutRef = useRef(null);
@@ -1255,6 +1267,23 @@ function POSPage() {
                       const val = parseInt(e.target.value, 10);
                       if (!isNaN(val) && val >= 1) updateQty(item.productId, val);
                     }}
+                    onFocus={() => {
+                      setActiveNumericField('qty:' + item.productId);
+                      setActiveNumericFieldProductId(item.productId);
+                      setActiveNumericFieldProductName(item.name);
+                      setActiveNumericFieldQty(item.quantity);
+                      setActiveNumericFieldMaxQty(availableStock);
+                    }}
+                    onBlur={() => {
+                      if (activeNumericField === 'qty:' + item.productId) {
+                        setActiveNumericField(null);
+                        setActiveNumericFieldProductId(null);
+                        setActiveNumericFieldProductName(null);
+                        setActiveNumericFieldQty(null);
+                        setActiveNumericFieldMaxQty(null);
+                      }
+                    }}
+                    className={activeNumericField === 'qty:' + item.productId ? 'focused-numeric' : ''}
                     style={{ width: 50, textAlign: 'center', border: '1.5px solid var(--border)', borderRadius: 6, padding: '4px 2px', fontWeight: 700, fontSize: '0.9rem', background: 'var(--card-bg, white)', color: 'var(--text)' }}
                   />
                   <button onClick={() => updateQty(item.productId, item.quantity + 1)} disabled={isMaxed} style={isMaxed ? { opacity: 0.4, cursor: 'not-allowed' } : {}}>+</button>

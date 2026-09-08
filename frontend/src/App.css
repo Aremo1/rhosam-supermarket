@@ -553,6 +553,46 @@ td code { font-size: 0.82rem; background: var(--border); padding: 3px 8px; borde
 .numpad-shell button {
   touch-action: manipulation;
 }
+
+/* ── Scanner held-order banner ─────────────────────────────── */
+.held-order-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  color: #991b1b;
+}
+.held-order-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.held-order-banner-action {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.held-order-banner-action:hover { background: #b91c1c; }
+
+/* Scanner page register the banner style too */
+#scanner-preview + div .held-order-banner,
+.scanner-manual-input ~ .held-order-banner {
+  display: flex;
+}
+
 .cart-list { display: grid; gap: 6px; min-height: 420px; max-height: calc(100vh - 200px); overflow-y: auto; }
 .empty-cart {
   border: 2px dashed var(--border); border-radius: var(--radius);
