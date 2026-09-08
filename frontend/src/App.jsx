@@ -597,8 +597,17 @@ function POSPage() {
     setKeypadValue,
     focusedLine,
     onFocusLine,
+    keypadDispatch,
   } = posApp;
   const [activeNumericField, setActiveNumericField] = useState(null); // 'amountPaid' | 'discount' | 'tax' | 'qty:<productId>'
+
+  // Sync local selectedCategory from POSContext so right-panel pills in POSLayout filter the product grid
+  useEffect(() => {
+    if (posSelectedCategory !== selectedCategory) {
+      setSelectedCategory(posSelectedCategory);
+      setSearch("");
+    }
+  }, [posSelectedCategory]);
   const [activeNumericFieldProductId, setActiveNumericFieldProductId] = useState(null);
   const [activeNumericFieldProductName, setActiveNumericFieldProductName] = useState(null);
   const [activeNumericFieldQty, setActiveNumericFieldQty] = useState(null);
@@ -1171,33 +1180,32 @@ function POSPage() {
           </div>
         </div>
 
-        {/* Category Filter */}
+        {/* Category Filter — uses POSContext selectedCategory so both the top bar and right-panel pills stay in sync */}
         {categories.length > 1 && (
           <div className="pos-category-filter">
             <button
-              className={`category-chip ${posSelectedCategory === "" ? 'active' : ''}`}
-              onClick={() => onCategoryChange("")}
+              className={`category-chip ${selectedCategory === "" ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory(""); onCategoryChange(""); setSearch(""); }}
             >All</button>
             {categories.map(cat => (
               <button
                 key={cat}
-              className={`category-chip ${posSelectedCategory === cat ? 'active' : ''}`}
-              onClick={() => onCategoryChange(posSelectedCategory === cat ? "" : cat)}
-            >{cat}</button>
-          ))}
-        </div>
+                className={`category-chip ${selectedCategory === cat ? 'active' : ''}`}
+                onClick={() => { setSelectedCategory(selectedCategory === cat ? "" : cat); onCategoryChange(selectedCategory === cat ? "" : cat); }}
+              >{cat}</button>
+            ))}
+            {selectedCategory && (
+              <button className="category-clear" onClick={() => { setSelectedCategory(""); onCategoryChange(""); setSearch(""); }}>✕ Clear</button>
+            )}
+          </div>
         )}
 
         <div className="pos-product-count">
-          {selectedCategory && (
+          {(selectedCategory || search) && (
             <span className="muted">
-              Showing {filtered.length} of {products.filter(p => p.category === selectedCategory).length} {selectedCategory} products
-              {search && ` matching "${search}"`}
-              <button className="category-clear" onClick={() => { setSelectedCategory(""); setSearch(""); }}>✕ Clear filter</button>
+              {selectedCategory ? `Showing ${filtered.length} of ${products.filter(p => p.category === selectedCategory).length} ${selectedCategory} products` : `${filtered.length} product{filtered.length !== 1 ? 's' : ''} found`}
+              {search && selectedCategory ? ` matching "${search}"` : ''}
             </span>
-          )}
-          {!selectedCategory && search && (
-            <span className="muted">{filtered.length} product{filtered.length !== 1 ? 's' : ''} found</span>
           )}
         </div>
 
@@ -1386,18 +1394,23 @@ function POSPage() {
           )}
           {activeNumericField && (
             <div className="numpad-shell">
-              <div className="numpad-label">{activeNumericField === 'amountPaid' ? 'Amount Paid' : activeNumericField === 'discount' ? 'Discount' : activeNumericField === 'tax' ? 'Tax' : 'Quantity'}</div>
-              <Numpad
-                value={activeNumericField === 'amountPaid' ? amountPaid : activeNumericField === 'discount' ? String(discount) : activeNumericField === 'tax' ? String(tax) : ''}
+              <div className="numpad-label">{activeNumericField === 'amountPaid' ? 'Amount Paid' : activeNumericField === 'discount' ? 'Discount' : activeNumericField === 'tax' ? 'Tax' : 'Quantity'}</div>                <Numpad
+                value={activeNumericField === 'amountPaid' ? amountPaid : activeNumericField === 'discount' ? String(discount) : activeNumericField === 'tax' ? String(tax) : focusedLine != null ? String(cart.find(c => c.productId === focusedLine)?.quantity ?? 1) : ''}
                 onChange={(v) => {
                   if (activeNumericField === 'amountPaid') setAmountPaid(v);
                   else if (activeNumericField === 'discount') setDiscount(v === '' ? 0 : parseFloat(v) || 0);
                   else if (activeNumericField === 'tax') setTax(v === '' ? 0 : parseFloat(v) || 0);
+                  else if (focusedLine != null) {
+                    setCart(prev => prev.map(c => c.productId === focusedLine ? { ...c, quantity: parseInt(v, 10) || 1 } : c));
+                  }
                 }}
                 onSubmit={(v) => {
                   if (activeNumericField === 'amountPaid') setAmountPaid(v);
                   else if (activeNumericField === 'discount') setDiscount(v === '' ? 0 : parseFloat(v) || 0);
                   else if (activeNumericField === 'tax') setTax(v === '' ? 0 : parseFloat(v) || 0);
+                  else if (focusedLine != null) {
+                    setCart(prev => prev.map(c => c.productId === focusedLine ? { ...c, quantity: parseInt(v, 10) || 1 } : c));
+                  }
                   setActiveNumericField(null);
                 }}
                 maxLength={10}
