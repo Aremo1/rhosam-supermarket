@@ -283,6 +283,20 @@ function LoginPage() {
         <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" /></label>
         <p style={{ textAlign: 'right', marginTop: -8, marginBottom: 12 }}><a href="/forgot-password" style={{ fontSize: '0.85rem' }}>Forgot password?</a></p>
         <button type="submit" className="auth-button" disabled={busy}>{busy ? "Signing in…" : "Sign In"}</button>
+
+        {/* Dev auth bypass panel — only rendered when the env flag is on */}
+        {import.meta.env.VITE_DEV_AUTH_BYPASS === "1" && (
+          <div style={{ marginTop: 16, padding: "10px 12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8 }}>
+            <p style={{ fontSize: '0.78rem', fontWeight: 700, color: '#15803d', marginBottom: 6 }}>◈ DEV AUTH BYPASS (backend offline)</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {['ADMIN', 'MANAGER', 'CASHIER'].map(r => (
+                <button key={r} type="button" onClick={() => { setEmail(`dev+${r}@local.dev`); setPassword('ignore'); }} style={{ fontSize: '0.72rem', padding: '4px 10px', borderRadius: 6, border: '1px solid #86efac', background: '#f0fdf4', color: '#15803d', cursor: 'pointer', fontWeight: 600 }}>
+                  Login as {r}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </form>
     </div>
   );

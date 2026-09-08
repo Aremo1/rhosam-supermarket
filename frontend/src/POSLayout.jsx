@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useCallback, useEffect, useState } from "react";
 import { useAuth } from "./AuthContext";
 import { useHeldOrders } from "./useHeldOrders";
 import { usePosStatus } from "./posStatusBridge";
@@ -48,6 +47,18 @@ export default function POSLayout({ children }) {
   const [keypadValue, setKeypadValue] = useState("");
   const [focusedLine, setFocusedLine] = useState(null);
 
+  const dispatchKeypad = useCallback(() => {
+    if (keypadValue == null || keypadValue === "") return;
+    if (keypadMode === "search") {
+      setKeypadMode("search");
+      setKeypadValue("");
+    } else if (focusedLine != null) {
+      setKeypadValue("");
+    } else {
+      setKeypadValue("");
+    }
+  }, [keypadMode, keypadValue, focusedLine, setKeypadValue, setKeypadMode]);
+
   useEffect(() => {
     const timer = setInterval(() => {
       setClock(fmtClock());
@@ -64,6 +75,20 @@ export default function POSLayout({ children }) {
   const cashierName = user?.name || "Cashier";
   const role = user?.role || "CASHIER";
   const themeOn = localStorage.getItem("rhosam-theme") !== "dark";
+
+  const posContextValue = {
+    activeTab,
+    setActiveTab,
+    selectedCategory,
+    onCategoryChange: setSelectedCategory,
+    keypadMode,
+    setKeypadMode,
+    keypadValue,
+    setKeypadValue,
+    focusedLine,
+    onFocusLine: setFocusedLine,
+    keypadDispatch: dispatchKeypad,
+  };
 
   return (
     <div className="pos-shell">
@@ -153,7 +178,7 @@ export default function POSLayout({ children }) {
                       className="pos-held-chip-discard"
                       type="button"
                       onClick={() => {
-                        window.location.href = "/pos?discardHeld=${encodeURIComponent(order.id)}";
+                        window.location.href = "/pos?discardHeld=" + encodeURIComponent(order.id);
                       }}
                     >
                       Discard
@@ -187,20 +212,7 @@ export default function POSLayout({ children }) {
           </div>
 
           {/* Content slot */}
-          <POSContext.Provider
-            value={{
-              activeTab,
-              setActiveTab,
-              selectedCategory,
-              onCategoryChange: setSelectedCategory,
-              keypadMode,
-              setKeypadMode,
-              keypadValue,
-              setKeypadValue,
-              focusedLine,
-              onFocusLine: setFocusedLine,
-            }}
-          >
+          <POSContext.Provider value={posContextValue}>
             <div className="pos-content">{children}</div>
           </POSContext.Provider>
         </div>
@@ -212,7 +224,7 @@ export default function POSLayout({ children }) {
               type="text"
               className="pos-right-search-input"
               placeholder={keypadMode === "search" ? "Search products…" : "Enter quantity"}
-              value={keypadMode === "search" ? "" : keypadValue}
+              value={keypadValue}
               onChange={(e) => setKeypadValue(e.target.value)}
               onFocus={() => setKeypadMode(keypadMode === "search" ? "search" : "quantity")}
             />
@@ -220,19 +232,9 @@ export default function POSLayout({ children }) {
 
           <div className="pos-keypad">
             <div className="pos-keypad-row">
-              <button type="button" className="pos-keypad-key">7</button>
-              <button type="button" className="pos-keypad-key">8</button>
-              <button type="button" className="pos-keypad-key">9</button>
-            </div>
-            <div className="pos-keypad-row">
-              <button type="button" className="pos-keypad-key pos-keypad-action">←</button>
-              <button type="button" className="pos-keypad-key">4</button>
-              <button type="button" className="pos-keypad-key">5</button>
-            </div>
-            <div className="pos-keypad-row">
-              <button type="button" className="pos-keypad-key">6</button>
-              <button type="button" className="pos-keypad-key pos-keypad-toggle">±</button>
-              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "1")}>1</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "7")}>7</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "8")}>8</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "9")}>9</button>
             </div>
             <div className="pos-keypad-row">
               <button type="button" className="pos-keypad-key pos-keypad-action" onClick={() => setKeypadValue((v) => v.slice(0, -1))}>←</button>
@@ -255,74 +257,74 @@ export default function POSLayout({ children }) {
               <button type="button" className="pos-keypad-key pos-keypad-toggle" onClick={() => setKeypadMode((m) => (m === "search" ? "quantity" : "search"))}>abc</button>
             </div>
             <div className="pos-keypad-row pos-keypad-enter-row">
-              <button type="button" className="pos-keypad-enter" onClick={() => {}}
-              >↵</button>
+              <button type="button" className="pos-keypad-enter" onClick={dispatchKeypad}>↵</button>
             </div>
           </div>
 
-          <div className="pos-categories">              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("")}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "200" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("200")}
-              >
-                200
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Baby Care Section" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Baby Care Section")}
-              >
-                Baby Care Section
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Bakery Section" ? "pos-category-inactive" : ""}`}
-                onClick={() => onCategoryChange("Bakery Section")}
-              >
-                Bakery Section
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Beverages" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Beverages")}
-              >
-                Beverages
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Bottle Water" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Bottle Water")}
-              >
-                Bottle Water
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Children & Toys Section" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Children & Toys Section")}
-              >
-                Children & Toys Section
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Confectionaries & Snacks" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Confectionaries & Snacks")}
-              >
-                Confectionaries & Snacks
-              </button>
-              <button
-                type="button"
-                className={`pos-category-pill ${selectedCategory === "Electronics" ? "pos-category-active" : ""}`}
-                onClick={() => onCategoryChange("Electronics")}
-              >
-                Electronics
-              </button>
+          <div className="pos-categories">
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("")}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "200" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("200")}
+            >
+              200
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Baby Care Section" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Baby Care Section")}
+            >
+              Baby Care Section
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Bakery Section" ? "pos-category-inactive" : ""}`}
+              onClick={() => setSelectedCategory("Bakery Section")}
+            >
+              Bakery Section
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Beverages" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Beverages")}
+            >
+              Beverages
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Bottle Water" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Bottle Water")}
+            >
+              Bottle Water
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Children & Toys Section" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Children & Toys Section")}
+            >
+              Children & Toys Section
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Confectionaries & Snacks" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Confectionaries & Snacks")}
+            >
+              Confectionaries & Snacks
+            </button>
+            <button
+              type="button"
+              className={`pos-category-pill ${selectedCategory === "Electronics" ? "pos-category-active" : ""}`}
+              onClick={() => setSelectedCategory("Electronics")}
+            >
+              Electronics
+            </button>
           </div>
         </aside>
 

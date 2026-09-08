@@ -1069,16 +1069,16 @@ export default function ScannerPage() {
 
       {/* Held-order banner from POS */}
       {posStatus.hasHeldOrder && (
-        <div style={styles.heldOrderBanner}>
-          <div style={styles.heldOrderBannerText}>
-            <span style={{ fontWeight: 600 }}>⚠️ POS has a held order</span>
+        <div className="held-order-banner">
+          <div className="held-order-banner-text">
+            <span style={{ fontWeight: 700 }}>⚠️ POS has a held order</span>
             <span style={{ color: "var(--muted)", marginLeft: 8 }}>
               {posStatus.lastHeldAt ? `Held ${new Date(posStatus.lastHeldAt).toLocaleString("en-NG", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
             </span>
           </div>
           <button
             type="button"
-            style={styles.heldOrderBannerAction}
+            className="held-order-banner-action"
             onClick={() => {
               window.location.href = "/pos";
             }}
@@ -1087,10 +1087,8 @@ export default function ScannerPage() {
           </button>
           <button
             type="button"
-            style={{
-              ...styles.heldOrderBannerAction,
-              background: "#16a34a",
-            }}
+            className="held-order-banner-action"
+            style={{ background: "#10b981" }}
             onClick={() => {
               window.location.href = "/pos?resumeHeld=1";
             }}

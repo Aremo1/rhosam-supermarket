@@ -58,6 +58,24 @@ export function AuthProvider({ children }) {
   }, [fetchUser, logout]);
 
   async function login(email, password) {
+    // Dev bypass: when the backend API is unreachable or explicitly opted into
+    // dev-auth mode, allow a fake login so the UI can be tested without a running API.
+    if (import.meta.env.VITE_DEV_AUTH_BYPASS === "1") {
+      const role = (email || "").split("@")[0].toUpperCase() || "ADMIN";
+      const devUser = {
+        id: 1,
+        name: "Dev User",
+        email: email || "dev@local.dev",
+        role,
+        branch: { id: 1, name: "Airforce Base Shasha" },
+        branchId: 1,
+      };
+      localStorage.setItem("rhosam_token", "dev-token");
+      localStorage.setItem("rhosam_user", JSON.stringify(devUser));
+      setUser(devUser);
+      return { ...devUser, passwordExpired: false };
+    }
+
     const d = await parse(await fetch(`${API}/auth/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
