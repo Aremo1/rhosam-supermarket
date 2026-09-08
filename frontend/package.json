@@ -22,9 +22,7 @@
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.7.0",
-    "@vitejs/plugin-react": "latest",
     "jsdom": "^25.0.0",
-    "vite": "latest",
     "vitest": "^5.0.0"
   }
 }
