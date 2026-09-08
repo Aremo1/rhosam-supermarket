@@ -15,6 +15,8 @@ export default function ScannerPage() {
   const [scans, setScans] = useState([]);
   const [error, setError] = useState("");
   const [posConnected, setPosConnected] = useState(false);
+  const posStatus = usePosStatus();
+  const [heldOrderBuffer, setHeldOrderBuffer] = useState([]);
   const scannerRef = useRef(null);
   const html5QrRef = useRef(null);
   const manualInputRef = useRef(null);
@@ -204,6 +206,21 @@ export default function ScannerPage() {
         try { localStorage.setItem("scanner-recent", JSON.stringify(updated)); } catch {}
         return updated;
       });
+
+      // If POS currently has a held order, buffer this scan locally so it can
+      // be merged into the held order when it is resumed.
+      if (posStatus.hasHeldOrder) {
+        setHeldOrderBuffer((prev) => {
+          const existing = prev.find((s) => s.barcode === barcode);
+          if (existing) {
+            return prev.map((s) =>
+              s.barcode === barcode ? { ...s, qty: s.qty + 1, timestamp: Date.now() } : s
+            );
+          }
+          return [...prev, { barcode, qty: 1, timestamp: Date.now() }];
+        });
+      }
+
       // Reset status after a brief moment
       setTimeout(() => setStatus("scanning"), 800);
     } catch (err) {
@@ -211,7 +228,7 @@ export default function ScannerPage() {
       setStatus("error");
       setTimeout(() => { setError(""); setStatus("scanning"); }, 2000);
     }
-  }, [sessionId, playSuccessBeep, playErrorBeep, vibrateSuccess, vibrateError]);
+  }, [sessionId, posStatus.hasHeldOrder, playSuccessBeep, playErrorBeep, vibrateSuccess, vibrateError]);
 
   // Start the camera scanner
   const startScanner = useCallback(async () => {
@@ -1063,11 +1080,28 @@ export default function ScannerPage() {
             type="button"
             style={styles.heldOrderBannerAction}
             onClick={() => {
-              window.parent?.location?.href != null && (window.location.href = "/pos");
+              window.location.href = "/pos";
             }}
           >
             Open POS
           </button>
+          <button
+            type="button"
+            style={{
+              ...styles.heldOrderBannerAction,
+              background: "#16a34a",
+            }}
+            onClick={() => {
+              window.location.href = "/pos?resumeHeld=1";
+            }}
+          >
+            Resume Held Order
+          </button>
+          {heldOrderBuffer.length > 0 && (
+            <span style={{ color: "var(--muted)", fontSize: "0.72rem", marginLeft: 8 }}>
+              {heldOrderBuffer.reduce((s, b) => s + b.qty, 0)} buffered scan{heldOrderBuffer.reduce((s, b) => s + b.qty, 0) !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
       )}
 
@@ -1091,6 +1125,18 @@ export default function ScannerPage() {
           )}
         </div>
       </div>
+
+      {/* Scanner diagnostics strip */}
+      {posStatus.hasHeldOrder && (
+        <div style={styles.diagnosticsStrip}>
+          <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
+            POS order held · scans are buffered locally until resumed
+          </span>
+          <span style={{ fontSize: "0.72rem", color: "var(--muted)", marginLeft: 12 }}>
+            Buffered: {heldOrderBuffer.reduce((s, b) => s + b.qty, 0)} scan{heldOrderBuffer.reduce((s, b) => s + b.qty, 0) !== 1 ? "s" : ""}
+          </span>
+        </div>
+      )}
 
       {/* Settings bar */}
       <div style={styles.settingsBar}>
