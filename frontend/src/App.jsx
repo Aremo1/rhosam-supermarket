@@ -5,6 +5,8 @@ import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
 import ScannerPage from "./ScannerPage";
 import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLossReportPDF } from "./generateReportPDF";
+import { useHeldOrders } from "./useHeldOrders";
+import Numpad from "./Numpad";
 import "./App.css";
 
 function resolveApiUrl(val) {
@@ -564,6 +566,9 @@ function POSPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [customers, setCustomers] = useState([]);
+  const { held: heldOrders, hold: holdOrder, resumeById: resumeOrder, remove: removeHeldOrder, clearAll: clearHeldOrders } = useHeldOrders();
+  const [heldPanelOpen, setHeldPanelOpen] = useState(false);
+  const [activeNumericField, setActiveNumericField] = useState(null); // 'amountPaid' | 'discount' | 'tax' | null
   const [scanFeedback, setScanFeedback] = useState(null);
   const searchRef = useRef(null);
   const scanTimeoutRef = useRef(null);
@@ -1147,6 +1152,66 @@ function POSPage() {
       </div>
 
       <div className="pos-cart">
+        {/* Held orders quick panel */}
+        {heldOrders.length > 0 && (
+          <div className="held-orders-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <strong>⏸ Held Orders ({heldOrders.length})</strong>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <button className="btn-sm" style={{ fontSize: '0.7rem' }} onClick={() => setHeldPanelOpen(!heldPanelOpen)}>{heldPanelOpen ? '▲' : '▼'}</button>
+                <button className="btn-sm danger" style={{ fontSize: '0.7rem' }} onClick={() => { if (confirm('Remove all held orders?')) clearHeldOrders(); }}>Clear all</button>
+              </div>
+            </div>
+            {heldPanelOpen && (
+              <div className="held-orders-list">
+                {heldOrders.map(order => {
+                  const heldSubtotal = order.cart.reduce((s, c) => s + (parseFloat(c.price) || 0) * (c.quantity || 1) - (c.discount || 0), 0);
+                  const heldTotal = heldSubtotal - (parseFloat(order.discount) || 0) + (parseFloat(order.tax) || 0);
+                  return (
+                    <div key={order.id} className="held-order-row">
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{order.customerName}</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>
+                          {order.cart.length} item{order.cart.length !== 1 ? 's' : ''} · ₦{heldTotal.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
+                          {order.branchId ? ' · Branch ' + order.branchId : ''}
+                          {order.cashier ? ' · by ' + order.cashier : ''}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+                          Held {new Date(order.heldAt).toLocaleString('en-NG', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button className="btn-sm primary" style={{ fontSize: '0.72rem', padding: '4px 8px' }}
+                          onClick={() => {
+                            const restored = resumeOrder(order.id);
+                            if (!restored) return;
+                            setCart(restored.cart || []);
+                            setCustomerName(restored.customerName || "Walk-in Customer");
+                            setCustomerId(restored.customerId || null);
+                            setPayment(restored.payment || "Cash");
+                            setCustomerEmail(restored.customerEmail || "");
+                            setDiscount(restored.discount || 0);
+                            setTax(restored.tax || 0);
+                            setAmountPaid(restored.amountPaid ?? "");
+                            setError("");
+                            setHeldPanelOpen(true);
+                          }}
+                          title="Resume this order">
+                          ↩ Resume
+                        </button>
+                        <button className="btn-sm danger" style={{ fontSize: '0.72rem', padding: '4px 8px' }}
+                          onClick={() => removeHeldOrder(order.id)}
+                          title="Discard this held order">
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2>🛒 Cart ({cart.length})</h2>
           {cart.length > 0 && (
@@ -1219,18 +1284,69 @@ function POSPage() {
           )}
           <div className="summary-row"><span>Subtotal</span><span>₦{subtotal.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
           <label>Discount<input type="number" min="0" step="0.01" value={discount} onChange={e => setDiscount(Number(e.target.value))} /></label>
-          <label>Tax<input type="number" min="0" step="0.01" value={tax} onChange={e => setTax(Number(e.target.value))} /></label>
-          <div className="summary-row total"><span>TOTAL</span><strong>₦{total.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
-          <label>Amount Paid<input type="number" min="0" step="0.01" value={amountPaid} onChange={e => setAmountPaid(e.target.value)} placeholder={total.toFixed(2)} /></label>
+          <label>Tax<input type="number" min="0" step="0.01" value={tax} onChange={e => setTax(Number(e.target.value))} /></label>           <div className="summary-row total"><span>TOTAL</span><strong>₦{total.toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></div>
+          <label>Amount Paid<input type="number" min="0" step="0.01" value={amountPaid} onChange={e => setAmountPaid(e.target.value)} onFocus={() => setActiveNumericField('amountPaid')} onBlur={() => setActiveNumericField(null)} placeholder={total.toFixed(2)} className={activeNumericField === 'amountPaid' ? 'focused-numeric' : ''} /></label>
           {Number(amountPaid) > total && (
             <div className="summary-row"><span>Change</span><span className="change">₦{(Number(amountPaid) - total).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</span></div>
+          )}
+          {activeNumericField && (
+            <div className="numpad-shell">
+              <div className="numpad-label">{activeNumericField === 'amountPaid' ? 'Amount Paid' : activeNumericField === 'discount' ? 'Discount' : activeNumericField === 'tax' ? 'Tax' : 'Quantity'}</div>
+              <Numpad
+                value={activeNumericField === 'amountPaid' ? amountPaid : activeNumericField === 'discount' ? String(discount) : activeNumericField === 'tax' ? String(tax) : ''}
+                onChange={(v) => {
+                  if (activeNumericField === 'amountPaid') setAmountPaid(v);
+                  else if (activeNumericField === 'discount') setDiscount(v === '' ? 0 : parseFloat(v) || 0);
+                  else if (activeNumericField === 'tax') setTax(v === '' ? 0 : parseFloat(v) || 0);
+                }}
+                onSubmit={(v) => {
+                  if (activeNumericField === 'amountPaid') setAmountPaid(v);
+                  else if (activeNumericField === 'discount') setDiscount(v === '' ? 0 : parseFloat(v) || 0);
+                  else if (activeNumericField === 'tax') setTax(v === '' ? 0 : parseFloat(v) || 0);
+                  setActiveNumericField(null);
+                }}
+                maxLength={10}
+              />
+            </div>
           )}
           {cart.some(item => { const p = products.find(x => x.id === item.productId); return p && p.stock <= p.reorder_level && p.stock > 0; }) && (
             <div style={{ padding: '8px 12px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, fontSize: '0.8rem', color: '#92400e' }}>
               ⚠️ Some items in cart are low on stock. After this sale, consider restocking.
             </div>
           )}
-          <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : "💳 Checkout"}</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="checkout-btn" onClick={handleCheckout} disabled={busy || !cart.length}>{busy ? "Processing…" : "💳 Checkout"}</button>
+            {cart.length > 0 && !busy && (
+              <button className="btn-sm secondary" style={{ flex: 1, padding: '11px 12px', fontSize: '0.9rem' }}
+                onClick={() => {
+                  holdOrder({
+                    cart,
+                    customerName,
+                    customerId,
+                    payment,
+                    customerEmail,
+                    discount,
+                    tax,
+                    amountPaid,
+                    branchId: user?.branchId,
+                    cashier: user?.name,
+                  });
+                  setCart([]);
+                  setCustomerName("Walk-in Customer");
+                  setCustomerId(null);
+                  setPayment("Cash");
+                  setCustomerEmail("");
+                  setDiscount(0);
+                  setTax(0);
+                  setAmountPaid("");
+                  setError("");
+                  setHeldPanelOpen(true);
+                }}
+                title="Save this order and start the next customer">
+                ⏸ Hold Order
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
