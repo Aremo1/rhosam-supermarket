@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import React from "react";
+import React, { createContext, useContext } from "react";
 import { useAuth } from "./AuthContext";
 import { useHeldOrders } from "./useHeldOrders";
 import { usePosStatus } from "./posStatusBridge";
@@ -27,6 +27,14 @@ const STATUS_PILLS = [
   { label: "Hold", warn: true },
 ];
 
+const POSContext = createContext(null);
+
+export function usePOSApp() {
+  const ctx = useContext(POSContext);
+  if (!ctx) throw new Error("usePOSApp must be used inside POSLayout");
+  return ctx;
+}
+
 export default function POSLayout({ children }) {
   const { user } = useAuth();
   const heldOrders = useHeldOrders().held;
@@ -35,6 +43,10 @@ export default function POSLayout({ children }) {
   const [clockDate, setClockDate] = useState(fmtClockDate);
   const [activeTab, setActiveTab] = useState("lines");
   const [holdExpanded, setHoldExpanded] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState("");
+  const [keypadMode, setKeypadMode] = useState("quantity");
+  const [keypadValue, setKeypadValue] = useState("");
+  const [focusedLine, setFocusedLine] = useState(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -175,7 +187,22 @@ export default function POSLayout({ children }) {
           </div>
 
           {/* Content slot */}
-          <div className="pos-content">{children}</div>
+          <POSContext.Provider
+            value={{
+              activeTab,
+              setActiveTab,
+              selectedCategory,
+              onCategoryChange: setSelectedCategory,
+              keypadMode,
+              setKeypadMode,
+              keypadValue,
+              setKeypadValue,
+              focusedLine,
+              onFocusLine: setFocusedLine,
+            }}
+          >
+            <div className="pos-content">{children}</div>
+          </POSContext.Provider>
         </div>
 
         {/* Right panel */}
@@ -184,8 +211,10 @@ export default function POSLayout({ children }) {
             <input
               type="text"
               className="pos-right-search-input"
-              placeholder="Search or enter quantity"
-              readOnly
+              placeholder={keypadMode === "search" ? "Search products…" : "Enter quantity"}
+              value={keypadMode === "search" ? "" : keypadValue}
+              onChange={(e) => setKeypadValue(e.target.value)}
+              onFocus={() => setKeypadMode(keypadMode === "search" ? "search" : "quantity")}
             />
           </div>
 
@@ -203,33 +232,97 @@ export default function POSLayout({ children }) {
             <div className="pos-keypad-row">
               <button type="button" className="pos-keypad-key">6</button>
               <button type="button" className="pos-keypad-key pos-keypad-toggle">±</button>
-              <button type="button" className="pos-keypad-key">1</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "1")}>1</button>
             </div>
             <div className="pos-keypad-row">
-              <button type="button" className="pos-keypad-key">2</button>
-              <button type="button" className="pos-keypad-key">3</button>
+              <button type="button" className="pos-keypad-key pos-keypad-action" onClick={() => setKeypadValue((v) => v.slice(0, -1))}>←</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "4")}>4</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "5")}>5</button>
+            </div>
+            <div className="pos-keypad-row">
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "6")}>6</button>
+              <button type="button" className="pos-keypad-key pos-keypad-toggle" onClick={() => setKeypadMode((m) => (m === "search" ? "quantity" : "search"))}>±</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "1")}>1</button>
+            </div>
+            <div className="pos-keypad-row">
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "2")}>2</button>
+              <button type="button" className="pos-keypad-key" onClick={() => setKeypadValue((v) => v + "3")}>3</button>
               <button type="button" className="pos-keypad-key pos-keypad-action">*</button>
             </div>
             <div className="pos-keypad-row">
-              <button type="button" className="pos-keypad-key pos-keypad-wide">0</button>
+              <button type="button" className="pos-keypad-key pos-keypad-wide" onClick={() => setKeypadValue((v) => v + "0")}>0</button>
               <button type="button" className="pos-keypad-key">.</button>
-              <button type="button" className="pos-keypad-key pos-keypad-toggle">abc</button>
+              <button type="button" className="pos-keypad-key pos-keypad-toggle" onClick={() => setKeypadMode((m) => (m === "search" ? "quantity" : "search"))}>abc</button>
             </div>
             <div className="pos-keypad-row pos-keypad-enter-row">
-              <button type="button" className="pos-keypad-enter">↵</button>
+              <button type="button" className="pos-keypad-enter" onClick={() => {}}
+              >↵</button>
             </div>
           </div>
 
-          <div className="pos-categories">
-            <span className="pos-category-pill pos-category-active">All</span>
-            <span className="pos-category-pill">200</span>
-            <span className="pos-category-pill">Baby Care Section</span>
-            <span className="pos-category-pill pos-category-inactive">Bakery Section</span>
-            <span className="pos-category-pill">Beverages</span>
-            <span className="pos-category-pill">Bottle Water</span>
-            <span className="pos-category-pill">Children & Toys Section</span>
-            <span className="pos-category-pill">Confectionaries & Snacks</span>
-            <span className="pos-category-pill">Electronics</span>
+          <div className="pos-categories">              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("")}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "200" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("200")}
+              >
+                200
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Baby Care Section" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Baby Care Section")}
+              >
+                Baby Care Section
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Bakery Section" ? "pos-category-inactive" : ""}`}
+                onClick={() => onCategoryChange("Bakery Section")}
+              >
+                Bakery Section
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Beverages" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Beverages")}
+              >
+                Beverages
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Bottle Water" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Bottle Water")}
+              >
+                Bottle Water
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Children & Toys Section" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Children & Toys Section")}
+              >
+                Children & Toys Section
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Confectionaries & Snacks" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Confectionaries & Snacks")}
+              >
+                Confectionaries & Snacks
+              </button>
+              <button
+                type="button"
+                className={`pos-category-pill ${selectedCategory === "Electronics" ? "pos-category-active" : ""}`}
+                onClick={() => onCategoryChange("Electronics")}
+              >
+                Electronics
+              </button>
           </div>
         </aside>
 

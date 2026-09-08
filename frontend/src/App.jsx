@@ -8,7 +8,7 @@ import { generateDamagesReportPDF, generateWastageReportPDF, generateInventoryLo
 import { useHeldOrders } from "./useHeldOrders";
 import Numpad from "./Numpad";
 import { setPosStatus, clearScannerBuffer } from "./posStatusBridge";
-import POSLayout from "./POSLayout";
+import POSLayout, { usePOSApp } from "./POSLayout";
 import "./App.css";
 
 function resolveApiUrl(val) {
@@ -569,7 +569,21 @@ function POSPage() {
   const [busy, setBusy] = useState(false);
   const [customers, setCustomers] = useState([]);
   const { held: heldOrders, hold: holdOrder, resumeById: resumeOrder, remove: removeHeldOrder, clearAll: clearHeldOrders } = useHeldOrders();
-  const [heldPanelOpen, setHeldPanelOpen] = useState(false);
+  const [
+    heldPanelOpen,
+    setHeldPanelOpen,
+  ] = useState(false);
+  const posApp = usePOSApp();
+  const {
+    selectedCategory: posSelectedCategory,
+    onCategoryChange,
+    keypadMode,
+    setKeypadMode,
+    keypadValue,
+    setKeypadValue,
+    focusedLine,
+    onFocusLine,
+  } = posApp;
   const [activeNumericField, setActiveNumericField] = useState(null); // 'amountPaid' | 'discount' | 'tax' | 'qty:<productId>'
   const [activeNumericFieldProductId, setActiveNumericFieldProductId] = useState(null);
   const [activeNumericFieldProductName, setActiveNumericFieldProductName] = useState(null);
@@ -1147,17 +1161,17 @@ function POSPage() {
         {categories.length > 1 && (
           <div className="pos-category-filter">
             <button
-              className={`category-chip ${!selectedCategory ? 'active' : ''}`}
-              onClick={() => setSelectedCategory("")}
+              className={`category-chip ${posSelectedCategory === "" ? 'active' : ''}`}
+              onClick={() => onCategoryChange("")}
             >All</button>
             {categories.map(cat => (
               <button
                 key={cat}
-                className={`category-chip ${selectedCategory === cat ? 'active' : ''}`}
-                onClick={() => setSelectedCategory(selectedCategory === cat ? "" : cat)}
-              >{cat}</button>
-            ))}
-          </div>
+              className={`category-chip ${posSelectedCategory === cat ? 'active' : ''}`}
+              onClick={() => onCategoryChange(posSelectedCategory === cat ? "" : cat)}
+            >{cat}</button>
+          ))}
+        </div>
         )}
 
         <div className="pos-product-count">
