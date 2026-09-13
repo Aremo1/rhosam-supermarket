@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
+import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useNavigate as useNav2 } from "react-router-dom";
 import QRCode from "qrcode";
 import { useAuth } from "./AuthContext";
 import { generateReceiptPDF } from "./generateReceiptPDF";
@@ -17,6 +17,70 @@ function resolveApiUrl(val) {
   if (!/^https?:\/\//.test(val) && val.startsWith("/")) return val; // already a relative path like /api
   return val;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// DOMAIN CONTEXT — Path-Based Links & Custom Domain Resolution
+// ═══════════════════════════════════════════════════════════════════
+const DomainContext = createContext(null);
+
+/** Detect branch slug from URL path (/s/<slug>/...) or subdomain (slug.rhosam.com) */
+function detectBranchSlug() {
+  const hostname = window.location.hostname;
+  const pathname = window.location.pathname;
+
+  // 1. Path-based: /s/<slug>/...
+  const pathMatch = pathname.match(/^\/s\/([^/]+)/);
+  if (pathMatch) return pathMatch[1];
+
+  // 2. Subdomain: <slug>.rhosam.com or <slug>.platform.com
+  const platformDomain = import.meta.env.VITE_PLATFORM_DOMAIN || "rhosam.com";
+  const dotIdx = hostname.indexOf(".");
+  if (dotIdx > 0) {
+    const subdomain = hostname.substring(0, dotIdx);
+    const domain = hostname.substring(dotIdx + 1);
+    if (domain === platformDomain || domain.endsWith("." + platformDomain)) {
+      return subdomain;
+    }
+  }
+
+  return null;
+}
+
+function DomainProvider({ children }) {
+  const [tenant, setTenant] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const branchSlug = detectBranchSlug();
+
+  useEffect(() => {
+    if (!branchSlug) {
+      setLoading(false);
+      return;
+    }
+    // Resolve branch info from backend
+    fetch(`/api/s/${branchSlug}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.branch) setTenant(data.branch);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [branchSlug]);
+
+  const value = {
+    tenant,
+    branchSlug,
+    isPathBased: !!branchSlug,
+    basePath: branchSlug ? `/s/${branchSlug}` : "",
+    generateLink: useCallback((page) => {
+      if (branchSlug) return `/s/${branchSlug}/${page || ""}`;
+      return `/${page || ""}`;
+    }, [branchSlug]),
+  };
+
+  return <DomainContext.Provider value={value}>{children}</DomainContext.Provider>;
+}
+
+function useDomain() { return useContext(DomainContext); }
 
 // ═══════════════════════════════════════════════════════════════════
 // LAYOUT
@@ -7257,54 +7321,60 @@ class ErrorBoundary extends React.Component {
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
   return (
-    <Routes>
-      <Route path="/scanner" element={<ErrorBoundary><ScannerPage /></ErrorBoundary>} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
-      <Route path="/*" element={<AuthGate><Layout>
-        <Routes>
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/pos" element={<ErrorBoundary><POSLayout><POSPage /></POSLayout></ErrorBoundary>} />
-          <Route path="/products" element={<ProductsPage />} />
-          <Route path="/categories" element={<CategoriesPage />} />
-          <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/damages" element={<DamagesPage />} />
-          <Route path="/wastage" element={<WastagePage />} />
-          <Route path="/stock-valuation" element={<StockValuationPage />} />
-          <Route path="/branch-inventory" element={<BranchInventoryPage />} />
-          <Route path="/sales" element={<SalesPage />} />
-          <Route path="/customers" element={<CustomersPage />} />
-          <Route path="/suppliers" element={<SuppliersPage />} />
-          <Route path="/procurement" element={<ProcurementPage />} />
-          <Route path="/expenses" element={<ExpensesPage />} />
-          <Route path="/finance" element={<FinancePage />} />
-          <Route path="/executive" element={<ExecutiveDashboard />} />
-          <Route path="/forecast" element={<ForecastPage />} />
-          <Route path="/reorder" element={<AutoReorderPage />} />
-          <Route path="/dailyreport" element={<ReportsPage />} />
-          <Route path="/cashdrawer" element={<CashDrawerPage />} />
-          <Route path="/display" element={<CustomerDisplayPage />} />
-          <Route path="/supplierportal" element={<SupplierPortalPage />} />
-          <Route path="/branches" element={<BranchesPage />} />
-          <Route path="/messages" element={<MessagesPage />} />
-          <Route path="/transfers" element={<StockTransfersPage />} />
-          <Route path="/users" element={<UsersPage />} />
-          <Route path="/audit" element={<AuditPage />} />
-          <Route path="/loginhistory" element={<LoginHistoryPage />} />
-          <Route path="/change-password" element={<ChangePasswordPage />} />
-          <Route path="/mfa" element={<MfaSetupPage />} />
-          <Route path="/wifiqr" element={<WifiQRPage />} />
-          <Route path="/expiry" element={<ExpiryTrackingPage />} />
-          <Route path="/import-export" element={<BulkImportExportPage />} />
-          <Route path="/audit-cycle" element={<InventoryAuditPage />} />
-          <Route path="/alerts" element={<StockAlertsPage />} />
-          <Route path="/notifications" element={<NotificationCenterPage />} />           <Route path="/notification-prefs" element={<NotificationPreferencesPage />} />
-           <Route path="/payment-settings" element={<PaymentSettingsPage />} />
-           <Route path="/terminals" element={<TerminalPage />} />
-           <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
-      </Layout></AuthGate>} />
-    </Routes>
+    <DomainProvider>
+      <Routes>
+        {/* Public routes — no branch context needed */}
+        <Route path="/scanner" element={<ErrorBoundary><ScannerPage /></ErrorBoundary>} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
+
+        {/* Direct routes (no branch prefix) */}
+        <Route path="/*" element={<AuthGate><Layout>
+          <Routes>
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/pos" element={<ErrorBoundary><POSLayout><POSPage /></POSLayout></ErrorBoundary>} />
+            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/categories" element={<CategoriesPage />} />
+            <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/damages" element={<DamagesPage />} />
+            <Route path="/wastage" element={<WastagePage />} />
+            <Route path="/stock-valuation" element={<StockValuationPage />} />
+            <Route path="/branch-inventory" element={<BranchInventoryPage />} />
+            <Route path="/sales" element={<SalesPage />} />
+            <Route path="/customers" element={<CustomersPage />} />
+            <Route path="/suppliers" element={<SuppliersPage />} />
+            <Route path="/procurement" element={<ProcurementPage />} />
+            <Route path="/expenses" element={<ExpensesPage />} />
+            <Route path="/finance" element={<FinancePage />} />
+            <Route path="/executive" element={<ExecutiveDashboard />} />
+            <Route path="/forecast" element={<ForecastPage />} />
+            <Route path="/reorder" element={<AutoReorderPage />} />
+            <Route path="/dailyreport" element={<ReportsPage />} />
+            <Route path="/cashdrawer" element={<CashDrawerPage />} />
+            <Route path="/display" element={<CustomerDisplayPage />} />
+            <Route path="/supplierportal" element={<SupplierPortalPage />} />
+            <Route path="/branches" element={<BranchesPage />} />
+            <Route path="/messages" element={<MessagesPage />} />
+            <Route path="/transfers" element={<StockTransfersPage />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/loginhistory" element={<LoginHistoryPage />} />
+            <Route path="/change-password" element={<ChangePasswordPage />} />
+            <Route path="/mfa" element={<MfaSetupPage />} />
+            <Route path="/wifiqr" element={<WifiQRPage />} />
+            <Route path="/expiry" element={<ExpiryTrackingPage />} />
+            <Route path="/import-export" element={<BulkImportExportPage />} />
+            <Route path="/audit-cycle" element={<InventoryAuditPage />} />
+            <Route path="/alerts" element={<StockAlertsPage />} />
+            <Route path="/notifications" element={<NotificationCenterPage />} />
+            <Route path="/notification-prefs" element={<NotificationPreferencesPage />} />
+            <Route path="/payment-settings" element={<PaymentSettingsPage />} />
+            <Route path="/terminals" element={<TerminalPage />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </Layout></AuthGate>} />
+      </Routes>
+    </DomainProvider>
   );
 }

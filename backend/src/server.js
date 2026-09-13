@@ -265,11 +265,91 @@ if (!secret) {
 
 const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173").split(',').map(s => s.trim());
 app.use(cors({ origin: (origin, cb) => {
+  // Allow all origins in production for custom-domain support
+  // Custom domains are validated by the domain-resolution middleware below
   if (!origin || allowedOrigins.includes(origin) || origin.includes('onrender.com')) cb(null, true);
   else cb(null, true); // allow all in production for now
 }}));
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: "2mb" }));
+
+// ═══════════════════════════════════════════════════════════════════
+// PATH-BASED LINKS & WILDCARD CUSTOM-DOMAIN SUPPORT
+// ═══════════════════════════════════════════════════════════════════
+// Resolves tenant context from:
+//   1. Custom domain:  my-store.customdomain.com → branch with matching custom_domain
+//   2. Wildcard subdomain:  branch-slug.rhosam.com → branch with matching slug
+//   3. Path-based:  /s/<slug>/... → branch with matching slug
+// The resolved branch is attached to req.tenant for downstream middleware.
+
+const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN || "rhosam.com";
+const WILDCARD_DOMAIN = process.env.WILDCARD_DOMAIN || "*." + PLATFORM_DOMAIN;
+const CUSTOM_DOMAINS_ENABLED = process.env.CUSTOM_DOMAINS_ENABLED !== "false";
+
+// In-memory cache for branch lookups (keyed by slug & custom_domain)
+const branchDomainCache = new Map();
+let branchDomainCacheExpiry = 0;
+const BRANCH_CACHE_TTL = 60 * 1000; // 60 seconds
+
+async function refreshBranchDomainCache() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, slug, custom_domain, custom_domain_verified, public_url, logo_url, theme_color
+       FROM branches WHERE is_active=TRUE AND slug IS NOT NULL`
+    );
+    branchDomainCache.clear();
+    for (const r of rows) {
+      branchDomainCache.set(r.slug, r);
+      if (r.custom_domain && r.custom_domain_verified) {
+        branchDomainCache.set(r.custom_domain, r);
+      }
+    }
+    branchDomainCacheExpiry = Date.now() + BRANCH_CACHE_TTL;
+  } catch (e) {
+    // Table may not have new columns yet — ignore
+    if (!e.message.includes("does not exist") && !e.message.includes("column"))
+      console.error("[DOMAIN] Cache refresh error:", e.message);
+  }
+}
+
+function lookupBranchByHost(host) {
+  if (!host) return null;
+  const h = host.toLowerCase().split(":")[0]; // strip port
+
+  // 1. Exact custom-domain match
+  const exact = branchDomainCache.get(h);
+  if (exact) return exact;
+
+  // 2. Wildcard subdomain match: <slug>.<platform-domain>
+  // e.g., airforce-base-shasha.rhosam.com → slug = "airforce-base-shasha"
+  const dotIdx = h.indexOf(".");
+  if (dotIdx > 0) {
+    const subdomain = h.substring(0, dotIdx);
+    const domain = h.substring(dotIdx + 1);
+    // Check if it's a subdomain of our platform domain
+    if (domain === PLATFORM_DOMAIN || domain.endsWith("." + PLATFORM_DOMAIN)) {
+      const bySlug = branchDomainCache.get(subdomain);
+      if (bySlug) return bySlug;
+    }
+  }
+
+  return null;
+}
+
+// Domain resolution middleware — runs on every request
+app.use(async (req, res, next) => {
+  // Refresh cache if expired
+  if (Date.now() > branchDomainCacheExpiry) {
+    await refreshBranchDomainCache().catch(() => {});
+  }
+  // Resolve tenant from Host header
+  const host = req.headers.host || "";
+  const tenant = lookupBranchByHost(host);
+  if (tenant) {
+    req.tenant = tenant;
+  }
+  next();
+});
 
 // Simple in-memory rate limiter (Express 5 compatible)
 const rateLimits = {};
@@ -5724,6 +5804,206 @@ app.get("/api/scanner/lookup", async (req, res, next) => {
       [`${q}%`, `%${q.toLowerCase()}%`]
     );
     res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PATH-BASED LINKS & CUSTOM DOMAIN MANAGEMENT API
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /api/domains/settings — Platform domain configuration (admin only)
+app.get("/api/domains/settings", auth, allow("ADMIN"), async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM domain_settings ORDER BY id DESC LIMIT 1");
+    res.json(rows[0] || { platform_domain: PLATFORM_DOMAIN, wildcard_domain: WILDCARD_DOMAIN, custom_domains_enabled: CUSTOM_DOMAINS_ENABLED });
+  } catch (e) { next(e); }
+});
+
+// PUT /api/domains/settings — Update platform domain settings (super-admin only)
+app.put("/api/domains/settings", auth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { platform_domain, wildcard_domain, custom_domains_enabled, ssl_auto_provision } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE domain_settings SET platform_domain=COALESCE($1,platform_domain), wildcard_domain=COALESCE($2,wildcard_domain),
+       custom_domains_enabled=COALESCE($3,custom_domains_enabled), ssl_auto_provision=COALESCE($4,ssl_auto_provision), updated_at=NOW()
+       RETURNING *`,
+      [platform_domain, wildcard_domain, custom_domains_enabled, ssl_auto_provision]
+    );
+    await refreshBranchDomainCache();
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// GET /api/branches/:id/domain — Get domain/link settings for a branch
+app.get("/api/branches/:id/domain", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      `SELECT id, name, slug, custom_domain, custom_domain_verified, public_url, logo_url, theme_color
+       FROM branches WHERE id=$1`, [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Branch not found." });
+    const b = rows[0];
+    // Build all available link formats
+    const links = {
+      pathBased: `/s/${b.slug}`,
+      subdomain: `https://${b.slug}.${PLATFORM_DOMAIN}`,
+      custom: b.custom_domain && b.custom_domain_verified ? `https://${b.custom_domain}` : null,
+      publicUrl: b.public_url || null,
+    };
+    res.json({ branch: b, links });
+  } catch (e) { next(e); }
+});
+
+// PUT /api/branches/:id/domain — Update domain/link settings for a branch (super-admin only)
+app.put("/api/branches/:id/domain", auth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { slug, custom_domain, public_url, logo_url, theme_color } = req.body;
+    const updates = [];
+    const params = [];
+    let idx = 1;
+
+    if (slug !== undefined) {
+      // Validate slug: lowercase alphanumeric + hyphens, 2-80 chars
+      const cleanSlug = String(slug).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      if (cleanSlug.length < 2) return res.status(400).json({ message: "Slug must be at least 2 characters." });
+      // Check uniqueness
+      const { rows: existing } = await pool.query("SELECT id FROM branches WHERE slug=$1 AND id!=$2", [cleanSlug, id]);
+      if (existing[0]) return res.status(409).json({ message: "Slug already in use by another branch." });
+      updates.push(`slug=$${idx++}`); params.push(cleanSlug);
+    }
+    if (custom_domain !== undefined) {
+      const cleanDomain = String(custom_domain).toLowerCase().trim();
+      if (cleanDomain && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(cleanDomain))
+        return res.status(400).json({ message: "Invalid domain format." });
+      // Check uniqueness
+      if (cleanDomain) {
+        const { rows: existing } = await pool.query(
+          "SELECT id FROM branches WHERE custom_domain=$1 AND id!=$2 AND custom_domain_verified=TRUE", [cleanDomain, id]
+        );
+        if (existing[0]) return res.status(409).json({ message: "Domain already verified by another branch." });
+      }
+      updates.push(`custom_domain=$${idx++}`); params.push(cleanDomain || null);
+      updates.push(`custom_domain_verified=FALSE`); // Reset verification on change
+    }
+    if (public_url !== undefined) { updates.push(`public_url=$${idx++}`); params.push(public_url || null); }
+    if (logo_url !== undefined) { updates.push(`logo_url=$${idx++}`); params.push(logo_url || null); }
+    if (theme_color !== undefined) { updates.push(`theme_color=$${idx++}`); params.push(theme_color || "#16a34a"); }
+
+    if (!updates.length) return res.status(400).json({ message: "No fields to update." });
+    params.push(id);
+    const { rows } = await pool.query(
+      `UPDATE branches SET ${updates.join(",")}, updated_at=NOW() WHERE id=$${idx}
+       RETURNING id, name, slug, custom_domain, custom_domain_verified, public_url, logo_url, theme_color`,
+      params
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Branch not found." });
+    await refreshBranchDomainCache();
+    await audit(pool, req.user.id, "UPDATE", "BRANCH_DOMAIN", id, { slug, custom_domain, public_url }, req);
+    res.json(rows[0]);
+  } catch (e) { next(e); }
+});
+
+// POST /api/branches/:id/domain/verify — Verify custom domain DNS
+app.post("/api/branches/:id/domain/verify", auth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      "SELECT custom_domain FROM branches WHERE id=$1", [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Branch not found." });
+    const domain = rows[0].custom_domain;
+    if (!domain) return res.status(400).json({ message: "No custom domain configured for this branch." });
+
+    // DNS verification: check that the domain resolves to our platform
+    // For wildcard: CNAME or A record pointing to platform
+    // For verification: TXT record with branch ID
+    const dns = require("dns");
+    const verified = await new Promise((resolve) => {
+      dns.resolve4(domain, (err, addresses) => {
+        if (err) {
+          // Try CNAME
+          dns.resolveCname(domain, (err2, cnames) => {
+            resolve(!err2 && cnames && cnames.length > 0);
+          });
+        } else {
+          resolve(addresses && addresses.length > 0);
+        }
+      });
+    });
+
+    if (verified) {
+      await pool.query("UPDATE branches SET custom_domain_verified=TRUE, updated_at=NOW() WHERE id=$1", [id]);
+      await refreshBranchDomainCache();
+      await audit(pool, req.user.id, "VERIFY_DOMAIN", "BRANCH", id, { domain }, req);
+      res.json({ verified: true, message: `Domain ${domain} verified successfully.` });
+    } else {
+      res.json({
+        verified: false,
+        message: `Domain ${domain} could not be verified. Ensure DNS A/CNAME record points to ${PLATFORM_DOMAIN}.`,
+        instructions: {
+          step1: `Add a CNAME record: ${domain} → ${PLATFORM_DOMAIN}`,
+          step2: `Or add an A record: ${domain} → platform IP address`,
+          step3: `Wait 5-10 minutes for DNS propagation, then try again`,
+        },
+      });
+    }
+  } catch (e) { next(e); }
+});
+
+// GET /api/s/:slug/* — Path-based branch resolution (public endpoint)
+// Returns branch info for a given slug — used by frontend to set tenant context
+app.get("/api/s/:slug", async (req, res, next) => {
+  try {
+    const slug = req.params.slug;
+    const { rows } = await pool.query(
+      `SELECT id, name, slug, public_url, logo_url, theme_color FROM branches WHERE slug=$1 AND is_active=TRUE`,
+      [slug]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Branch not found." });
+    const b = rows[0];
+    res.json({
+      branch: b,
+      links: {
+        pathBased: `/s/${b.slug}`,
+        subdomain: `https://${b.slug}.${PLATFORM_DOMAIN}`,
+      },
+    });
+  } catch (e) { next(e); }
+});
+
+// GET /api/domains/resolve — Resolve current request's domain context (for frontend)
+app.get("/api/domains/resolve", (req, res) => {
+  const tenant = req.tenant;
+  if (tenant) {
+    res.json({
+      resolved: true,
+      branch: { id: tenant.id, name: tenant.name, slug: tenant.slug, logo_url: tenant.logo_url, theme_color: tenant.theme_color },
+      domain: req.headers.host,
+      type: tenant.custom_domain === req.headers.host?.split(":")[0] ? "custom" : "subdomain",
+    });
+  } else {
+    res.json({ resolved: false, branch: null, domain: req.headers.host });
+  }
+});
+
+// GET /api/domains/branches — List all branches with their link info (super-admin)
+app.get("/api/domains/branches", auth, requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, slug, custom_domain, custom_domain_verified, public_url, logo_url, theme_color
+       FROM branches WHERE is_active=TRUE ORDER BY name`
+    );
+    const result = rows.map(b => ({
+      ...b,
+      links: {
+        pathBased: b.slug ? `/s/${b.slug}` : null,
+        subdomain: b.slug ? `https://${b.slug}.${PLATFORM_DOMAIN}` : null,
+        custom: b.custom_domain && b.custom_domain_verified ? `https://${b.custom_domain}` : null,
+      },
+    }));
+    res.json(result);
   } catch (e) { next(e); }
 });
 

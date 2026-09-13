@@ -268,6 +268,14 @@ export function AuthProvider({ children }) {
     chargeTerminal: (terminalId, data) => request(`/terminals/${terminalId}/charge`, { method: "POST", body: JSON.stringify(data) }),
     getTerminalTxStatus: (txId) => request(`/terminals/transactions/${txId}/status`),
     fetchTerminalTransactions: (params) => request(`/terminals/transactions${params ? `?${new URLSearchParams(params)}` : ""}`),
+    // Domain & Path-Based Links
+    getDomainSettings: () => request("/domains/settings"),
+    updateDomainSettings: (data) => request("/domains/settings", { method: "PUT", body: JSON.stringify(data) }),
+    getBranchDomain: (branchId) => request(`/branches/${branchId}/domain`),
+    updateBranchDomain: (branchId, data) => request(`/branches/${branchId}/domain`, { method: "PUT", body: JSON.stringify(data) }),
+    verifyBranchDomain: (branchId) => request(`/branches/${branchId}/domain/verify`, { method: "POST" }),
+    resolveDomainContext: () => request("/domains/resolve"),
+    fetchDomainBranches: () => request("/domains/branches"),
     // Admin Backup
     downloadBackup: async () => {
       const token = localStorage.getItem("rhosam_token");
