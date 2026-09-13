@@ -1879,7 +1879,8 @@ function ProductsPage() {
                 <td>{p.unit}</td>
                 <td><span className={`status-badge ${p.is_active ? "active" : "inactive"}`}>{p.is_active ? "Active" : "Inactive"}</span></td>
                 {isAdmin && <td>
-                  <button className="btn-sm" onClick={() => startEdit(p)}>Edit</button>
+                  <ShareLinkButton entityType="product" entityId={p.id} pagePath={`/products`} title={p.name} compact />
+                  <button className="btn-sm" onClick={() => startEdit(p)} style={{ marginLeft: 4 }}>Edit</button>
                   {user?.role === "ADMIN" && <button className="btn-sm danger" onClick={() => handleDelete(p.id, p.name)}>Delete</button>}
                 </td>}
               </tr>
@@ -2831,7 +2832,8 @@ function SalesPage() {
                 <td>{s.item_count}</td><td>{s.payment_method}</td>
                 <td><strong>₦{(parseFloat(s.total) || 0).toLocaleString("en-NG", { minimumFractionDigits: 2 })}</strong></td>
                 <td>
-                  <button className="btn-sm" onClick={() => viewDetail(s.id)}>View</button>
+                  <ShareLinkButton entityType="sale" entityId={s.id} pagePath={`/sales`} title={`Receipt ${s.receipt_number}`} compact />
+                  <button className="btn-sm" onClick={() => viewDetail(s.id)} style={{ marginLeft: 4 }}>View</button>
                 </td>
               </tr>
             ))}</tbody>
@@ -4919,7 +4921,7 @@ function CategoriesPage() {
 // BRANCHES (Phase 14)
 // ═══════════════════════════════════════════════════════════════════
 function BranchesPage() {
-  const { fetchBranches, createBranch, updateBranch, deleteBranch } = useAuth();
+  const { fetchBranches, createBranch, updateBranch, deleteBranch, user } = useAuth();
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [cursor, setCursor] = useState(null);
@@ -4928,6 +4930,9 @@ function BranchesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editBranch, setEditBranch] = useState(null);
   const [form, setForm] = useState({ name: "", address: "", phone: "" });
+  const [domainBranch, setDomainBranch] = useState(null); // Branch being managed for domains
+  const isSuperAdmin = user?.role === "ADMIN" && !user?.branchId;
+  const platformDomain = import.meta.env.VITE_PLATFORM_DOMAIN || "rhosam.com";
 
   const load = useCallback(async (reset) => {
     try {
@@ -4988,15 +4993,27 @@ function BranchesPage() {
         </div>
       )}
 
+      {domainBranch && (
+        <BranchDomainPanel branch={domainBranch} onClose={() => setDomainBranch(null)} onUpdated={() => { setDomainBranch(null); load(true); }} />
+      )}
+
       {loading ? <p className="loading">Loading…</p> : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Address</th><th>Phone</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Name</th><th>Address</th><th>Phone</th><th>Links</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{branches.map(b => (
               <tr key={b.id}>
                 <td>{b.name}</td>
                 <td>{b.address || "—"}</td>
                 <td>{b.phone || "—"}</td>
+                <td>
+                  <ShareLinkButton entityType="page" entityId={b.id} pagePath={`/s/${b.slug || ""}`} title={`${b.name} Home`} compact />
+                  {isSuperAdmin && (
+                    <button className="btn-sm" onClick={() => setDomainBranch(b)} style={{ marginLeft: 4 }} title="Manage domain & links">
+                      🌐
+                    </button>
+                  )}
+                </td>
                 <td><span className={`status-badge ${b.is_active ? "active" : "inactive"}`}>{b.is_active ? "Active" : "Inactive"}</span></td>
                 <td>{new Date(b.created_at).toLocaleDateString()}</td>
                 <td>
@@ -7284,6 +7301,403 @@ function PaymentSettingsPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// SHARED LINK RESOLVER — resolves /link/:token and redirects
+// ═══════════════════════════════════════════════════════════════════
+function SharedLinkResolver() {
+  const { token } = useParams();
+  const navigate = useNavigate();
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!token) { setError("No link token provided."); setLoading(false); return; }
+    fetch(`/api/links/${token}`)
+      .then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d.message); }))
+      .then(data => {
+        const link = data.link;
+        // Redirect to the page path, preserving branch context
+        const targetPath = link.page_path || "/dashboard";
+        navigate(targetPath, { replace: true });
+      })
+      .catch(err => {
+        setError(err.message || "Link not found or expired.");
+      })
+      .finally(() => setLoading(false));
+  }, [token, navigate]);
+
+  if (loading) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif" }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>🔗</div>
+        <p style={{ color: "var(--muted)" }}>Resolving link...</p>
+      </div>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif" }}>
+      <div style={{ textAlign: "center", maxWidth: 400, padding: 32 }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>❌</div>
+        <h2 style={{ margin: "0 0 8px", color: "#111827" }}>Link not available</h2>
+        <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>{error}</p>
+        <button onClick={() => navigate("/login")} style={{ marginTop: 16, background: "#16a34a", color: "white", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 600, cursor: "pointer" }}>
+          Go to Login
+        </button>
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SHARE LINK COMPONENT — Generate and share page links
+// ═══════════════════════════════════════════════════════════════════
+function ShareLinkButton({ entityType, entityId, pagePath, title, compact }) {
+  const { generateShareLink, fetchShareLinks, deleteShareLink } = useAuth();
+  const [showModal, setShowModal] = useState(false);
+  const [links, setLinks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(null);
+  const [form, setForm] = useState({ title: title || "", description: "", expiresIn: "", maxVisits: "" });
+
+  async function loadLinks() {
+    setLoading(true);
+    try {
+      const all = await fetchShareLinks();
+      const filtered = all.filter(l =>
+        l.entity_type === entityType && String(l.entity_id) === String(entityId)
+      );
+      setLinks(filtered);
+    } catch {}
+    finally { setLoading(false); }
+  }
+
+  async function handleGenerate(e) {
+    e.preventDefault();
+    setGenerating(true);
+    try {
+      const expiresAt = form.expiresIn ? new Date(Date.now() + Number(form.expiresIn) * 3600000).toISOString() : null;
+      const result = await generateShareLink({
+        entityType, entityId, pagePath,
+        title: form.title || title, description: form.description,
+        expiresAt, maxVisits: form.maxVisits ? Number(form.maxVisits) : null,
+      });
+      setLinks(prev => [result.link, ...prev]);
+      setForm({ title: title || "", description: "", expiresIn: "", maxVisits: "" });
+    } catch (err) { alert(err.message); }
+    finally { setGenerating(false); }
+  }
+
+  async function handleCopy(url, id) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      // Fallback
+      const ta = document.createElement("textarea"); ta.value = url;
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm("Deactivate this link?")) return;
+    try { await deleteShareLink(id); setLinks(prev => prev.filter(l => l.id !== id)); }
+    catch (err) { alert(err.message); }
+  }
+
+  function handleOpen() {
+    setShowModal(true);
+    loadLinks();
+  }
+
+  return (
+    <>
+      <button className="btn-sm" onClick={handleOpen} title="Share Link">
+        {compact ? "🔗" : "🔗 Share Link"}
+      </button>
+      {showModal && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2>🔗 Share Link</h2>
+              <button className="btn-close" onClick={() => setShowModal(false)}>✕</button>
+            </div>
+
+            <form onSubmit={handleGenerate} className="form-grid" style={{ marginBottom: 20 }}>
+              <label>Title
+                <input value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="Link title (optional)" />
+              </label>
+              <label>Description
+                <input value={form.description} onChange={e => setForm({...form, description: e.target.value})} placeholder="Description (optional)" />
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <label>Expires in (hours)
+                  <input type="number" min="1" value={form.expiresIn} onChange={e => setForm({...form, expiresIn: e.target.value})} placeholder="Never" />
+                </label>
+                <label>Max visits
+                  <input type="number" min="1" value={form.maxVisits} onChange={e => setForm({...form, maxVisits: e.target.value})} placeholder="Unlimited" />
+                </label>
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn primary" disabled={generating}>
+                  {generating ? "Generating..." : "Generate Link"}
+                </button>
+              </div>
+            </form>
+
+            <h3 style={{ fontSize: "0.9rem", marginBottom: 8, color: "var(--muted)" }}>Existing Links</h3>
+            {loading ? <p className="muted">Loading...</p> : links.length === 0 ? (
+              <p className="muted">No shared links yet.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto" }}>
+                {links.map(l => (
+                  <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--bg, #f3f6f9)", borderRadius: 8, fontSize: "0.85rem" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {l.title || l.page_path}
+                      </div>
+                      <div style={{ color: "var(--muted)", fontSize: "0.8rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {l.fullUrl}
+                      </div>
+                      <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>
+                        Visits: {l.visit_count}{l.max_visits ? `/${l.max_visits}` : ""}
+                        {l.expires_at ? ` · Expires: ${new Date(l.expires_at).toLocaleDateString()}` : ""}
+                      </div>
+                    </div>
+                    <button className="btn-sm" onClick={() => handleCopy(l.fullUrl, l.id)}>
+                      {copied === l.id ? "✓ Copied" : "Copy"}
+                    </button>
+                    <button className="btn-sm danger" onClick={() => handleDelete(l.id)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BRANCH DOMAIN MANAGEMENT PANEL
+// ═══════════════════════════════════════════════════════════════════
+function BranchDomainPanel({ branch, onClose, onUpdated }) {
+  const { updateBranchDomain, verifyBranchDomain, provisionSSL, fetchSSLCertificates } = useAuth();
+  const [form, setForm] = useState({
+    slug: branch.slug || "",
+    custom_domain: branch.custom_domain || "",
+    public_url: branch.public_url || "",
+    theme_color: branch.theme_color || "#16a34a",
+  });
+  const [saving, setSaving] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [sslCerts, setSslCerts] = useState([]);
+  const [provisioningSsl, setProvisioningSsl] = useState(false);
+  const [activeTab, setActiveTab] = useState("links");
+
+  const platformDomain = import.meta.env.VITE_PLATFORM_DOMAIN || "rhosam.com";
+
+  useEffect(() => {
+    fetchSSLCertificates().then(certs => {
+      setSslCerts(certs.filter(c => c.branch_id === branch.id));
+    }).catch(() => {});
+  }, [branch.id, fetchSSLCertificates]);
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await updateBranchDomain(branch.id, form);
+      onUpdated?.();
+    } catch (err) { alert(err.message); }
+    finally { setSaving(false); }
+  }
+
+  async function handleVerify() {
+    setVerifying(true); setVerifyResult(null);
+    try {
+      const result = await verifyBranchDomain(branch.id);
+      setVerifyResult(result);
+      onUpdated?.();
+    } catch (err) { setVerifyResult({ verified: false, message: err.message }); }
+    finally { setVerifying(false); }
+  }
+
+  async function handleProvisionSSL() {
+    if (!form.custom_domain) return alert("Set a custom domain first.");
+    setProvisioningSsl(true);
+    try {
+      const result = await provisionSSL({ branchId: branch.id, domain: form.custom_domain });
+      alert(result.message);
+      const certs = await fetchSSLCertificates();
+      setSslCerts(certs.filter(c => c.branch_id === branch.id));
+    } catch (err) { alert(err.message); }
+    finally { setProvisioningSsl(false); }
+  }
+
+  const links = {
+    pathBased: form.slug ? `/s/${form.slug}` : null,
+    subdomain: form.slug ? `https://${form.slug}.${platformDomain}` : null,
+    custom: form.custom_domain && branch.custom_domain_verified ? `https://${form.custom_domain}` : null,
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal wide" onClick={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2>🏢 {branch.name} — Domain & Links</h2>
+          <button className="btn-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="tabs" style={{ marginBottom: 16 }}>
+          <button className={activeTab === "links" ? "active" : ""} onClick={() => setActiveTab("links")}>🔗 Links</button>
+          <button className={activeTab === "custom" ? "active" : ""} onClick={() => setActiveTab("custom")}>🌐 Custom Domain</button>
+          <button className={activeTab === "ssl" ? "active" : ""} onClick={() => setActiveTab("ssl")}>🔒 SSL</button>
+        </div>
+
+        {activeTab === "links" && (
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <label>Branch Slug
+                <input value={form.slug} onChange={e => setForm({...form, slug: e.target.value})}
+                  placeholder="e.g. airforce-base-shasha" style={{ fontFamily: "monospace" }} />
+              </label>
+              <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 4 }}>
+                Used for path-based URLs. Lowercase letters, numbers, and hyphens only.
+              </p>
+            </div>
+            {form.slug && (
+              <div style={{ background: "var(--bg, #f3f6f9)", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                <p style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>Generated Links:</p>
+                {links.pathBased && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)", minWidth: 80 }}>Path:</span>
+                    <code style={{ fontSize: "0.85rem", background: "var(--card-bg)", padding: "4px 8px", borderRadius: 4, flex: 1 }}>{links.pathBased}</code>
+                  </div>
+                )}
+                {links.subdomain && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)", minWidth: 80 }}>Subdomain:</span>
+                    <code style={{ fontSize: "0.85rem", background: "var(--card-bg)", padding: "4px 8px", borderRadius: 4, flex: 1 }}>{links.subdomain}</code>
+                  </div>
+                )}
+              </div>
+            )}
+            <label>Public URL
+              <input value={form.public_url} onChange={e => setForm({...form, public_url: e.target.value})}
+                placeholder="https://example.com (optional custom public URL)" />
+            </label>
+            <label>Theme Color
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="color" value={form.theme_color} onChange={e => setForm({...form, theme_color: e.target.value})}
+                  style={{ width: 40, height: 36, padding: 2, cursor: "pointer" }} />
+                <input value={form.theme_color} onChange={e => setForm({...form, theme_color: e.target.value})}
+                  style={{ fontFamily: "monospace", flex: 1 }} />
+              </div>
+            </label>
+          </div>
+        )}
+
+        {activeTab === "custom" && (
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <label>Custom Domain
+                <input value={form.custom_domain} onChange={e => setForm({...form, custom_domain: e.target.value})}
+                  placeholder="e.g. store.mybrand.com" style={{ fontFamily: "monospace" }} />
+              </label>
+              <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 4 }}>
+                Point a CNAME or A record to {platformDomain}, then click Verify.
+              </p>
+            </div>
+            {form.custom_domain && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span className={`status-badge ${branch.custom_domain_verified ? "active" : "warning"}`}>
+                    {branch.custom_domain_verified ? "✓ Verified" : "⚠ Not Verified"}
+                  </span>
+                  <button className="btn-sm" onClick={handleVerify} disabled={verifying}>
+                    {verifying ? "Verifying..." : "Verify DNS"}
+                  </button>
+                </div>
+                {verifyResult && (
+                  <div style={{ padding: 12, borderRadius: 8, background: verifyResult.verified ? "#dcfce7" : "#fef3c7", fontSize: "0.85rem" }}>
+                    <p style={{ margin: 0, fontWeight: 600 }}>{verifyResult.message}</p>
+                    {verifyResult.instructions && (
+                      <ol style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                        <li>{verifyResult.instructions.step1}</li>
+                        <li>{verifyResult.instructions.step2}</li>
+                        <li>{verifyResult.instructions.step3}</li>
+                      </ol>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {links.custom && (
+              <div style={{ background: "var(--bg, #f3f6f9)", borderRadius: 8, padding: 16 }}>
+                <p style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 4 }}>Custom Domain Link:</p>
+                <code style={{ fontSize: "0.9rem" }}>{links.custom}</code>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "ssl" && (
+          <div>
+            <p style={{ fontSize: "0.85rem", color: "var(--muted)", marginBottom: 12 }}>
+              Auto-provision SSL certificates via Let's Encrypt for your custom domain.
+            </p>
+            {!form.custom_domain ? (
+              <p className="muted">Configure a custom domain in the "Custom Domain" tab first.</p>
+            ) : sslCerts.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 24 }}>
+                <p style={{ fontSize: "0.9rem", marginBottom: 12 }}>No SSL certificate for <strong>{form.custom_domain}</strong></p>
+                <button className="btn primary" onClick={handleProvisionSSL} disabled={provisioningSsl}>
+                  {provisioningSsl ? "Provisioning..." : "🔒 Provision SSL Certificate"}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {sslCerts.map(c => (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, background: "var(--bg, #f3f6f9)", borderRadius: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{c.domain}</div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 2 }}>
+                        Status: <span className={`status-badge ${c.status === "ACTIVE" ? "active" : c.status === "FAILED" ? "inactive" : "warning"}`}>{c.status}</span>
+                        {c.issuer ? ` · Issuer: ${c.issuer}` : ""}
+                        {c.expires_at ? ` · Expires: ${new Date(c.expires_at).toLocaleDateString()}` : ""}
+                      </div>
+                    </div>
+                    {c.status === "ACTIVE" && (
+                      <span style={{ color: "var(--success)", fontSize: "0.85rem" }}>✓ Active</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="form-actions" style={{ marginTop: 20 }}>
+          <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ERROR BOUNDARY — catches JS errors so the page shows a message
 // instead of a blank screen
 // ═══════════════════════════════════════════════════════════════════
@@ -7324,6 +7738,7 @@ export default function App() {
     <DomainProvider>
       <Routes>
         {/* Public routes — no branch context needed */}
+        <Route path="/link/:token" element={<SharedLinkResolver />} />
         <Route path="/scanner" element={<ErrorBoundary><ScannerPage /></ErrorBoundary>} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />

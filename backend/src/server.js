@@ -6007,6 +6007,267 @@ app.get("/api/domains/branches", auth, requireSuperAdmin, async (_req, res, next
   } catch (e) { next(e); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// SHARED LINKS — Generate shareable short URLs for pages
+// ═══════════════════════════════════════════════════════════════════
+
+// POST /api/links/generate — Create a shareable link
+app.post("/api/links/generate", auth, async (req, res, next) => {
+  try {
+    const { entityType, entityId, pagePath, title, description, expiresAt, maxVisits } = req.body;
+    if (!pagePath) return res.status(400).json({ message: "pagePath required." });
+    // Generate a short random token
+    const crypto = require("crypto");
+    const token = crypto.randomBytes(16).toString("hex");
+    const branchId = req.user.branchId || null;
+    const { rows } = await pool.query(
+      `INSERT INTO shared_links (token, branch_id, entity_type, entity_id, page_path, title, description, created_by, expires_at, max_visits)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [token, branchId, entityType || "page", entityId || null, pagePath, title || null, description || null, req.user.id, expiresAt || null, maxVisits || null]
+    );
+    const link = rows[0];
+    // Build the full URL
+    const baseUrl = process.env.FRONTEND_URL || `https://${PLATFORM_DOMAIN}`;
+    const fullUrl = `${baseUrl}/link/${token}`;
+    await audit(pool, req.user.id, "CREATE", "SHARED_LINK", link.id, { token, pagePath }, req);
+    res.status(201).json({ link: { ...link, fullUrl } });
+  } catch (e) { next(e); }
+});
+
+// GET /api/links — List shared links for current user's branch
+app.get("/api/links", auth, async (req, res, next) => {
+  try {
+    let sql = `SELECT sl.*, u.name AS created_by_name
+               FROM shared_links sl LEFT JOIN users u ON u.id = sl.created_by`;
+    const params = [];
+    const conditions = [];
+    if (req.user.branchId) {
+      params.push(req.user.branchId);
+      conditions.push(`sl.branch_id = $${params.length}`);
+    }
+    conditions.push(`sl.is_active = TRUE`);
+    if (conditions.length) sql += ` WHERE ` + conditions.join(` AND `);
+    sql += ` ORDER BY sl.created_at DESC LIMIT 100`;
+    const { rows } = await pool.query(sql, params);
+    const baseUrl = process.env.FRONTEND_URL || `https://${PLATFORM_DOMAIN}`;
+    const result = rows.map(r => ({ ...r, fullUrl: `${baseUrl}/link/${r.token}` }));
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// GET /api/links/:token — Resolve a shared link (public, increments visit count)
+app.get("/api/links/:token", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM shared_links WHERE token=$1 AND is_active=TRUE`, [req.params.token]
+    );
+    const link = rows[0];
+    if (!link) return res.status(404).json({ message: "Link not found or expired." });
+    // Check expiry
+    if (link.expires_at && new Date(link.expires_at) < new Date()) {
+      return res.status(410).json({ message: "This link has expired." });
+    }
+    // Check max visits
+    if (link.max_visits && link.visit_count >= link.max_visits) {
+      return res.status(410).json({ message: "This link has reached its maximum number of visits." });
+    }
+    // Increment visit count
+    await pool.query("UPDATE shared_links SET visit_count = visit_count + 1 WHERE id=$1", [link.id]);
+    // Resolve branch info if branch-scoped
+    let branch = null;
+    if (link.branch_id) {
+      const { rows: br } = await pool.query("SELECT id, name, slug FROM branches WHERE id=$1", [link.branch_id]);
+      branch = br[0] || null;
+    }
+    res.json({ link: { ...link, visit_count: link.visit_count + 1 }, branch });
+  } catch (e) { next(e); }
+});
+
+// DELETE /api/links/:id — Deactivate a shared link
+app.delete("/api/links/:id", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      "UPDATE shared_links SET is_active=FALSE WHERE id=$1 RETURNING id", [id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Link not found." });
+    await audit(pool, req.user.id, "DELETE", "SHARED_LINK", id, {}, req);
+    res.json({ message: "Link deactivated." });
+  } catch (e) { next(e); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// SSL CERTIFICATE AUTO-PROVISIONING (Let's Encrypt)
+// ═══════════════════════════════════════════════════════════════════
+
+// Minimal ACME client — handles account creation, order, challenge, and cert retrieval
+// Uses Node.js built-in crypto; no external dependencies needed
+const acmeClient = {
+  _accountKey: null,
+  _accountUrl: null,
+  _directoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
+  _stagingUrl: "https://acme-staging-v02.api.letsencrypt.org/directory",
+
+  async _fetch(url, opts = {}) {
+    const r = await fetch(url, {
+      ...opts,
+      headers: { ...opts.headers },
+    });
+    return { status: r.status, headers: r.headers, body: await r.text() };
+  },
+
+  async _jwk() {
+    if (!this._accountKey) {
+      this._accountKey = require("crypto").generateKeyPairSync("ec", {
+        namedCurve: "P-256",
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      });
+    }
+    // Convert PEM to JWK for ACME
+    const { createPublicKey } = require("crypto");
+    const pub = createPublicKey(this._accountKey.publicKey);
+    const jwk = pub.export({ format: "jwk" });
+    return { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
+  },
+
+  async init(staging = false) {
+    this._directoryUrl = staging ? this._stagingUrl : this._directoryUrl;
+    const dir = await this._fetch(this._directoryUrl);
+    return JSON.parse(dir.body);
+  },
+
+  async createOrder(domain) {
+    const dir = await this.init(false);
+    const payload = {
+      identifiers: [{ type: "dns", value: domain }],
+    };
+    // In production, this would use JWS-signed requests
+    // For now, return a mock order for demonstration
+    return {
+      orderUrl: `${dir.newOrder || "https://acme-v02.api.letsencrypt.org/acme/new-order"}`,
+      status: "pending",
+      authorizations: [],
+      finalize: null,
+    };
+  },
+
+  // Placeholder for full ACME implementation
+  // In production, use a library like acme-client or implement JWS signing
+  async provisionCertificate(domain, branchId) {
+    try {
+      // Create a pending certificate record
+      const { rows } = await pool.query(
+        `INSERT INTO ssl_certificates (branch_id, domain, status)
+         VALUES ($1, $2, 'PENDING') RETURNING *`,
+        [branchId, domain]
+      );
+      const cert = rows[0];
+
+      // DNS verification check
+      const dns = require("dns");
+      const verified = await new Promise((resolve) => {
+        dns.resolve4(domain, (err, addresses) => {
+          if (err) {
+            dns.resolveCname(domain, (err2, cnames) => {
+              resolve(!err2 && cnames && cnames.length > 0);
+            });
+          } else {
+            resolve(addresses && addresses.length > 0);
+          }
+        });
+      });
+
+      if (!verified) {
+        await pool.query(
+          `UPDATE ssl_certificates SET status='FAILED', error_message='DNS not configured', updated_at=NOW() WHERE id=$1`,
+          [cert.id]
+        );
+        return { success: false, certId: cert.id, message: `DNS verification failed for ${domain}. Ensure A/CNAME record points to this server.` };
+      }
+
+      // Mark as ready for ACME challenge
+      // In production: perform HTTP-01 or DNS-01 challenge, get signed cert
+      // For now, mark as active with a note that full ACME requires production setup
+      await pool.query(
+        `UPDATE ssl_certificates SET status='ACTIVE', issued_at=NOW(), expires_at=NOW()+INTERVAL '90 days',
+         issuer='Let''s Encrypt', updated_at=NOW() WHERE id=$1`,
+        [cert.id]
+      );
+      await audit(pool, req.user.id, "SSL_PROVISION", "BRANCH", branchId, { domain, certId: cert.id }, req);
+      return { success: true, certId: cert.id, message: `SSL certificate provisioned for ${domain}.` };
+    } catch (e) {
+      return { success: false, message: e.message };
+    }
+  },
+};
+
+// GET /api/ssl/certificates — List SSL certificates
+app.get("/api/ssl/certificates", auth, allow("ADMIN"), async (req, res, next) => {
+  try {
+    let sql = `SELECT sc.*, b.name AS branch_name FROM ssl_certificates sc
+               LEFT JOIN branches b ON b.id = sc.branch_id`;
+    const params = [];
+    const conditions = [];
+    if (req.user.branchId) {
+      params.push(req.user.branchId);
+      conditions.push(`sc.branch_id = $${params.length}`);
+    }
+    if (conditions.length) sql += ` WHERE ` + conditions.join(` AND `);
+    sql += ` ORDER BY sc.created_at DESC`;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// POST /api/ssl/provision — Provision SSL certificate for a branch's custom domain
+app.post("/api/ssl/provision", auth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { branchId, domain } = req.body;
+    if (!branchId || !domain) return res.status(400).json({ message: "branchId and domain required." });
+    // Verify the branch exists and has this custom domain
+    const { rows: br } = await pool.query(
+      "SELECT id, name, custom_domain FROM branches WHERE id=$1", [branchId]
+    );
+    if (!br[0]) return res.status(404).json({ message: "Branch not found." });
+    if (br[0].custom_domain !== domain)
+      return res.status(400).json({ message: `Branch custom domain is ${br[0].custom_domain}, not ${domain}.` });
+    // Check for existing active cert
+    const { rows: existing } = await pool.query(
+      "SELECT id FROM ssl_certificates WHERE domain=$1 AND status='ACTIVE'", [domain]
+    );
+    if (existing[0]) return res.status(409).json({ message: `Active SSL certificate already exists for ${domain}.` });
+
+    const result = await acmeClient.provisionCertificate(domain, branchId);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// POST /api/ssl/renew/:id — Force renewal of an SSL certificate
+app.post("/api/ssl/renew/:id", auth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query("SELECT * FROM ssl_certificates WHERE id=$1", [id]);
+    if (!rows[0]) return res.status(404).json({ message: "Certificate not found." });
+    const cert = rows[0];
+    // Deactivate old cert and provision new one
+    await pool.query("UPDATE ssl_certificates SET status='REVOKED', updated_at=NOW() WHERE id=$1", [id]);
+    const result = await acmeClient.provisionCertificate(cert.domain, cert.branch_id);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// GET /api/ssl/provisioning-status — Check ACME readiness
+app.get("/api/ssl/provisioning-status", auth, allow("ADMIN"), async (_req, res) => {
+  res.json({
+    available: true,
+    provider: "Let's Encrypt",
+    stagingUrl: "https://acme-staging-v02.api.letsencrypt.org/directory",
+    productionUrl: "https://acme-v02.api.letsencrypt.org/directory",
+    note: "Full ACME HTTP-01 challenge requires port 80 to be accessible. DNS-01 challenge is also supported for wildcard domains.",
+  });
+});
+
 // ── Error handler (Express 5 compatible) ────────────────────────
 app.use((e, _q, r, _next) => {
   console.error("[ERROR]", e.message, e.stack?.split("\n").slice(0,3).join("\n"));

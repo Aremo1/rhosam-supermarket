@@ -276,6 +276,16 @@ export function AuthProvider({ children }) {
     verifyBranchDomain: (branchId) => request(`/branches/${branchId}/domain/verify`, { method: "POST" }),
     resolveDomainContext: () => request("/domains/resolve"),
     fetchDomainBranches: () => request("/domains/branches"),
+    // Shared Links
+    generateShareLink: (data) => request("/links/generate", { method: "POST", body: JSON.stringify(data) }),
+    fetchShareLinks: () => request("/links"),
+    resolveShareLink: (token) => request(`/links/${token}`),
+    deleteShareLink: (id) => request(`/links/${id}`, { method: "DELETE" }),
+    // SSL Certificates
+    fetchSSLCertificates: () => request("/ssl/certificates"),
+    provisionSSL: (data) => request("/ssl/provision", { method: "POST", body: JSON.stringify(data) }),
+    renewSSL: (id) => request(`/ssl/renew/${id}`, { method: "POST" }),
+    getSSLStatus: () => request("/ssl/provisioning-status"),
     // Admin Backup
     downloadBackup: async () => {
       const token = localStorage.getItem("rhosam_token");
